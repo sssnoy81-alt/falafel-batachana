@@ -11,7 +11,7 @@ type MenuItem = {
   is_popular: boolean; is_active: boolean; image_url: string | null
   price?: number
 }
-type Topping = { id: string; name_he: string; type: 'sauce' | 'salad' | 'paid_addon'; sort_order: number }
+type Topping = { id: string; name_he: string; type: 'spread' | 'filling' | 'paid_addon'; sort_order: number }
 type CartItem = {
   item: MenuItem; quantity: number
   sauces: string[]; salads: string[]; paidAddons: string[]
@@ -203,8 +203,8 @@ export default function Home() {
     return () => clearInterval(id)
   }, [screen, orderId])
 
-  const sauces = toppings.filter(t => t.type === 'sauce')
-  const saladsOpts = toppings.filter(t => t.type === 'salad')
+  const sauces = toppings.filter(t => t.type === 'spread')
+  const saladsOpts = toppings.filter(t => t.type === 'filling')
   const paidAddonsOpts = toppings.filter(t => t.type === 'paid_addon')
 
   /* ════════════════════════════════════════
