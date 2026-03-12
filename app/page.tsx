@@ -106,14 +106,18 @@ export default function Home() {
   async function selectBranch(branch: Branch) {
     setSelectedBranch(branch)
     setLoading(true)
-    const [catRes, itemRes, topRes] = await Promise.all([
+    const [catRes, itemRes, topRes, priceRes] = await Promise.all([
       supabase.from('menu_categories').select('*').order('sort_order'),
       supabase.from('menu_items').select('*').eq('is_active', true),
       supabase.from('toppings').select('*').order('sort_order'),
+      supabase.from('branch_prices').select('item_id, price').eq('branch_id', branch.id).eq('is_available', true),
     ])
     const cats = catRes.data || []
+    const prices: Record<string, number> = {}
+    for (const p of (priceRes.data || [])) prices[p.item_id] = p.price
+    const items = (itemRes.data || []).map((item: any) => ({ ...item, price: prices[item.id] ?? undefined }))
     setCategories(cats)
-    setMenuItems(itemRes.data || [])
+    setMenuItems(items)
     setToppings(topRes.data || [])
     if (cats.length > 0) setActiveCategory(cats[0].id)
     setLoading(false)
