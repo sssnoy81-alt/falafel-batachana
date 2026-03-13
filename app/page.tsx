@@ -200,7 +200,11 @@ export default function Home() {
       total_price: cartTotal,
     }]).select().single()
 
-    if (error || !order) { setPlacingOrder(false); return }
+    if (error || !order) { 
+      console.error('ORDER ERROR:', JSON.stringify(error))
+      alert('שגיאה: ' + JSON.stringify(error?.message))
+      setPlacingOrder(false); return 
+    }
 
     await supabase.from('order_items').insert(
       cart.map(c => ({
