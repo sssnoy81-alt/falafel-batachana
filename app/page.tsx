@@ -123,7 +123,7 @@ export default function Home() {
   }
 
   async function fetchBranches() {
-    const { data } = await supabase.from('branches').select('id, name, address').order('name')
+    const { data } = await supabase.from('branches').select('id, name, address').order('sort_order')
     setBranches(data || [])
     setLoading(false)
   }
