@@ -1,6 +1,11 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
-import { supabase } from '../lib/supabase'
+import { createClient } from '@supabase/supabase-js'
+
+const supabase = createClient(
+  'https://sqgnrzcmjhwgfjxocvlr.supabase.co',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNxZ25yemNtamh3Z2ZqeG9jdmxyIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MjM2NzEwMSwiZXhwIjoyMDg3OTQzMTAxfQ.fAnUMR8cXgQ38VWz66UibT83u_JquuXeZRtpiYmbTzM'
+)
 
 /* ─── TYPES ─── */
 type Branch = { id: string; name: string; address: string }
@@ -90,7 +95,6 @@ export default function Home() {
           setOrderId(s.orderId); setLoading(false); setScreen('tracking');
           fetchBranches(); return
         }
-        // Restore branch + cart if mid-order
         if (s.branch && s.screen && s.screen !== 'tracking') {
           setSelectedBranch(s.branch)
           if (s.cart) setCart(s.cart)
@@ -153,14 +157,13 @@ export default function Home() {
   const cartTotal = cart.reduce((sum, c) => sum + ((c.item.price || 0) + c.paidAddons.length * 4) * c.quantity, 0)
   const cartCount = cart.reduce((s, c) => s + c.quantity, 0)
 
-  // Save session on every cart/screen change
   useEffect(() => {
     if (screen === 'branch' || screen === 'tracking') return
     if (!selectedBranch) return
     const saved = localStorage.getItem('falafel_session')
     try {
       const s = saved ? JSON.parse(saved) : {}
-      if (s.orderId) return // don't overwrite active order
+      if (s.orderId) return
     } catch {}
     localStorage.setItem('falafel_session', JSON.stringify({
       branch: selectedBranch, cart, screen, expires: Date.now() + 6 * 3600 * 1000
@@ -180,13 +183,9 @@ export default function Home() {
       salads: sheetNoLettuce ? sheetSalads.filter(s => s !== 'חסה') : sheetSalads,
       paidAddons: sheetPaidAddons, noLettuce: sheetNoLettuce, notes: sheetNotes,
     }
-    setCart(prev => {
-      const idx = prev.findIndex(c => c.item.id === selectedItem.id)
-      if (idx >= 0) {
-        const u = [...prev]; u[idx] = { ...u[idx], quantity: u[idx].quantity + sheetQty }; return u
-      }
-      return [...prev, newItem]
-    })
+    // ✅ תיקון: כל מנה נכנסת בנפרד — לא ממזגים לפי item.id
+    // כי אותה מנה יכולה להגיע עם רטבים שונים
+    setCart(prev => [...prev, newItem])
     setShowBottomSheet(false)
   }
 
@@ -201,10 +200,10 @@ export default function Home() {
       total_price: cartTotal,
     }]).select().single()
 
-    if (error || !order) { 
+    if (error || !order) {
       console.error('ORDER ERROR:', JSON.stringify(error))
       alert('שגיאה: ' + JSON.stringify(error?.message))
-      setPlacingOrder(false); return 
+      setPlacingOrder(false); return
     }
 
     await supabase.from('order_items').insert(
@@ -254,14 +253,11 @@ export default function Home() {
   /* ── BRANCH SCREEN ── */
   if (screen === 'branch') return (
     <div style={{ minHeight: '100vh', background: C.bg, fontFamily: 'Heebo, sans-serif', direction: 'rtl' }}>
-      {/* Hero */}
       <div style={{ padding: '56px 24px 44px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', borderBottom: `1px solid ${C.border}` }}>
         <img src={LOGO} alt="פלאפל בתחנה" style={{ width: 150, height: 150, objectFit: 'contain', marginBottom: 16 }} />
         <h1 style={{ color: C.white, fontSize: 28, fontWeight: 900, margin: '0 0 6px', letterSpacing: -0.5 }}>פלאפל בתחנה</h1>
         <p style={{ color: C.gray, fontSize: 15, margin: 0 }}>בחר סניף להזמנה</p>
       </div>
-
-      {/* Branches */}
       <div style={{ padding: '24px 16px', maxWidth: 480, margin: '0 auto' }}>
         {branches.map(b => (
           <button key={b.id} onClick={() => selectBranch(b)}
@@ -276,8 +272,6 @@ export default function Home() {
             <div style={{ color: C.gold, fontSize: 20 }}>←</div>
           </button>
         ))}
-
-        {/* Active order tracking button */}
         {orderId && (
           <button onClick={() => setScreen('tracking')}
             style={{ width: '100%', background: 'rgba(255,215,0,0.08)', border: `1px solid ${C.gold}`, borderRadius: 18, padding: '18px 22px', marginTop: 8, display: 'flex', alignItems: 'center', gap: 16, cursor: 'pointer', textAlign: 'right', fontFamily: 'Heebo, sans-serif' }}>
@@ -333,9 +327,7 @@ export default function Home() {
           style={{ background: C.border, border: 'none', borderRadius: 10, padding: '8px 10px', cursor: 'pointer', fontSize: 18, lineHeight: 1, color: C.white }}>→</button>
         <div style={{ fontWeight: 800, fontSize: 17, color: C.white }}>סיכום הזמנה</div>
       </div>
-
       <div style={{ padding: 16, maxWidth: 480, margin: '0 auto' }}>
-        {/* Cart items */}
         <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${C.border}` }}>
           <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 16 }}>📋 סיכום הזמנה</div>
           {cart.map((c, i) => (
@@ -369,7 +361,6 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Phone */}
         <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${C.border}` }}>
           <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>📱 מספר טלפון</div>
           <input type="tel" value={orderPhone} onChange={e => setOrderPhone(e.target.value)}
@@ -380,7 +371,6 @@ export default function Home() {
           )}
         </div>
 
-        {/* Payment */}
         <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 24, border: `1px solid ${C.border}` }}>
           <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>💳 אמצעי תשלום</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
@@ -410,7 +400,6 @@ export default function Home() {
   return (
     <div style={{ minHeight: '100vh', background: C.bg, fontFamily: 'Heebo, sans-serif', direction: 'rtl', paddingBottom: cartCount > 0 ? 96 : 0 }}>
 
-      {/* ── STICKY HEADER ── */}
       <div style={{ background: C.bgCard, borderBottom: `1px solid ${C.border}`, position: 'sticky', top: 0, zIndex: 200 }}>
         <div style={{ maxWidth: 640, margin: '0 auto' }}>
           <div style={{ padding: '12px 16px 10px', display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -424,7 +413,6 @@ export default function Home() {
               </div>
             </div>
           </div>
-          {/* Category tabs */}
           <div style={{ display: 'flex', overflowX: 'auto', padding: '0 16px 12px', gap: 8, scrollbarWidth: 'none', msOverflowStyle: 'none' } as React.CSSProperties}>
             {categories.map(cat => (
               <button key={cat.id}
@@ -440,19 +428,16 @@ export default function Home() {
         </div>
       </div>
 
-      {/* ── MENU ITEMS ── */}
       <div style={{ maxWidth: 640, margin: '0 auto' }}>
         {categories.map(cat => {
           const items = itemsByCategory[cat.id] || []
           if (items.length === 0) return null
           return (
             <div key={cat.id} ref={(el: HTMLDivElement | null) => { categoryRefs.current[cat.id] = el }} style={{ scrollMarginTop: 130 }}>
-              {/* Category header */}
               <div style={{ padding: '20px 16px 10px', display: 'flex', alignItems: 'center', gap: 10 }}>
                 <div style={{ height: 2, width: 4, background: C.gold, borderRadius: 2 }} />
                 <div style={{ fontWeight: 900, fontSize: 18, color: C.gold, letterSpacing: -0.2 }}>{cat.name_he}</div>
               </div>
-
               {items.map(item => (
                 <button key={item.id} onClick={() => openItem(item)}
                   style={{ width: '100%', background: 'transparent', border: 'none', borderBottom: `1px solid ${C.border}`, padding: '14px 16px', display: 'flex', gap: 14, alignItems: 'flex-start', cursor: 'pointer', textAlign: 'right', fontFamily: 'Heebo, sans-serif', transition: 'background 0.12s' }}
@@ -480,7 +465,6 @@ export default function Home() {
         })}
       </div>
 
-      {/* ── CART BUTTON ── */}
       {cartCount > 0 && (
         <div style={{ position: 'fixed', bottom: 16, left: 16, right: 16, zIndex: 300, maxWidth: 608, margin: '0 auto' }}>
           <button onClick={() => setScreen('order')}
@@ -492,7 +476,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* ── BOTTOM SHEET ── */}
       {showBottomSheet && selectedItem && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 400 }}>
           <div onClick={() => setShowBottomSheet(false)}
