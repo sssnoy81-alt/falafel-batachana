@@ -204,10 +204,16 @@ export default function Home() {
 
     await supabase.from('order_items').insert(
       cart.map(c => ({
-        order_id: order.id, menu_item_id: c.item.id, quantity: c.quantity,
-        price: (c.item.price || 0) + c.paidAddons.length * 4,
-        toppings: JSON.stringify({ sauces: c.sauces, salads: c.salads, paidAddons: c.paidAddons }),
-        notes: c.notes,
+        order_id: order.id,
+        item_id: c.item.id,
+        quantity: c.quantity,
+        unit_price: (c.item.price || 0) + c.paidAddons.length * 4,
+        notes: [
+          c.sauces.length > 0 ? `רטבים: ${c.sauces.join(', ')}` : '',
+          c.salads.length > 0 ? `מילויים: ${c.salads.join(', ')}` : '',
+          c.paidAddons.length > 0 ? `תוספות: ${c.paidAddons.join(', ')}` : '',
+          c.notes || '',
+        ].filter(Boolean).join(' | '),
       }))
     )
     localStorage.setItem('falafel_session', JSON.stringify({ orderId: order.id, expires: Date.now() + 6 * 3600 * 1000 }))
