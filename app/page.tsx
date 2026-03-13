@@ -89,11 +89,38 @@ export default function Home() {
         if (s.orderId && s.expires > Date.now()) {
           setOrderId(s.orderId); setScreen('tracking'); return
         }
+        // Restore branch + cart if mid-order
+        if (s.branch && s.screen && s.screen !== 'tracking') {
+          setSelectedBranch(s.branch)
+          if (s.cart) setCart(s.cart)
+          setLoading(true)
+          restoreBranch(s.branch, s.screen)
+          return
+        }
       } catch {}
       localStorage.removeItem('falafel_session')
     }
     fetchBranches()
   }, [])
+
+  async function restoreBranch(branch: Branch, savedScreen: Screen) {
+    const [catRes, itemRes, topRes, priceRes] = await Promise.all([
+      supabase.from('menu_categories').select('*').order('sort_order'),
+      supabase.from('menu_items').select('*').eq('is_active', true),
+      supabase.from('toppings').select('*').order('sort_order'),
+      supabase.from('branch_prices').select('item_id, price').eq('branch_id', branch.id).eq('is_available', true),
+    ])
+    const cats = catRes.data || []
+    const prices: Record<string, number> = {}
+    for (const p of (priceRes.data || [])) prices[p.item_id] = p.price
+    const items = (itemRes.data || []).map((item: any) => ({ ...item, price: prices[item.id] ?? undefined }))
+    setCategories(cats)
+    setMenuItems(items)
+    setToppings(topRes.data || [])
+    if (cats.length > 0) setActiveCategory(cats[0].id)
+    setLoading(false)
+    setScreen(savedScreen)
+  }
 
   async function fetchBranches() {
     const { data } = await supabase.from('branches').select('id, name, address').order('name')
@@ -124,6 +151,20 @@ export default function Home() {
 
   const cartTotal = cart.reduce((sum, c) => sum + ((c.item.price || 0) + c.paidAddons.length * 4) * c.quantity, 0)
   const cartCount = cart.reduce((s, c) => s + c.quantity, 0)
+
+  // Save session on every cart/screen change
+  useEffect(() => {
+    if (screen === 'branch' || screen === 'tracking') return
+    if (!selectedBranch) return
+    const saved = localStorage.getItem('falafel_session')
+    try {
+      const s = saved ? JSON.parse(saved) : {}
+      if (s.orderId) return // don't overwrite active order
+    } catch {}
+    localStorage.setItem('falafel_session', JSON.stringify({
+      branch: selectedBranch, cart, screen, expires: Date.now() + 6 * 3600 * 1000
+    }))
+  }, [cart, screen, selectedBranch])
 
   function openItem(item: MenuItem) {
     setSelectedItem(item); setSheetSauces([]); setSheetSalads([])
@@ -347,7 +388,7 @@ export default function Home() {
       <div style={{ background: C.bgCard, borderBottom: `1px solid ${C.border}`, position: 'sticky', top: 0, zIndex: 200 }}>
         <div style={{ maxWidth: 640, margin: '0 auto' }}>
           <div style={{ padding: '12px 16px 10px', display: 'flex', alignItems: 'center', gap: 12 }}>
-            <button onClick={() => setScreen('branch')}
+            <button onClick={() => { localStorage.removeItem('falafel_session'); setScreen('branch'); setCart([]) }}
               style={{ background: C.border, border: 'none', borderRadius: 10, padding: '8px 10px', cursor: 'pointer', fontSize: 18, lineHeight: 1, color: C.white }}>→</button>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1 }}>
               <img src={LOGO} alt="לוגו" style={{ width: 34, height: 34, objectFit: 'contain', borderRadius: 8 }} />
