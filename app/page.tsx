@@ -431,7 +431,11 @@ export default function Home() {
           <div onClick={() => setShowBottomSheet(false)}
             style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.75)' }} />
           <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: C.bgCard, borderRadius: '24px 24px 0 0', maxHeight: '92vh', overflowY: 'auto', paddingBottom: 32 }}>
-            <div style={{ width: 36, height: 4, background: C.border, borderRadius: 2, margin: '12px auto 0' }} />
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px 0' }}>
+              <div style={{ width: 36, height: 4, background: C.border, borderRadius: 2, flex: 1, margin: '0 auto' }} />
+              <button onClick={() => setShowBottomSheet(false)}
+                style={{ background: C.border, border: 'none', borderRadius: 10, width: 34, height: 34, cursor: 'pointer', fontSize: 18, color: C.white, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>✕</button>
+            </div>
 
             {selectedItem.image_url
               ? <img src={selectedItem.image_url} alt={selectedItem.name_he} style={{ width: '100%', height: 220, objectFit: 'cover', marginTop: 8 }} />
