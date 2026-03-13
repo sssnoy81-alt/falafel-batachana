@@ -311,18 +311,14 @@ export default function OrdersPage() {
   }, [fetchOrders, fetchBranches])
 
   const handleAdvance = async (orderId: string, nextStatus: OrderStatus) => {
-    // עדכון מיידי בממשק
+    // עדכון אופטימיסטי מיידי — לא מפעילים fetchOrders (race condition!)
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: nextStatus } : o))
     setKitchenOrder(prev => prev?.id === orderId ? null : prev)
-    // שמירה ב-DB + סנכרון מחדש
+    // שמירה ב-DB
     const { error } = await supabase.from('orders').update({ status: nextStatus }).eq('id', orderId)
     if (error) {
-      console.error('שגיאה בעדכון סטטוס:', error)
-      // אם נכשל — שחזר מה-DB
-      fetchOrders()
-    } else {
-      // סנכרן מיד כדי שלא ייעלם בריפרש הבא
-      fetchOrders()
+      console.error('שגיאה:', error)
+      fetchOrders() // רק אם נכשל — שחזר מה-DB
     }
   }
 
