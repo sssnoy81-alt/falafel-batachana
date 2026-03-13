@@ -323,7 +323,7 @@ export default function Home() {
                 {c.paidAddons.length > 0 && <div style={{ fontSize: 12, color: C.gold }}>תוספות: {c.paidAddons.join(', ')}</div>}
                 {c.notes && <div style={{ fontSize: 12, color: C.gray, fontStyle: 'italic' }}>הערה: {c.notes}</div>}
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginRight: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginRight: 10 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: C.border, borderRadius: 10, padding: '5px 10px' }}>
                   <button onClick={() => setCart(prev => prev.map((x, ii) => ii === i ? { ...x, quantity: Math.max(1, x.quantity - 1) } : x))}
                     style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.gold, fontWeight: 700, lineHeight: 1 }}>−</button>
@@ -331,9 +331,11 @@ export default function Home() {
                   <button onClick={() => setCart(prev => prev.map((x, ii) => ii === i ? { ...x, quantity: x.quantity + 1 } : x))}
                     style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.gold, fontWeight: 700, lineHeight: 1 }}>+</button>
                 </div>
-                <span style={{ fontWeight: 800, color: C.gold, minWidth: 48, textAlign: 'left' }}>
+                <span style={{ fontWeight: 800, color: C.gold, minWidth: 44, textAlign: 'left' }}>
                   {fmt(((c.item.price || 0) + c.paidAddons.length * 4) * c.quantity)}
                 </span>
+                <button onClick={() => setCart(prev => prev.filter((_, ii) => ii !== i))}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.red, lineHeight: 1, padding: '4px' }}>🗑️</button>
               </div>
             </div>
           ))}
