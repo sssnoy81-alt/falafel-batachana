@@ -275,6 +275,19 @@ export default function Home() {
             <div style={{ color: C.gold, fontSize: 20 }}>←</div>
           </button>
         ))}
+
+        {/* Active order tracking button */}
+        {orderId && (
+          <button onClick={() => setScreen('tracking')}
+            style={{ width: '100%', background: 'rgba(255,215,0,0.08)', border: `1px solid ${C.gold}`, borderRadius: 18, padding: '18px 22px', marginTop: 8, display: 'flex', alignItems: 'center', gap: 16, cursor: 'pointer', textAlign: 'right', fontFamily: 'Heebo, sans-serif' }}>
+            <div style={{ width: 48, height: 48, background: 'rgba(255,215,0,0.15)', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, flexShrink: 0 }}>⏳</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 800, fontSize: 16, color: C.gold }}>מעקב הזמנה פעילה</div>
+              <div style={{ fontSize: 13, color: C.gray, marginTop: 2 }}>#{orderId.slice(-6).toUpperCase()}</div>
+            </div>
+            <div style={{ color: C.gold, fontSize: 20 }}>←</div>
+          </button>
+        )}
       </div>
     </div>
   )
@@ -285,8 +298,8 @@ export default function Home() {
     const currentStep = steps.indexOf(orderStatus)
     return (
       <div style={{ minHeight: '100vh', background: C.bg, fontFamily: 'Heebo, sans-serif', direction: 'rtl' }}>
-        <div style={{ padding: '36px 24px 28px', textAlign: 'center', borderBottom: `1px solid ${C.border}` }}>
-          <img src={LOGO} alt="" style={{ width: 70, height: 70, objectFit: 'contain', marginBottom: 12 }} />
+        <div style={{ padding: '36px 24px 28px', textAlign: 'center', borderBottom: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <img src={LOGO} alt="" style={{ width: 100, height: 100, objectFit: 'contain', marginBottom: 14 }} />
           <h1 style={{ color: C.white, fontSize: 22, fontWeight: 800, margin: '0 0 4px' }}>מעקב הזמנה</h1>
           <div style={{ color: C.gold, fontSize: 13, fontWeight: 600 }}>#{orderId?.slice(-6).toUpperCase()}</div>
         </div>
@@ -302,7 +315,7 @@ export default function Home() {
               ))}
             </div>
           </div>
-          <button onClick={() => { localStorage.removeItem('falafel_session'); setOrderId(null); setCart([]); setScreen('branch') }}
+          <button onClick={() => { setCart([]); setScreen('branch') }}
             style={{ width: '100%', padding: 15, background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 14, fontWeight: 700, fontSize: 15, color: C.gray, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
             + הזמנה חדשה
           </button>
