@@ -85,6 +85,7 @@ export default function Home() {
   const [orderStatus, setOrderStatus] = useState<OrderStatus>('received')
 
   const categoryRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const [showUpsell, setShowUpsell] = useState(false)
 
   useEffect(() => {
     const saved = localStorage.getItem('falafel_session')
@@ -169,6 +170,21 @@ export default function Home() {
       branch: selectedBranch, cart, screen, expires: Date.now() + 6 * 3600 * 1000
     }))
   }, [cart, screen, selectedBranch])
+
+  function handleCartButton() {
+    // בדוק אם יש שתייה בסל
+    const hasDrinks = cart.some(c => {
+      const cat = categories.find(cat => cat.id === c.item.category_id)
+      return cat && (cat.name_he.includes('שתי') || cat.name_he.includes('שתיה') || cat.name_he.includes('שתייה') || cat.name_he.includes('משקה'))
+    })
+    // בדוק אם יש תוספות בתשלום
+    const hasPaidAddons = cart.some(c => c.paidAddons.length > 0)
+    if (!hasDrinks || !hasPaidAddons) {
+      setShowUpsell(true)
+    } else {
+      setScreen('order')
+    }
+  }
 
   function openItem(item: MenuItem) {
     setSelectedItem(item); setSheetSauces([]); setSheetSalads([])
@@ -467,12 +483,121 @@ export default function Home() {
 
       {cartCount > 0 && (
         <div style={{ position: 'fixed', bottom: 16, left: 16, right: 16, zIndex: 300, maxWidth: 608, margin: '0 auto' }}>
-          <button onClick={() => setScreen('order')}
+          <button onClick={handleCartButton}
             style={{ width: '100%', padding: '15px 20px', background: C.gold, color: '#000', border: 'none', borderRadius: 16, fontSize: 16, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 8px 32px rgba(255,215,0,0.35)' }}>
             <span style={{ background: 'rgba(0,0,0,0.15)', borderRadius: 8, padding: '3px 10px', fontSize: 14 }}>{cartCount}</span>
             <span>לתשלום</span>
             <span>{fmt(cartTotal)}</span>
           </button>
+        </div>
+      )}
+
+      {showUpsell && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 500 }}>
+          <div onClick={() => setShowUpsell(false)}
+            style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.8)' }} />
+          <div style={{
+            position: 'absolute', bottom: 0, left: 0, right: 0,
+            background: C.bgCard, borderRadius: '24px 24px 0 0',
+            padding: '24px 20px 36px', direction: 'rtl',
+            maxHeight: '80vh', overflowY: 'auto',
+          }}>
+            {/* Handle */}
+            <div style={{ width: 40, height: 4, background: C.border, borderRadius: 2, margin: '0 auto 20px' }} />
+            <div style={{ fontSize: 28, textAlign: 'center', marginBottom: 6 }}>🤔</div>
+            <h2 style={{ color: C.white, fontSize: 20, fontWeight: 900, textAlign: 'center', marginBottom: 6 }}>
+              שכחת משהו?
+            </h2>
+            <p style={{ color: C.gray, fontSize: 14, textAlign: 'center', marginBottom: 24 }}>
+              הזמנה שלמה יותר עם שתייה ותוספות
+            </p>
+
+            {/* שתייה */}
+            {(() => {
+              const drinkCat = categories.find(cat =>
+                cat.name_he.includes('שתי') || cat.name_he.includes('שתיה') || cat.name_he.includes('שתייה') || cat.name_he.includes('משקה')
+              )
+              const hasDrinks = cart.some(c => c.item.category_id === drinkCat?.id)
+              if (drinkCat && !hasDrinks) {
+                const drinks = menuItems.filter(m => m.category_id === drinkCat.id && m.price)
+                return drinks.length > 0 ? (
+                  <div style={{ marginBottom: 22 }}>
+                    <div style={{ color: C.gold, fontWeight: 800, fontSize: 16, marginBottom: 12 }}>🥤 שתייה</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {drinks.map(drink => (
+                        <div key={drink.id} style={{
+                          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                          background: C.bg, borderRadius: 12, padding: '12px 14px',
+                          border: `1px solid ${C.border}`,
+                        }}>
+                          <div>
+                            <div style={{ color: C.white, fontWeight: 700, fontSize: 15 }}>{drink.name_he}</div>
+                            {drink.price && <div style={{ color: C.gold, fontSize: 13, marginTop: 2 }}>{fmt(drink.price)}</div>}
+                          </div>
+                          <button onClick={() => {
+                            setCart(prev => [...prev, {
+                              item: drink, quantity: 1, sauces: [], salads: [],
+                              paidAddons: [], noLettuce: false, notes: ''
+                            }])
+                          }} style={{
+                            background: C.gold, color: '#000', border: 'none',
+                            borderRadius: 10, padding: '8px 18px', fontWeight: 800,
+                            fontSize: 14, cursor: 'pointer', fontFamily: 'Heebo, sans-serif',
+                          }}>+ הוסף</button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null
+              }
+              return null
+            })()}
+
+            {/* תוספות בתשלום */}
+            {(() => {
+              const hasPaidAddons = cart.some(c => c.paidAddons.length > 0)
+              if (!hasPaidAddons && toppings.filter(t => t.type === 'paid_addon').length > 0) {
+                return (
+                  <div style={{ marginBottom: 22 }}>
+                    <div style={{ color: C.gold, fontWeight: 800, fontSize: 16, marginBottom: 12 }}>➕ תוספות בתשלום</div>
+                    <div style={{ color: C.gray, fontSize: 13, marginBottom: 8 }}>
+                      ניתן להוסיף תוספות לכל מנה בסל מתוך פירוט ההזמנה
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                      {toppings.filter(t => t.type === 'paid_addon').map(a => (
+                        <div key={a.id} style={{
+                          background: C.bg, border: `1px solid ${C.border}`,
+                          borderRadius: 20, padding: '6px 14px',
+                          color: C.gray, fontSize: 13,
+                        }}>
+                          {a.name_he} <span style={{ color: C.gold }}>+₪4</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              }
+              return null
+            })()}
+
+            {/* כפתורים */}
+            <button onClick={() => { setShowUpsell(false); setScreen('order') }}
+              style={{
+                width: '100%', padding: 15, background: C.gold, color: '#000',
+                border: 'none', borderRadius: 14, fontSize: 16, fontWeight: 900,
+                cursor: 'pointer', fontFamily: 'Heebo, sans-serif', marginBottom: 10,
+              }}>
+              המשך לתשלום ← {fmt(cartTotal)}
+            </button>
+            <button onClick={() => setShowUpsell(false)}
+              style={{
+                width: '100%', padding: 12, background: 'transparent',
+                border: `1px solid ${C.border}`, borderRadius: 14, fontSize: 14,
+                fontWeight: 600, color: C.gray, cursor: 'pointer', fontFamily: 'Heebo, sans-serif',
+              }}>
+              חזור לתפריט
+            </button>
+          </div>
         </div>
       )}
 
