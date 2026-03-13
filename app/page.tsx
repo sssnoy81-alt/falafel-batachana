@@ -197,7 +197,7 @@ export default function Home() {
       phone: orderPhone.replace(/[-\s]/g, ''),
       payment_method: paymentMethod,
       status: 'pending',
-      total: cartTotal,
+      total_price: cartTotal,
     }]).select().single()
 
     if (error || !order) { setPlacingOrder(false); return }
