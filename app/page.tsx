@@ -17,7 +17,7 @@ type CartItem = {
   sauces: string[]; salads: string[]; paidAddons: string[]
   noLettuce: boolean; notes: string
 }
-type OrderStatus = 'pending' | 'confirmed' | 'preparing' | 'ready' | 'delivered'
+type OrderStatus = 'received' | 'confirmed' | 'preparing' | 'ready' | 'delivered'
 type Screen = 'branch' | 'menu' | 'order' | 'tracking'
 
 /* ─── DARK PREMIUM PALETTE ─── */
@@ -40,11 +40,11 @@ const C = {
 const LOGO = 'https://sqgnrzcmjhwgfjxocvlr.supabase.co/storage/v1/object/public/menu-images/logo-k.jpg'
 
 const STATUS_LABELS: Record<OrderStatus, string> = {
-  pending: 'ממתינה לאישור', confirmed: 'אושרה',
+  received: 'ממתינה לאישור', confirmed: 'אושרה',
   preparing: 'בהכנה', ready: 'מוכנה לאיסוף', delivered: 'הוגשה',
 }
 const STATUS_ICONS: Record<OrderStatus, string> = {
-  pending: '⏳', confirmed: '✅', preparing: '👨‍🍳', ready: '🔔', delivered: '🎉',
+  received: '⏳', confirmed: '✅', preparing: '👨‍🍳', ready: '🔔', delivered: '🎉',
 }
 
 const isValidPhone = (p: string) => /^05\d{8}$/.test(p.replace(/[-\s]/g, ''))
@@ -77,7 +77,7 @@ export default function Home() {
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'credit'>('cash')
   const [placingOrder, setPlacingOrder] = useState(false)
   const [orderId, setOrderId] = useState<string | null>(null)
-  const [orderStatus, setOrderStatus] = useState<OrderStatus>('pending')
+  const [orderStatus, setOrderStatus] = useState<OrderStatus>('received')
 
   const categoryRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
@@ -196,7 +196,7 @@ export default function Home() {
       branch_id: selectedBranch.id,
       phone: orderPhone.replace(/[-\s]/g, ''),
       payment_method: paymentMethod,
-      status: 'pending',
+      status: 'received',
       total_price: cartTotal,
     }]).select().single()
 
@@ -221,7 +221,7 @@ export default function Home() {
       }))
     )
     localStorage.setItem('falafel_session', JSON.stringify({ orderId: order.id, expires: Date.now() + 6 * 3600 * 1000 }))
-    setOrderId(order.id); setOrderStatus('pending'); setCart([])
+    setOrderId(order.id); setOrderStatus('received'); setCart([])
     setPlacingOrder(false); setScreen('tracking')
   }
 
@@ -281,7 +281,7 @@ export default function Home() {
 
   /* ── TRACKING SCREEN ── */
   if (screen === 'tracking') {
-    const steps: OrderStatus[] = ['pending', 'confirmed', 'preparing', 'ready', 'delivered']
+    const steps: OrderStatus[] = ['received', 'confirmed', 'preparing', 'ready', 'delivered']
     const currentStep = steps.indexOf(orderStatus)
     return (
       <div style={{ minHeight: '100vh', background: C.bg, fontFamily: 'Heebo, sans-serif', direction: 'rtl' }}>
