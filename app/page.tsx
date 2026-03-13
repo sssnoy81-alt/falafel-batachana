@@ -87,7 +87,7 @@ export default function Home() {
       try {
         const s = JSON.parse(saved)
         if (s.orderId && s.expires > Date.now()) {
-          setOrderId(s.orderId); setScreen('tracking'); return
+          setOrderId(s.orderId); setLoading(false); setScreen('tracking'); return
         }
         // Restore branch + cart if mid-order
         if (s.branch && s.screen && s.screen !== 'tracking') {
