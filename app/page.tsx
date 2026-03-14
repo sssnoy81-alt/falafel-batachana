@@ -556,21 +556,54 @@ export default function Home() {
             {/* תוספות בתשלום */}
             {(() => {
               const hasPaidAddons = cart.some(c => c.paidAddons.length > 0)
-              if (!hasPaidAddons && toppings.filter(t => t.type === 'paid_addon').length > 0) {
+              const paidAddonItems = menuItems.filter(m => {
+                const cat = categories.find(c => c.id === m.category_id)
+                return cat && (cat.name_he.includes('תוספ') || cat.name_he.includes('ציפס') || cat.name_he.includes('טבעות'))
+              })
+              const allAddons = [
+                ...paidAddonItems,
+                ...toppings.filter(t => t.type === 'paid_addon').map(t => ({
+                  id: t.id, name_he: t.name_he, price: 4,
+                  category_id: '', name_en: '', description_he: '',
+                  dietary_type: 'parve' as const, is_popular: false,
+                  is_active: true, image_url: null,
+                }))
+              ]
+              if (!hasPaidAddons && allAddons.length > 0) {
                 return (
                   <div style={{ marginBottom: 22 }}>
-                    <div style={{ color: C.gold, fontWeight: 800, fontSize: 16, marginBottom: 12 }}>➕ תוספות בתשלום</div>
-                    <div style={{ color: C.gray, fontSize: 13, marginBottom: 8 }}>
-                      ניתן להוסיף תוספות לכל מנה בסל מתוך פירוט ההזמנה
-                    </div>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                      {toppings.filter(t => t.type === 'paid_addon').map(a => (
+                    <div style={{ color: C.gold, fontWeight: 800, fontSize: 16, marginBottom: 12 }}>🍟 תוספות</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {allAddons.map(a => (
                         <div key={a.id} style={{
-                          background: C.bg, border: `1px solid ${C.border}`,
-                          borderRadius: 20, padding: '6px 14px',
-                          color: C.gray, fontSize: 13,
+                          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                          background: C.bg, borderRadius: 12, padding: '12px 14px',
+                          border: `1px solid ${C.border}`,
                         }}>
-                          {a.name_he} <span style={{ color: C.gold }}>+₪4</span>
+                          <div>
+                            <div style={{ color: C.white, fontWeight: 700, fontSize: 15 }}>{a.name_he}</div>
+                            <div style={{ color: C.gold, fontSize: 13, marginTop: 2 }}>
+                              {a.price ? fmt(a.price) : '+₪4'}
+                            </div>
+                          </div>
+                          <button onClick={() => {
+                            if (a.category_id) {
+                              // פריט תפריט אמיתי
+                              setCart(prev => [...prev, {
+                                item: a as MenuItem, quantity: 1, sauces: [], salads: [],
+                                paidAddons: [], noLettuce: false, notes: ''
+                              }])
+                            } else {
+                              // topping — הוסף לפריט הראשון בסל
+                              setCart(prev => prev.map((ci, idx) =>
+                                idx === 0 ? { ...ci, paidAddons: [...ci.paidAddons, a.name_he] } : ci
+                              ))
+                            }
+                          }} style={{
+                            background: C.gold, color: '#000', border: 'none',
+                            borderRadius: 10, padding: '8px 18px', fontWeight: 800,
+                            fontSize: 14, cursor: 'pointer', fontFamily: 'Heebo, sans-serif',
+                          }}>+ הוסף</button>
                         </div>
                       ))}
                     </div>
