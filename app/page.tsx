@@ -500,9 +500,8 @@ export default function Home() {
             position: 'absolute', bottom: 0, left: 0, right: 0,
             background: C.bgCard, borderRadius: '24px 24px 0 0',
             padding: '24px 20px 36px', direction: 'rtl',
-            maxHeight: '80vh', overflowY: 'auto',
+            maxHeight: '85vh', overflowY: 'auto',
           }}>
-            {/* Handle */}
             <div style={{ width: 40, height: 4, background: C.border, borderRadius: 2, margin: '0 auto 20px' }} />
             <div style={{ fontSize: 28, textAlign: 'center', marginBottom: 6 }}>🤔</div>
             <h2 style={{ color: C.white, fontSize: 20, fontWeight: 900, textAlign: 'center', marginBottom: 6 }}>
@@ -523,27 +522,36 @@ export default function Home() {
                 return drinks.length > 0 ? (
                   <div style={{ marginBottom: 22 }}>
                     <div style={{ color: C.gold, fontWeight: 800, fontSize: 16, marginBottom: 12 }}>🥤 שתייה</div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                       {drinks.map(drink => (
                         <div key={drink.id} style={{
-                          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                          background: C.bg, borderRadius: 12, padding: '12px 14px',
+                          display: 'flex', alignItems: 'center', gap: 12,
+                          background: C.bg, borderRadius: 14, padding: '10px 14px',
                           border: `1px solid ${C.border}`,
                         }}>
-                          <div>
+                          {/* תמונה */}
+                          <div style={{ width: 60, height: 60, borderRadius: 10, overflow: 'hidden', flexShrink: 0, background: C.bgCard, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            {drink.image_url
+                              ? <img src={drink.image_url} alt={drink.name_he} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                              : <span style={{ fontSize: 28 }}>🥤</span>}
+                          </div>
+                          <div style={{ flex: 1 }}>
                             <div style={{ color: C.white, fontWeight: 700, fontSize: 15 }}>{drink.name_he}</div>
                             {drink.price && <div style={{ color: C.gold, fontSize: 13, marginTop: 2 }}>{fmt(drink.price)}</div>}
                           </div>
-                          <button onClick={() => {
-                            setCart(prev => [...prev, {
-                              item: drink, quantity: 1, sauces: [], salads: [],
-                              paidAddons: [], noLettuce: false, notes: ''
-                            }])
-                          }} style={{
-                            background: C.gold, color: '#000', border: 'none',
-                            borderRadius: 10, padding: '8px 18px', fontWeight: 800,
-                            fontSize: 14, cursor: 'pointer', fontFamily: 'Heebo, sans-serif',
-                          }}>+ הוסף</button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setCart(prev => [...prev, {
+                                item: drink, quantity: 1, sauces: [], salads: [],
+                                paidAddons: [], noLettuce: false, notes: ''
+                              }])
+                            }}
+                            style={{
+                              background: C.gold, color: '#000', border: 'none',
+                              borderRadius: 10, padding: '8px 18px', fontWeight: 800,
+                              fontSize: 14, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', flexShrink: 0,
+                            }}>+ הוסף</button>
                         </div>
                       ))}
                     </div>
@@ -553,57 +561,49 @@ export default function Home() {
               return null
             })()}
 
-            {/* תוספות בתשלום */}
+            {/* תוספות */}
             {(() => {
-              const hasPaidAddons = cart.some(c => c.paidAddons.length > 0)
-              const paidAddonItems = menuItems.filter(m => {
-                const cat = categories.find(c => c.id === m.category_id)
-                return cat && (cat.name_he.includes('תוספ') || cat.name_he.includes('ציפס') || cat.name_he.includes('טבעות'))
-              })
-              const allAddons = [
-                ...paidAddonItems,
-                ...toppings.filter(t => t.type === 'paid_addon').map(t => ({
-                  id: t.id, name_he: t.name_he, price: 4,
-                  category_id: '', name_en: '', description_he: '',
-                  dietary_type: 'parve' as const, is_popular: false,
-                  is_active: true, image_url: null,
-                }))
-              ]
-              if (!hasPaidAddons && allAddons.length > 0) {
+              const addonCat = categories.find(cat =>
+                cat.name_he.includes('תוספ') || cat.name_he.includes('ציפס') || cat.name_he.includes('טבעות')
+              )
+              const addonItems = addonCat
+                ? menuItems.filter(m => m.category_id === addonCat.id && m.is_active)
+                : []
+              const hasAddons = cart.some(c => addonCat && c.item.category_id === addonCat.id)
+              if (!hasAddons && addonItems.length > 0) {
                 return (
                   <div style={{ marginBottom: 22 }}>
                     <div style={{ color: C.gold, fontWeight: 800, fontSize: 16, marginBottom: 12 }}>🍟 תוספות</div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      {allAddons.map(a => (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {addonItems.map(a => (
                         <div key={a.id} style={{
-                          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                          background: C.bg, borderRadius: 12, padding: '12px 14px',
+                          display: 'flex', alignItems: 'center', gap: 12,
+                          background: C.bg, borderRadius: 14, padding: '10px 14px',
                           border: `1px solid ${C.border}`,
                         }}>
-                          <div>
-                            <div style={{ color: C.white, fontWeight: 700, fontSize: 15 }}>{a.name_he}</div>
-                            <div style={{ color: C.gold, fontSize: 13, marginTop: 2 }}>
-                              {a.price ? fmt(a.price) : '+₪4'}
-                            </div>
+                          {/* תמונה */}
+                          <div style={{ width: 60, height: 60, borderRadius: 10, overflow: 'hidden', flexShrink: 0, background: C.bgCard, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            {a.image_url
+                              ? <img src={a.image_url} alt={a.name_he} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                              : <span style={{ fontSize: 28 }}>🍟</span>}
                           </div>
-                          <button onClick={() => {
-                            if (a.category_id) {
-                              // פריט תפריט אמיתי
+                          <div style={{ flex: 1 }}>
+                            <div style={{ color: C.white, fontWeight: 700, fontSize: 15 }}>{a.name_he}</div>
+                            {a.price && <div style={{ color: C.gold, fontSize: 13, marginTop: 2 }}>{fmt(a.price)}</div>}
+                          </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
                               setCart(prev => [...prev, {
-                                item: a as MenuItem, quantity: 1, sauces: [], salads: [],
+                                item: a, quantity: 1, sauces: [], salads: [],
                                 paidAddons: [], noLettuce: false, notes: ''
                               }])
-                            } else {
-                              // topping — הוסף לפריט הראשון בסל
-                              setCart(prev => prev.map((ci, idx) =>
-                                idx === 0 ? { ...ci, paidAddons: [...ci.paidAddons, a.name_he] } : ci
-                              ))
-                            }
-                          }} style={{
-                            background: C.gold, color: '#000', border: 'none',
-                            borderRadius: 10, padding: '8px 18px', fontWeight: 800,
-                            fontSize: 14, cursor: 'pointer', fontFamily: 'Heebo, sans-serif',
-                          }}>+ הוסף</button>
+                            }}
+                            style={{
+                              background: C.gold, color: '#000', border: 'none',
+                              borderRadius: 10, padding: '8px 18px', fontWeight: 800,
+                              fontSize: 14, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', flexShrink: 0,
+                            }}>+ הוסף</button>
                         </div>
                       ))}
                     </div>
