@@ -86,6 +86,7 @@ export default function Home() {
 
   const categoryRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const [showUpsell, setShowUpsell] = useState(false)
+  const [showCart, setShowCart] = useState(false)
 
   useEffect(() => {
     const saved = localStorage.getItem('falafel_session')
@@ -482,13 +483,91 @@ export default function Home() {
       </div>
 
       {cartCount > 0 && (
-        <div style={{ position: 'fixed', bottom: 16, left: 16, right: 16, zIndex: 300, maxWidth: 608, margin: '0 auto' }}>
+        <div style={{ position: 'fixed', bottom: 16, left: 16, right: 16, zIndex: 300, maxWidth: 608, margin: '0 auto', display: 'flex', gap: 10 }}>
+          {/* כפתור סל */}
+          <button onClick={() => setShowCart(true)}
+            style={{ padding: '15px 18px', background: C.bgCard, color: C.white, border: `1px solid ${C.gold}`, borderRadius: 16, fontSize: 15, fontWeight: 800, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, boxShadow: '0 8px 32px rgba(0,0,0,0.4)', flexShrink: 0 }}>
+            <span style={{ fontSize: 20 }}>🛒</span>
+            <span style={{ background: C.gold, color: '#000', borderRadius: 20, padding: '1px 8px', fontSize: 12, fontWeight: 900 }}>{cartCount}</span>
+          </button>
+          {/* כפתור תשלום */}
           <button onClick={handleCartButton}
-            style={{ width: '100%', padding: '15px 20px', background: C.gold, color: '#000', border: 'none', borderRadius: 16, fontSize: 16, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 8px 32px rgba(255,215,0,0.35)' }}>
-            <span style={{ background: 'rgba(0,0,0,0.15)', borderRadius: 8, padding: '3px 10px', fontSize: 14 }}>{cartCount}</span>
+            style={{ flex: 1, padding: '15px 20px', background: C.gold, color: '#000', border: 'none', borderRadius: 16, fontSize: 16, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 8px 32px rgba(255,215,0,0.35)' }}>
+            <span />
             <span>לתשלום</span>
             <span>{fmt(cartTotal)}</span>
           </button>
+        </div>
+      )}
+
+      {/* ── סל קניות ── */}
+      {showCart && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 450 }}>
+          <div onClick={() => setShowCart(false)}
+            style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.75)' }} />
+          <div style={{
+            position: 'absolute', bottom: 0, left: 0, right: 0,
+            background: C.bgCard, borderRadius: '24px 24px 0 0',
+            padding: '20px 20px 36px', direction: 'rtl',
+            maxHeight: '85vh', overflowY: 'auto',
+          }}>
+            <div style={{ width: 40, height: 4, background: C.border, borderRadius: 2, margin: '0 auto 16px' }} />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
+              <div style={{ fontWeight: 900, fontSize: 18, color: C.white }}>🛒 הסל שלך</div>
+              <button onClick={() => setShowCart(false)}
+                style={{ background: C.border, border: 'none', borderRadius: 10, width: 34, height: 34, cursor: 'pointer', fontSize: 18, color: C.white, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Heebo, sans-serif' }}>✕</button>
+            </div>
+
+            {cart.length === 0 ? (
+              <div style={{ textAlign: 'center', color: C.gray, padding: '30px 0' }}>הסל ריק</div>
+            ) : (
+              <>
+                {cart.map((c, i) => (
+                  <div key={i} style={{
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
+                    paddingBottom: 14, marginBottom: 14,
+                    borderBottom: i < cart.length - 1 ? `1px solid ${C.border}` : 'none',
+                  }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 700, fontSize: 15, color: C.white }}>{c.item.name_he}</div>
+                      {c.sauces.length > 0 && <div style={{ fontSize: 12, color: C.gray, marginTop: 2 }}>רטבים: {c.sauces.join(', ')}</div>}
+                      {c.salads.length > 0 && <div style={{ fontSize: 12, color: C.gray }}>מילויים: {c.salads.join(', ')}</div>}
+                      {c.paidAddons.length > 0 && <div style={{ fontSize: 12, color: C.gold }}>תוספות: {c.paidAddons.join(', ')}</div>}
+                      {c.notes && <div style={{ fontSize: 12, color: C.gray, fontStyle: 'italic' }}>הערה: {c.notes}</div>}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginRight: 10 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: C.border, borderRadius: 10, padding: '5px 10px' }}>
+                        <button onClick={() => setCart(prev => prev.map((x, ii) => ii === i ? { ...x, quantity: Math.max(1, x.quantity - 1) } : x))}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.gold, fontWeight: 700, lineHeight: 1 }}>−</button>
+                        <span style={{ fontWeight: 800, minWidth: 16, textAlign: 'center', color: C.white }}>{c.quantity}</span>
+                        <button onClick={() => setCart(prev => prev.map((x, ii) => ii === i ? { ...x, quantity: x.quantity + 1 } : x))}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.gold, fontWeight: 700, lineHeight: 1 }}>+</button>
+                      </div>
+                      <span style={{ fontWeight: 800, color: C.gold, minWidth: 44, textAlign: 'left', fontSize: 14 }}>
+                        {fmt(((c.item.price || 0) + c.paidAddons.length * 4) * c.quantity)}
+                      </span>
+                      <button onClick={() => setCart(prev => prev.filter((_, ii) => ii !== i))}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.red, lineHeight: 1, padding: '4px' }}>🗑️</button>
+                    </div>
+                  </div>
+                ))}
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 14, borderTop: `1px solid ${C.border}`, fontWeight: 800, fontSize: 18, marginBottom: 18 }}>
+                  <span style={{ color: C.gray }}>סה"כ</span>
+                  <span style={{ color: C.gold }}>{fmt(cartTotal)}</span>
+                </div>
+
+                <button onClick={() => { setShowCart(false); handleCartButton() }}
+                  style={{ width: '100%', padding: 16, background: C.gold, color: '#000', border: 'none', borderRadius: 14, fontSize: 17, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', boxShadow: '0 4px 20px rgba(255,215,0,0.3)' }}>
+                  לתשלום • {fmt(cartTotal)}
+                </button>
+                <button onClick={() => setShowCart(false)}
+                  style={{ width: '100%', marginTop: 10, padding: 12, background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 14, fontSize: 14, fontWeight: 600, color: C.gray, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
+                  המשך בקנייה
+                </button>
+              </>
+            )}
+          </div>
         </div>
       )}
 
