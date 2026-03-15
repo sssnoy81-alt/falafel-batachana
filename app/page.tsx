@@ -87,6 +87,7 @@ export default function Home() {
   const categoryRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const [showUpsell, setShowUpsell] = useState(false)
   const [showCart, setShowCart] = useState(false)
+  const [editCartIndex, setEditCartIndex] = useState<number | null>(null)
 
   useEffect(() => {
     const saved = localStorage.getItem('falafel_session')
@@ -193,6 +194,20 @@ export default function Home() {
     setShowBottomSheet(true)
   }
 
+  function openEditItem(index: number) {
+    const c = cart[index]
+    setSelectedItem(c.item)
+    setSheetSauces(c.sauces)
+    setSheetSalads(c.salads)
+    setSheetPaidAddons(c.paidAddons)
+    setSheetNoLettuce(c.noLettuce)
+    setSheetNotes(c.notes)
+    setSheetQty(c.quantity)
+    setEditCartIndex(index)
+    setShowCart(false)
+    setShowBottomSheet(true)
+  }
+
   function addToCart() {
     if (!selectedItem) return
     const newItem: CartItem = {
@@ -200,9 +215,14 @@ export default function Home() {
       salads: sheetNoLettuce ? sheetSalads.filter(s => s !== 'חסה') : sheetSalads,
       paidAddons: sheetPaidAddons, noLettuce: sheetNoLettuce, notes: sheetNotes,
     }
-    // ✅ תיקון: כל מנה נכנסת בנפרד — לא ממזגים לפי item.id
-    // כי אותה מנה יכולה להגיע עם רטבים שונים
-    setCart(prev => [...prev, newItem])
+    if (editCartIndex !== null) {
+      // מצב עריכה — החלף את הפריט הקיים
+      setCart(prev => prev.map((c, i) => i === editCartIndex ? newItem : c))
+      setEditCartIndex(null)
+    } else {
+      // מצב חדש — הוסף לסל
+      setCart(prev => [...prev, newItem])
+    }
     setShowBottomSheet(false)
   }
 
@@ -546,6 +566,8 @@ export default function Home() {
                       <span style={{ fontWeight: 800, color: C.gold, minWidth: 44, textAlign: 'left', fontSize: 14 }}>
                         {fmt(((c.item.price || 0) + c.paidAddons.length * 4) * c.quantity)}
                       </span>
+                      <button onClick={() => { openEditItem(i) }}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.gold, lineHeight: 1, padding: '4px' }}>✏️</button>
                       <button onClick={() => setCart(prev => prev.filter((_, ii) => ii !== i))}
                         style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.red, lineHeight: 1, padding: '4px' }}>🗑️</button>
                     </div>
@@ -806,7 +828,7 @@ export default function Home() {
                 </div>
                 <button onClick={addToCart}
                   style={{ flex: 1, padding: 15, background: C.gold, color: '#000', border: 'none', borderRadius: 14, fontSize: 16, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', boxShadow: '0 4px 20px rgba(255,215,0,0.3)' }}>
-                  הוסף לסל • {fmt(((selectedItem.price || 0) + sheetPaidAddons.length * 4) * sheetQty)}
+                  {editCartIndex !== null ? '✅ עדכן מנה' : 'הוסף לסל'} • {fmt(((selectedItem.price || 0) + sheetPaidAddons.length * 4) * sheetQty)}
                 </button>
               </div>
             </div>
