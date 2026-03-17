@@ -212,7 +212,7 @@ export default function Home() {
     if (!selectedItem) return
     const newItem: CartItem = {
       item: selectedItem, quantity: sheetQty, sauces: sheetSauces,
-      salads: sheetNoLettuce ? sheetSalads.filter(s => s !== 'חסה') : sheetSalads,
+      salads: sheetSalads,
       paidAddons: sheetPaidAddons, noLettuce: sheetNoLettuce, notes: sheetNotes,
     }
     if (editCartIndex !== null) {
@@ -251,7 +251,7 @@ export default function Home() {
         unit_price: (c.item.price || 0) + c.paidAddons.length * 4,
         notes: [
           c.sauces.length > 0 ? `רטבים: ${c.sauces.join(', ')}` : '',
-          c.salads.length > 0 ? `מילויים: ${c.salads.join(', ')}` : '',
+          c.salads.length > 0 ? `סלטים: ${c.salads.join(', ')}` : '',
           c.paidAddons.length > 0 ? `תוספות: ${c.paidAddons.join(', ')}` : '',
           c.notes || '',
         ].filter(Boolean).join(' | '),
@@ -372,7 +372,7 @@ export default function Home() {
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 700, fontSize: 15, color: C.white }}>{c.item.name_he}</div>
                 {c.sauces.length > 0 && <div style={{ fontSize: 12, color: C.gray, marginTop: 2 }}>רטבים: {c.sauces.join(', ')}</div>}
-                {c.salads.length > 0 && <div style={{ fontSize: 12, color: C.gray }}>מילויים: {c.salads.join(', ')}</div>}
+                {c.salads.length > 0 && <div style={{ fontSize: 12, color: C.gray }}>סלטים: {c.salads.join(', ')}</div>}
                 {c.paidAddons.length > 0 && <div style={{ fontSize: 12, color: C.gold }}>תוספות: {c.paidAddons.join(', ')}</div>}
                 {c.notes && <div style={{ fontSize: 12, color: C.gray, fontStyle: 'italic' }}>הערה: {c.notes}</div>}
               </div>
@@ -551,7 +551,7 @@ export default function Home() {
                     <div style={{ flex: 1 }}>
                       <div style={{ fontWeight: 700, fontSize: 15, color: C.white }}>{c.item.name_he}</div>
                       {c.sauces.length > 0 && <div style={{ fontSize: 12, color: C.gray, marginTop: 2 }}>רטבים: {c.sauces.join(', ')}</div>}
-                      {c.salads.length > 0 && <div style={{ fontSize: 12, color: C.gray }}>מילויים: {c.salads.join(', ')}</div>}
+                      {c.salads.length > 0 && <div style={{ fontSize: 12, color: C.gray }}>סלטים: {c.salads.join(', ')}</div>}
                       {c.paidAddons.length > 0 && <div style={{ fontSize: 12, color: C.gold }}>תוספות: {c.paidAddons.join(', ')}</div>}
                       {c.notes && <div style={{ fontSize: 12, color: C.gray, fontStyle: 'italic' }}>הערה: {c.notes}</div>}
                     </div>
@@ -778,16 +778,11 @@ export default function Home() {
 
               {saladsOpts.length > 0 && (
                 <div style={{ marginBottom: 22 }}>
-                  <div style={{ fontWeight: 700, fontSize: 15, color: C.white, marginBottom: 10 }}>🥗 מילויים</div>
-                  <div style={{ marginBottom: 10 }}>
-                    <DarkChip label="🚫 ללא חסה" selected={sheetNoLettuce} danger
-                      onToggle={() => setSheetNoLettuce(prev => !prev)} />
-                  </div>
+                  <div style={{ fontWeight: 700, fontSize: 15, color: C.white, marginBottom: 10 }}>🥗 סלטים</div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                     {saladsOpts.map(s => (
                       <DarkChip key={s.id} label={s.name_he}
                         selected={sheetSalads.includes(s.name_he)}
-                        disabled={s.name_he === 'חסה' && sheetNoLettuce}
                         onToggle={() => setSheetSalads(prev => prev.includes(s.name_he) ? prev.filter(x => x !== s.name_he) : [...prev, s.name_he])} />
                     ))}
                   </div>
