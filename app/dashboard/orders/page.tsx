@@ -23,6 +23,7 @@ interface Order {
   id: string
   branch_id: string
   phone: string
+  customer_name?: string
   status: OrderStatus
   total_price: number
   payment_method: string
@@ -208,7 +209,10 @@ function OrderCard({ order, onAdvance, onKitchenOpen }: {
           <span style={{ color: '#9CA3AF', fontSize: 13 }}>{formatTime(order.created_at)}</span>
           <span style={{ color: '#6B7280', fontSize: 12 }}>{timeSince(order.created_at)}</span>
         </div>
-        <span style={{ color: '#D1D5DB', fontSize: 13, direction: 'ltr' }}>📞 {order.phone}</span>
+        <div style={{ textAlign: 'left' }}>
+          {order.customer_name && <div style={{ color: '#fff', fontSize: 13, fontWeight: 700 }}>👤 {order.customer_name}</div>}
+          <div style={{ color: '#D1D5DB', fontSize: 13, direction: 'ltr' }}>📞 {order.phone}</div>
+        </div>
       </div>
 
       <div style={{ marginBottom: 10 }}>
