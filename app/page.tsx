@@ -78,6 +78,7 @@ export default function Home() {
   const [sheetNotes, setSheetNotes] = useState('')
   const [sheetQty, setSheetQty] = useState(1)
 
+  const [customerName, setCustomerName] = useState('')
   const [orderPhone, setOrderPhone] = useState('')
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'credit'>('cash')
   const [placingOrder, setPlacingOrder] = useState(false)
@@ -227,11 +228,12 @@ export default function Home() {
   }
 
   async function placeOrder() {
-    if (!selectedBranch || !isValidPhone(orderPhone) || cart.length === 0) return
+    if (!selectedBranch || !isValidPhone(orderPhone) || cart.length === 0 || customerName.trim().length < 2) return
     setPlacingOrder(true)
     const { data: order, error } = await supabase.from('orders').insert([{
       branch_id: selectedBranch.id,
       phone: orderPhone.replace(/[-\s]/g, ''),
+      customer_name: customerName.trim(),
       payment_method: paymentMethod,
       status: 'received',
       total_price: cartTotal,
@@ -399,6 +401,16 @@ export default function Home() {
         </div>
 
         <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${C.border}` }}>
+          <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>👤 שם מלא</div>
+          <input type="text" value={customerName} onChange={e => setCustomerName(e.target.value)}
+            placeholder="שם ושם משפחה" dir="rtl"
+            style={{ width: '100%', padding: 14, border: `1px solid ${customerName.trim().length >= 2 ? C.green : C.border}`, borderRadius: 12, fontSize: 17, fontFamily: 'Heebo, sans-serif', outline: 'none', boxSizing: 'border-box', background: C.bg, color: C.white }} />
+          {customerName.length > 0 && customerName.trim().length < 2 && (
+            <div style={{ color: C.red, fontSize: 12, marginTop: 6 }}>נא להזין שם מלא</div>
+          )}
+        </div>
+
+        <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${C.border}` }}>
           <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>📱 מספר טלפון</div>
           <input type="tel" value={orderPhone} onChange={e => setOrderPhone(e.target.value)}
             placeholder="05X-XXXXXXX" dir="ltr"
@@ -420,7 +432,7 @@ export default function Home() {
           </div>
         </div>
 
-        <button onClick={placeOrder} disabled={!isValidPhone(orderPhone) || cart.length === 0 || placingOrder}
+        <button onClick={placeOrder} disabled={!isValidPhone(orderPhone) || cart.length === 0 || placingOrder || customerName.trim().length < 2}
           style={{ width: '100%', padding: 17, background: isValidPhone(orderPhone) && cart.length > 0 ? C.gold : C.grayDim, color: '#000', border: 'none', borderRadius: 16, fontSize: 18, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', boxShadow: isValidPhone(orderPhone) ? '0 6px 32px rgba(255,215,0,0.3)' : 'none' }}>
           {placingOrder ? '⏳ שולח הזמנה...' : `✅ שלח הזמנה • ${fmt(cartTotal)}`}
         </button>
