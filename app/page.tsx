@@ -788,18 +788,6 @@ export default function Home() {
                 {selectedItem.dietary_type === 'meat' && <span style={{ background: C.redBg, color: C.red, fontSize: 12, fontWeight: 700, padding: '3px 10px', borderRadius: 20 }}>🥩 בשרי</span>}
               </div>
 
-              {sauces.length > 0 && !categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('שתי') && (
-                <div style={{ marginBottom: 22 }}>
-                  <div style={{ fontWeight: 700, fontSize: 15, color: C.white, marginBottom: 10 }}>🧄 רטבים</div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    {sauces.map(s => (
-                      <DarkChip key={s.id} label={s.name_he} selected={sheetSauces.includes(s.name_he)}
-                        onToggle={() => setSheetSauces(prev => prev.includes(s.name_he) ? prev.filter(x => x !== s.name_he) : [...prev, s.name_he])} />
-                    ))}
-                  </div>
-                </div>
-              )}
-
               {saladsOpts.length > 0 && !categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('שתי') && (
                 <div style={{ marginBottom: 22 }}>
                   <div style={{ fontWeight: 700, fontSize: 15, color: C.white, marginBottom: 10 }}>🥗 סלטים</div>
@@ -808,6 +796,18 @@ export default function Home() {
                       <DarkChip key={s.id} label={s.name_he}
                         selected={sheetSalads.includes(s.name_he)}
                         onToggle={() => setSheetSalads(prev => prev.includes(s.name_he) ? prev.filter(x => x !== s.name_he) : [...prev, s.name_he])} />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {sauces.length > 0 && !categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('שתי') && (
+                <div style={{ marginBottom: 22 }}>
+                  <div style={{ fontWeight: 700, fontSize: 15, color: C.white, marginBottom: 10 }}>🧄 רטבים</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    {sauces.map(s => (
+                      <DarkChip key={s.id} label={s.name_he} selected={sheetSauces.includes(s.name_he)}
+                        onToggle={() => setSheetSauces(prev => prev.includes(s.name_he) ? prev.filter(x => x !== s.name_he) : [...prev, s.name_he])} />
                     ))}
                   </div>
                 </div>
