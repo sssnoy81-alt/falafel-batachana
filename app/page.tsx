@@ -115,7 +115,7 @@ export default function Home() {
   async function restoreBranch(branch: Branch, savedScreen: Screen) {
     const [catRes, itemRes, topRes, priceRes] = await Promise.all([
       supabase.from('menu_categories').select('*').order('sort_order'),
-      supabase.from('menu_items').select('*').eq('is_active', true),
+      supabase.from('menu_items').select('*').eq('is_active', true).order('sort_order'),
       supabase.from('toppings').select('*').order('sort_order'),
       supabase.from('branch_prices').select('item_id, price').eq('branch_id', branch.id).eq('is_available', true),
     ])
@@ -142,7 +142,7 @@ export default function Home() {
     setLoading(true)
     const [catRes, itemRes, topRes, priceRes] = await Promise.all([
       supabase.from('menu_categories').select('*').order('sort_order'),
-      supabase.from('menu_items').select('*').eq('is_active', true),
+      supabase.from('menu_items').select('*').eq('is_active', true).order('sort_order'),
       supabase.from('toppings').select('*').order('sort_order'),
       supabase.from('branch_prices').select('item_id, price').eq('branch_id', branch.id).eq('is_available', true),
     ])
