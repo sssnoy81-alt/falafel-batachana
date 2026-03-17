@@ -164,6 +164,8 @@ export default function Home() {
   useEffect(() => {
     if (screen === 'branch' || screen === 'tracking') return
     if (!selectedBranch) return
+    // שמור session רק אם יש פריטים בסל
+    if (cart.length === 0) return
     const saved = localStorage.getItem('falafel_session')
     try {
       const s = saved ? JSON.parse(saved) : {}
