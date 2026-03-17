@@ -275,6 +275,18 @@ export default function Home() {
     return () => clearInterval(id)
   }, [screen, orderId])
 
+  // אחרי הוגשה — חזור לדף הראשי אחרי 3 שניות
+  useEffect(() => {
+    if (orderStatus !== 'delivered') return
+    const timer = setTimeout(() => {
+      localStorage.removeItem('falafel_session')
+      setOrderId(null)
+      setCart([])
+      setScreen('branch')
+    }, 3000)
+    return () => clearTimeout(timer)
+  }, [orderStatus])
+
   const sauces = toppings.filter(t => t.type === 'spread')
   const saladsOpts = toppings.filter(t => t.type === 'filling')
   const paidAddonsOpts = toppings.filter(t => t.type === 'paid_addon')
