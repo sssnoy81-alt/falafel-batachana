@@ -14,7 +14,7 @@ type MenuItem = {
   id: string; category_id: string; name_he: string; name_en: string
   description_he: string; dietary_type: 'parve' | 'meat' | 'dairy'
   is_popular: boolean; is_active: boolean; image_url: string | null
-  price?: number
+  has_lettuce?: boolean; price?: number
 }
 type Topping = { id: string; name_he: string; type: 'spread' | 'filling' | 'paid_addon'; sort_order: number }
 type CartItem = {
@@ -780,7 +780,7 @@ export default function Home() {
                 <div style={{ marginBottom: 22 }}>
                   <div style={{ fontWeight: 700, fontSize: 15, color: C.white, marginBottom: 10 }}>🥗 סלטים</div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    {saladsOpts.map(s => (
+                    {saladsOpts.filter(s => s.name_he !== 'חסה' || selectedItem?.has_lettuce).map(s => (
                       <DarkChip key={s.id} label={s.name_he}
                         selected={sheetSalads.includes(s.name_he)}
                         onToggle={() => setSheetSalads(prev => prev.includes(s.name_he) ? prev.filter(x => x !== s.name_he) : [...prev, s.name_he])} />
