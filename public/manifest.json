@@ -11,13 +11,13 @@
   "dir": "rtl",
   "icons": [
     {
-      "src": "/logo-icon.jpg",
+      "src": "https://sqgnrzcmjhwgfjxocvlr.supabase.co/storage/v1/object/public/menu-images/logo-icon.jpg",
       "sizes": "192x192",
       "type": "image/jpeg",
       "purpose": "any"
     },
     {
-      "src": "/logo-icon.jpg",
+      "src": "https://sqgnrzcmjhwgfjxocvlr.supabase.co/storage/v1/object/public/menu-images/logo-icon.jpg",
       "sizes": "512x512",
       "type": "image/jpeg",
       "purpose": "any"
