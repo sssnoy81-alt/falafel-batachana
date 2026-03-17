@@ -23,12 +23,14 @@ export default function RootLayout({
         {children}
         <div style={{
           textAlign: 'center',
-          padding: '12px 0 16px',
-          color: '#3A3A3A',
+          marginTop: 30,
+          paddingBottom: 20,
+          color: '#888',
           fontSize: 11,
           letterSpacing: '0.04em',
           fontFamily: 'var(--font-heebo), sans-serif',
           userSelect: 'none',
+          background: 'transparent',
         }}>
           Powered by SN Capital AI
         </div>
