@@ -217,14 +217,36 @@ export default function Home() {
       paidAddons: sheetPaidAddons, noLettuce: sheetNoLettuce, notes: sheetNotes,
     }
     if (editCartIndex !== null) {
-      // מצב עריכה — החלף את הפריט הקיים
       setCart(prev => prev.map((c, i) => i === editCartIndex ? newItem : c))
       setEditCartIndex(null)
+      setShowBottomSheet(false)
     } else {
-      // מצב חדש — הוסף לסל
       setCart(prev => [...prev, newItem])
+      setShowBottomSheet(false)
+
+      // גלול לתוספות או שתייה אחרי הוספה לסל
+      setTimeout(() => {
+        const isAddon = categories.find(c => c.name_he.includes('תוספ'))
+        const isDrink = categories.find(c => c.name_he.includes('שתי'))
+        const addedCat = categories.find(c => c.id === newItem.item.category_id)
+        const isAddingDrink = addedCat?.name_he.includes('שתי')
+        const isAddingAddon = addedCat?.name_he.includes('תוספ')
+
+        if (!isAddingDrink && !isAddingAddon) {
+          // מנה רגילה — גלול לתוספות
+          if (isAddon) {
+            setActiveCategory(isAddon.id)
+            categoryRefs.current[isAddon.id]?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+          }
+        } else if (isAddingAddon) {
+          // תוספת — גלול לשתייה
+          if (isDrink) {
+            setActiveCategory(isDrink.id)
+            categoryRefs.current[isDrink.id]?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+          }
+        }
+      }, 300)
     }
-    setShowBottomSheet(false)
   }
 
   async function placeOrder() {
