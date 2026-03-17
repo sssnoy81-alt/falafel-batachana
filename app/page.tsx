@@ -789,7 +789,7 @@ export default function Home() {
                 </div>
               )}
 
-              {paidAddonsOpts.length > 0 && (
+              {paidAddonsOpts.length > 0 && !categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('שתי') && (
                 <div style={{ marginBottom: 22 }}>
                   <div style={{ fontWeight: 700, fontSize: 15, color: C.white, marginBottom: 10 }}>➕ תוספות בתשלום</div>
                   {paidAddonsOpts.map(a => (
