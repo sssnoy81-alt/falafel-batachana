@@ -11,13 +11,13 @@
   "dir": "rtl",
   "icons": [
     {
-      "src": "/logo-k.jpg",
+      "src": "/logo-icon.jpg",
       "sizes": "192x192",
       "type": "image/jpeg",
       "purpose": "any"
     },
     {
-      "src": "/logo-k.jpg",
+      "src": "/logo-icon.jpg",
       "sizes": "512x512",
       "type": "image/jpeg",
       "purpose": "any"
