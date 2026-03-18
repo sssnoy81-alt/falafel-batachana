@@ -14,9 +14,9 @@ type MenuItem = {
   id: string; category_id: string; name_he: string; name_en: string
   description_he: string; dietary_type: 'parve' | 'meat' | 'dairy'
   is_popular: boolean; is_active: boolean; image_url: string | null
-  has_lettuce?: boolean; price?: number
+  has_lettuce?: boolean; has_pita?: boolean; price?: number
 }
-type Topping = { id: string; name_he: string; type: 'spread' | 'filling' | 'paid_addon'; sort_order: number }
+type Topping = { id: string; name_he: string; type: 'spread' | 'filling' | 'paid_addon'; sort_order: number; price?: number }
 type CartItem = {
   item: MenuItem; quantity: number
   sauces: string[]; salads: string[]; paidAddons: string[]
@@ -174,7 +174,13 @@ export default function Home() {
     setScreen('menu')
   }
 
-  const cartTotal = cart.reduce((sum, c) => sum + ((c.item.price || 0) + c.paidAddons.length * 4) * c.quantity, 0)
+  const cartTotal = cart.reduce((sum, c) => {
+    const addonsTotal = c.paidAddons.reduce((s, name) => {
+      const t = toppings.find(t => t.name_he === name)
+      return s + (t?.price ?? 4)
+    }, 0)
+    return sum + ((c.item.price || 0) + addonsTotal) * c.quantity
+  }, 0)
   const cartCount = cart.reduce((s, c) => s + c.quantity, 0)
 
   useEffect(() => {
@@ -290,7 +296,10 @@ export default function Home() {
         order_id: order.id,
         item_id: c.item.id,
         quantity: c.quantity,
-        unit_price: (c.item.price || 0) + c.paidAddons.length * 4,
+        unit_price: (c.item.price || 0) + c.paidAddons.reduce((s, name) => {
+          const t = toppings.find(t => t.name_he === name)
+          return s + (t?.price ?? 4)
+        }, 0),
         notes: [
           c.sauces.length > 0 ? `רטבים: ${c.sauces.join(', ')}` : '',
           c.salads.length > 0 ? `סלטים: ${c.salads.join(', ')}` : '',
@@ -469,7 +478,9 @@ export default function Home() {
                     style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.gold, fontWeight: 700, lineHeight: 1 }}>+</button>
                 </div>
                 <span style={{ fontWeight: 800, color: C.gold, minWidth: 44, textAlign: 'left' }}>
-                  {fmt(((c.item.price || 0) + c.paidAddons.length * 4) * c.quantity)}
+                  {fmt(((c.item.price || 0) + c.paidAddons.reduce((s, name) => {
+                    const t = toppings.find(t => t.name_he === name); return s + (t?.price ?? 4)
+                  }, 0)) * c.quantity)}
                 </span>
                 <button onClick={() => setCart(prev => prev.filter((_, ii) => ii !== i))}
                   style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.red, lineHeight: 1, padding: '4px' }}>🗑️</button>
@@ -658,7 +669,9 @@ export default function Home() {
                           style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.gold, fontWeight: 700, lineHeight: 1 }}>+</button>
                       </div>
                       <span style={{ fontWeight: 800, color: C.gold, minWidth: 44, textAlign: 'left', fontSize: 14 }}>
-                        {fmt(((c.item.price || 0) + c.paidAddons.length * 4) * c.quantity)}
+                        {fmt(((c.item.price || 0) + c.paidAddons.reduce((s, name) => {
+                    const t = toppings.find(t => t.name_he === name); return s + (t?.price ?? 4)
+                  }, 0)) * c.quantity)}
                       </span>
                       <button onClick={() => { openEditItem(i) }}
                         style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.gold, lineHeight: 1, padding: '4px' }}>✏️</button>
@@ -886,7 +899,7 @@ export default function Home() {
               {paidAddonsOpts.length > 0 && !categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('שתי') && (
                 <div style={{ marginBottom: 22 }}>
                   <div style={{ fontWeight: 700, fontSize: 15, color: C.white, marginBottom: 10 }}>➕ תוספות בתשלום</div>
-                  {paidAddonsOpts.map(a => (
+                  {paidAddonsOpts.filter(a => a.name_he !== 'פיתה' || selectedItem?.has_pita).map(a => (
                     <label key={a.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '11px 0', borderBottom: `1px solid ${C.border}`, cursor: 'pointer' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                         <input type="checkbox" checked={sheetPaidAddons.includes(a.name_he)}
@@ -894,7 +907,7 @@ export default function Home() {
                           style={{ width: 20, height: 20, accentColor: C.gold, cursor: 'pointer' }} />
                         <span style={{ fontWeight: 600, fontSize: 15, color: C.white }}>{a.name_he}</span>
                       </div>
-                      <span style={{ fontWeight: 700, color: C.gold }}>+₪4</span>
+                      <span style={{ fontWeight: 700, color: C.gold }}>+₪{a.price ?? 4}</span>
                     </label>
                   ))}
                 </div>
@@ -917,7 +930,9 @@ export default function Home() {
                 </div>
                 <button onClick={addToCart}
                   style={{ flex: 1, padding: 15, background: C.gold, color: '#000', border: 'none', borderRadius: 14, fontSize: 16, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', boxShadow: '0 4px 20px rgba(255,215,0,0.3)' }}>
-                  {editCartIndex !== null ? '✅ עדכן מנה' : 'הוסף לסל'} • {fmt(((selectedItem.price || 0) + sheetPaidAddons.length * 4) * sheetQty)}
+                  {editCartIndex !== null ? '✅ עדכן מנה' : 'הוסף לסל'} • {fmt(((selectedItem.price || 0) + sheetPaidAddons.reduce((s, name) => {
+                    const t = toppings.find(t => t.name_he === name); return s + (t?.price ?? 4)
+                  }, 0)) * sheetQty)}
                 </button>
               </div>
             </div>
