@@ -14,7 +14,7 @@ type MenuItem = {
   id: string; category_id: string; name_he: string; name_en: string
   description_he: string; dietary_type: 'parve' | 'meat' | 'dairy'
   is_popular: boolean; is_active: boolean; image_url: string | null
-  has_lettuce?: boolean; has_pita?: boolean; price?: number
+  has_lettuce?: boolean; has_pita?: boolean; has_egg?: boolean; price?: number
 }
 type Topping = { id: string; name_he: string; type: 'spread' | 'filling' | 'paid_addon'; sort_order: number; price?: number }
 type CartItem = {
@@ -899,7 +899,7 @@ export default function Home() {
               {paidAddonsOpts.length > 0 && !categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('שתי') && (
                 <div style={{ marginBottom: 22 }}>
                   <div style={{ fontWeight: 700, fontSize: 15, color: C.white, marginBottom: 10 }}>➕ תוספות בתשלום</div>
-                  {paidAddonsOpts.filter(a => a.name_he !== 'פיתה' || selectedItem?.has_pita).map(a => (
+                  {paidAddonsOpts.filter(a => (a.name_he !== 'פיתה' || selectedItem?.has_pita) && (a.name_he !== 'ביצה קשה' || selectedItem?.has_egg !== false)).map(a => (
                     <label key={a.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '11px 0', borderBottom: `1px solid ${C.border}`, cursor: 'pointer' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                         <input type="checkbox" checked={sheetPaidAddons.includes(a.name_he)}
