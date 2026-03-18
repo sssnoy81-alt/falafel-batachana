@@ -458,11 +458,11 @@ export default function Home() {
 
         <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 24, border: `1px solid ${C.border}` }}>
           <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>💳 אמצעי תשלום</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            {(['cash', 'credit'] as const).map(v => (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+            {(['cash', 'credit', 'cibus'] as const).map(v => (
               <button key={v} onClick={() => setPaymentMethod(v)}
-                style={{ padding: 14, border: `1px solid ${paymentMethod === v ? C.gold : C.border}`, borderRadius: 12, background: paymentMethod === v ? 'rgba(255,215,0,0.1)' : C.bg, fontWeight: 700, fontSize: 15, color: paymentMethod === v ? C.gold : C.gray, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
-                {v === 'cash' ? '💵 מזומן' : '💳 אשראי'}
+                style={{ padding: 14, border: `1px solid ${paymentMethod === v ? C.gold : C.border}`, borderRadius: 12, background: paymentMethod === v ? 'rgba(255,215,0,0.1)' : C.bg, fontWeight: 700, fontSize: 14, color: paymentMethod === v ? C.gold : C.gray, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
+                {v === 'cash' ? '💵 מזומן' : v === 'credit' ? '💳 אשראי' : '🍽️ סיבוס'}
               </button>
             ))}
           </div>
