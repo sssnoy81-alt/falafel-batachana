@@ -80,7 +80,7 @@ export default function Home() {
 
   const [customerName, setCustomerName] = useState('')
   const [orderPhone, setOrderPhone] = useState('')
-  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'credit'>('cash')
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'credit' | 'cibus'>('cash')
   const [placingOrder, setPlacingOrder] = useState(false)
   const [orderId, setOrderId] = useState<string | null>(null)
   const [orderStatus, setOrderStatus] = useState<OrderStatus>('received')
