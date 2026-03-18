@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { createClient } from '@supabase/supabase-js'
 
 const supabase = createClient(
@@ -290,6 +290,7 @@ export default function OrdersPage() {
   const [filterBranch, setFilterBranch] = useState<string>('all')
   const [branches, setBranches] = useState<{ id: string; name: string }[]>([])
   const [kitchenOrder, setKitchenOrder] = useState<Order | null>(null)
+  const prevNewCount = useRef(0)
 
   const fetchOrders = useCallback(async () => {
     const today = new Date(); today.setHours(0, 0, 0, 0)
@@ -302,6 +303,32 @@ export default function OrdersPage() {
     setLastRefresh(new Date())
     setLoading(false)
   }, [])
+
+  // צפצוף כשנכנסת הזמנה חדשה
+  useEffect(() => {
+    const newCount = orders.filter(o => o.status === 'received').length
+    if (newCount > prevNewCount.current && prevNewCount.current >= 0) {
+      try {
+        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
+        const playBeep = (freq: number, start: number, duration: number) => {
+          const osc = ctx.createOscillator()
+          const gain = ctx.createGain()
+          osc.connect(gain)
+          gain.connect(ctx.destination)
+          osc.frequency.value = freq
+          osc.type = 'sine'
+          gain.gain.setValueAtTime(0.3, ctx.currentTime + start)
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + duration)
+          osc.start(ctx.currentTime + start)
+          osc.stop(ctx.currentTime + start + duration)
+        }
+        playBeep(880, 0, 0.15)
+        playBeep(1100, 0.2, 0.15)
+        playBeep(880, 0.4, 0.15)
+      } catch {}
+    }
+    prevNewCount.current = newCount
+  }, [orders])
 
   const fetchBranches = useCallback(async () => {
     const { data } = await supabase.from('branches').select('id, name').order('sort_order')
