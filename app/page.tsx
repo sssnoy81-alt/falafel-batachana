@@ -871,7 +871,7 @@ export default function Home() {
                 {selectedItem.dietary_type === 'meat' && <span style={{ background: C.redBg, color: C.red, fontSize: 12, fontWeight: 700, padding: '3px 10px', borderRadius: 20 }}>🥩 בשרי</span>}
               </div>
 
-              {saladsOpts.length > 0 && !categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('שתי') && (
+              {saladsOpts.length > 0 && !categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('שתי') && !categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('תוספ') && (
                 <div style={{ marginBottom: 22 }}>
                   <div style={{ fontWeight: 700, fontSize: 15, color: C.white, marginBottom: 10 }}>🥗 סלטים</div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
@@ -896,7 +896,7 @@ export default function Home() {
                 </div>
               )}
 
-              {paidAddonsOpts.length > 0 && !categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('שתי') && (
+              {paidAddonsOpts.length > 0 && !categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('שתי') && !categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('תוספ') && (
                 <div style={{ marginBottom: 22 }}>
                   <div style={{ fontWeight: 700, fontSize: 15, color: C.white, marginBottom: 10 }}>➕ תוספות בתשלום</div>
                   {paidAddonsOpts.filter(a => (a.name_he !== 'פיתה' || selectedItem?.has_pita) && (a.name_he !== 'ביצה קשה' || selectedItem?.has_egg !== false)).map(a => (
