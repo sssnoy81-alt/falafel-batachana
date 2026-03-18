@@ -86,9 +86,25 @@ export default function Home() {
   const [orderStatus, setOrderStatus] = useState<OrderStatus>('received')
 
   const categoryRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const [installPrompt, setInstallPrompt] = useState<any>(null)
+  const [showInstallBanner, setShowInstallBanner] = useState(false)
   const [showUpsell, setShowUpsell] = useState(false)
   const [showCart, setShowCart] = useState(false)
   const [editCartIndex, setEditCartIndex] = useState<number | null>(null)
+
+  useEffect(() => {
+    const handler = (e: any) => {
+      e.preventDefault()
+      setInstallPrompt(e)
+      setShowInstallBanner(true)
+    }
+    window.addEventListener('beforeinstallprompt', handler)
+    // הסתר אם כבר מותקן
+    if (window.matchMedia('(display-mode: standalone)').matches) {
+      setShowInstallBanner(false)
+    }
+    return () => window.removeEventListener('beforeinstallprompt', handler)
+  }, [])
 
   useEffect(() => {
     const saved = localStorage.getItem('falafel_session')
@@ -359,6 +375,36 @@ export default function Home() {
           </button>
         )}
       </div>
+    {/* באנר התקנה */}
+      {showInstallBanner && (
+        <div style={{
+          position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 999,
+          background: '#1A1A1A', borderTop: '1px solid #FFD700',
+          padding: '14px 16px', direction: 'rtl',
+          display: 'flex', alignItems: 'center', gap: 12,
+        }}>
+          <img src={LOGO} alt="לוגו" style={{ width: 44, height: 44, objectFit: 'contain', borderRadius: 10, flexShrink: 0 }} />
+          <div style={{ flex: 1 }}>
+            <div style={{ color: '#fff', fontWeight: 700, fontSize: 14 }}>הוסף לפלאפל לטלפון</div>
+            <div style={{ color: '#9CA3AF', fontSize: 12 }}>התקן את האפליקציה למסך הבית</div>
+          </div>
+          <button onClick={async () => {
+            if (installPrompt) {
+              installPrompt.prompt()
+              const result = await installPrompt.userChoice
+              if (result.outcome === 'accepted') setShowInstallBanner(false)
+            }
+          }} style={{
+            background: '#FFD700', color: '#000', border: 'none',
+            borderRadius: 10, padding: '8px 16px', fontWeight: 800,
+            fontSize: 13, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', flexShrink: 0,
+          }}>התקן</button>
+          <button onClick={() => setShowInstallBanner(false)} style={{
+            background: 'none', border: 'none', color: '#6B7280',
+            fontSize: 20, cursor: 'pointer', padding: '4px', flexShrink: 0,
+          }}>✕</button>
+        </div>
+      )}
     </div>
   )
 
