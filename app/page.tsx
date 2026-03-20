@@ -138,7 +138,7 @@ export default function Home() {
     const cats = catRes.data || []
     const prices: Record<string, number> = {}
     for (const p of (priceRes.data || [])) prices[p.item_id] = p.price
-    const items = (itemRes.data || []).map((item: any) => ({ ...item, price: prices[item.id] ?? undefined }))
+    const items = (itemRes.data || []).map((item: any) => ({ ...item, price: prices[item.id] ?? undefined })).filter((item: any) => item.price !== undefined)
     setCategories(cats)
     setMenuItems(items)
     setToppings(topRes.data || [])
@@ -165,7 +165,7 @@ export default function Home() {
     const cats = catRes.data || []
     const prices: Record<string, number> = {}
     for (const p of (priceRes.data || [])) prices[p.item_id] = p.price
-    const items = (itemRes.data || []).map((item: any) => ({ ...item, price: prices[item.id] ?? undefined }))
+    const items = (itemRes.data || []).map((item: any) => ({ ...item, price: prices[item.id] ?? undefined })).filter((item: any) => item.price !== undefined)
     setCategories(cats)
     setMenuItems(items)
     setToppings(topRes.data || [])
