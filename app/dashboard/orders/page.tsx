@@ -431,7 +431,7 @@ export default function OrdersPage() {
         </div>
 
         <div style={{ display: 'flex', borderBottom: '1px solid #222', background: '#111' }}>
-          {([['kanban', '📋 קנבן'], ['customers', '👥 לקוחות']] as const).map(([tab, label]) => (
+          {([['kanban', '📋 רשימת הזמנות יומי'], ['customers', '👥 לקוחות']] as const).map(([tab, label]) => (
             <button key={tab} onClick={() => setActiveTab(tab)} style={{ flex: 1, padding: '10px 0', background: 'none', border: 'none', color: activeTab === tab ? '#FFD700' : '#6B7280', fontWeight: activeTab === tab ? 700 : 400, fontSize: 14, fontFamily: 'Heebo, sans-serif', cursor: 'pointer', borderBottom: activeTab === tab ? '2px solid #FFD700' : '2px solid transparent' }}>{label}</button>
           ))}
         </div>
