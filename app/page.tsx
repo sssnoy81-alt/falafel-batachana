@@ -290,16 +290,13 @@ export default function Home() {
   async function placeOrder() {
     if (!selectedBranch || !isValidPhone(orderPhone) || cart.length === 0 || customerName.trim().length < 2) return
     setPlacingOrder(true)
-    // חשב מספר הזמנה יומי
+    // חשב מספר הזמנה יומי לפי ספירת הזמנות היום
     const today = new Date(); today.setHours(0, 0, 0, 0)
-    const { data: lastOrder } = await supabase
+    const { count } = await supabase
       .from('orders')
-      .select('daily_number')
+      .select('*', { count: 'exact', head: true })
       .gte('created_at', today.toISOString())
-      .order('daily_number', { ascending: false })
-      .limit(1)
-      .single()
-    const dailyNumber = ((lastOrder?.daily_number) || 0) + 1
+    const dailyNumber = (count || 0) + 1
 
     const { data: order, error } = await supabase.from('orders').insert([{
       branch_id: selectedBranch.id,
