@@ -428,6 +428,7 @@ export default function OrdersPage() {
               <div style={{ color: '#6B7280', fontSize: 10 }}>עודכן {formatTime(lastRefresh.toISOString())}</div>
               <button onClick={() => {
                 const delivered = filteredOrders.filter(o => o.status === 'delivered')
+                if (delivered.length === 0) { alert('אין הזמנות שנמסרו היום'); return }
                 const date = new Date().toLocaleDateString('he-IL')
 
                 // Excel הזמנות
@@ -472,9 +473,10 @@ export default function OrdersPage() {
                   a2.click()
                 }, 500)
 
-                // פתח אימייל
+                // הצג הנחיה + פתח אימייל
                 setTimeout(() => {
                   const total = delivered.reduce((s,o) => s+o.total_price, 0)
+                  alert('✅ 2 קבצי CSV הורדו!\n\n📎 כעת יפתח האימייל — צרף את הקבצים שהורדו:\n• הזמנות_' + date.replace(/\//g,'-') + '.csv\n• לקוחות_' + date.replace(/\//g,'-') + '.csv')
                   const subject = encodeURIComponent('דוח יומי פלאפל בתחנה — ' + date)
                   const body = encodeURIComponent('שלום, מצורפים קבצי הדוח היומי לתאריך ' + date + '. סהכ הכנסות: ' + total + ' שח. מספר הזמנות: ' + delivered.length + '. פלאפל בתחנה')
                   window.open('mailto:sssnoy81@gmail.com?subject=' + subject + '&body=' + body, '_blank')
