@@ -479,7 +479,7 @@ export default function OrdersPage() {
                   alert('✅ 2 קבצי CSV הורדו!\n\n📎 כעת יפתח האימייל — צרף את הקבצים שהורדו:\n• הזמנות_' + date.replace(/\//g,'-') + '.csv\n• לקוחות_' + date.replace(/\//g,'-') + '.csv')
                   const subject = encodeURIComponent('דוח יומי פלאפל בתחנה — ' + date)
                   const body = encodeURIComponent('שלום, מצורפים קבצי הדוח היומי לתאריך ' + date + '. סהכ הכנסות: ' + total + ' שח. מספר הזמנות: ' + delivered.length + '. פלאפל בתחנה')
-                  window.open('mailto:sssnoy81@gmail.com?subject=' + subject + '&body=' + body, '_blank')
+                  window.location.href = 'mailto:sssnoy81@gmail.com?subject=' + subject + '&body=' + body
                 }, 1000)
               }} style={{
                 background: 'rgba(74,222,128,0.15)', color: '#4ADE80',
