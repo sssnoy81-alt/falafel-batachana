@@ -52,6 +52,19 @@ const STATUS_ICONS: Record<OrderStatus, string> = {
   received: '⏳', confirmed: '✅', preparing: '👨‍🍳', ready: '🔔', delivered: '🎉',
 }
 
+const BRANCH_INFO: Record<string, { address: string; phone: string; waze: string }> = {
+  '8fed141d-0e7c-46c1-803b-88d3d811c1f8': {
+    address: 'מרכז מסחרי מתחם Gamos, מישור אדומים',
+    phone: '058-5505014',
+    waze: 'https://waze.com/ul/hsv9hu47xz',
+  },
+  '3ab15ad1-e835-492b-bae5-11b202ee2314': {
+    address: 'אזור תעשיה שער בנימין, מעבר מכמש',
+    phone: '058-5505012',
+    waze: 'https://waze.com/ul/hsv9j62u44',
+  },
+}
+
 const isValidPhone = (p: string) => /^05\d{8}$/.test(p.replace(/[-\s]/g, ''))
 const fmt = (n: number) => `₪${n.toFixed(0)}`
 
@@ -444,6 +457,22 @@ export default function Home() {
             style={{ width: '100%', padding: 15, background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 14, fontWeight: 700, fontSize: 15, color: C.gray, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
             + הזמנה חדשה
           </button>
+
+          {/* פרטי סניף */}
+          {selectedBranch && BRANCH_INFO[selectedBranch.id] && (
+            <div style={{ background: C.bgCard, borderRadius: 16, padding: '18px 20px', border: `1px solid ${C.border}`, marginTop: 12 }}>
+              <div style={{ fontWeight: 800, fontSize: 15, color: C.white, marginBottom: 12 }}>📍 {selectedBranch.name}</div>
+              <div style={{ color: C.gray, fontSize: 13, marginBottom: 8 }}>{BRANCH_INFO[selectedBranch.id].address}</div>
+              <a href={`tel:${BRANCH_INFO[selectedBranch.id].phone.replace(/-/g,'')}`}
+                style={{ display: 'flex', alignItems: 'center', gap: 8, color: C.gold, fontSize: 14, fontWeight: 700, textDecoration: 'none', marginBottom: 10 }}>
+                📞 {BRANCH_INFO[selectedBranch.id].phone}
+              </a>
+              <a href={BRANCH_INFO[selectedBranch.id].waze} target="_blank" rel="noreferrer"
+                style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(100,210,80,0.1)', border: '1px solid rgba(100,210,80,0.3)', borderRadius: 10, padding: '10px 14px', textDecoration: 'none', color: C.green, fontWeight: 700, fontSize: 14 }}>
+                🗺️ נווט עם Waze
+              </a>
+            </div>
+          )}
         </div>
       </div>
     )
