@@ -384,7 +384,7 @@ export default function OrdersPage() {
 הזמנה מספר #${num} מוכנה לאיסוף.
 מחכים לך! — פלאפל בתחנה`)
         const phone = order.phone.replace(/[^0-9]/g, '').replace(/^0/, '972')
-        window.open(\`https://wa.me/\${phone}?text=\${msg}\`, '_blank')
+        window.open('https://wa.me/' + phone + '?text=' + msg, '_blank')
       }
     }
 
