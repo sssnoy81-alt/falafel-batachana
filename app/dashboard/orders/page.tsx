@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+declare const XLSX: any
 import { createClient } from '@supabase/supabase-js'
 
 const supabase = createClient(
@@ -403,6 +404,7 @@ export default function OrdersPage() {
 
   return (
     <>
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800;900&display=swap');
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -430,38 +432,59 @@ export default function OrdersPage() {
                 const delivered = filteredOrders.filter(o => o.status === 'delivered')
                 const date = new Date().toLocaleDateString('he-IL')
 
-                // פירוט הזמנות
-                let ordersList = delivered.map(o => {
-                  const num = o.daily_number ? String(o.daily_number).padStart(4,'0') : o.id.slice(-4)
-                  const items = o.order_items.map(i => i.menu_items?.name_he + ' x' + i.quantity).join(', ')
-                  const pay = o.payment_method === 'cash' ? 'מזומן' : o.payment_method === 'cibus' ? 'סיבוס' : o.payment_method === 'bit' ? 'ביט' : 'אשראי'
-                  return '#' + num + ' | ' + (o.customer_name || '') + ' | ' + o.phone + ' | ' + items + ' | ₪' + o.total_price + ' | ' + pay
-                }).join('%0A')
+                // Excel הזמנות
+                const ordersData = delivered.map(o => ({
+                  'מספר': o.daily_number ? String(o.daily_number).padStart(4,'0') : o.id.slice(-4),
+                  'שם לקוח': o.customer_name || '',
+                  'טלפון': o.phone,
+                  'פריטים': o.order_items.map(i => (i.menu_items?.name_he || '') + ' x' + i.quantity).join(', '),
+                  'סכום': o.total_price,
+                  'תשלום': o.payment_method === 'cash' ? 'מזומן' : o.payment_method === 'cibus' ? 'סיבוס' : o.payment_method === 'bit' ? 'ביט' : 'אשראי',
+                  'שעה': formatTime(o.created_at),
+                  'סניף': o.branches?.name || '',
+                }))
 
-                // רשימת לקוחות
+                // Excel לקוחות
                 const byPhone: Record<string,any[]> = {}
                 delivered.forEach(o => { if(!byPhone[o.phone]) byPhone[o.phone]=[]; byPhone[o.phone].push(o) })
-                let customersList = Object.entries(byPhone).map(([phone, ords]: any) => {
-                  const name = ords[0]?.customer_name || ''
-                  const total = ords.reduce((s:number,o:any) => s+o.total_price, 0)
-                  return name + ' | ' + phone + ' | ' + ords.length + ' הזמנות | ₪' + total
-                }).join('%0A')
+                const customersData = Object.entries(byPhone).map(([phone, ords]: any) => ({
+                  'שם': ords[0]?.customer_name || '',
+                  'טלפון': phone,
+                  'מספר הזמנות': ords.length,
+                  'סה"כ': ords.reduce((s:number,o:any) => s+o.total_price, 0),
+                }))
 
-                const total = delivered.reduce((s,o) => s+o.total_price, 0)
-                const subject = encodeURIComponent('דוח יומי פלאפל בתחנה — ' + date)
-                const body = 'דוח יומי ' + date + '%0A' +
-                  '================================%0A%0A' +
-                  'סה"כ הכנסות: ₪' + total + '%0A' +
-                  'מספר הזמנות שנמסרו: ' + delivered.length + '%0A%0A' +
-                  '--- פירוט הזמנות ---%0A' + ordersList + '%0A%0A' +
-                  '--- רשימת לקוחות ---%0A' + customersList
-                window.open('mailto:sssnoy81@gmail.com?subject=' + subject + '&body=' + body, '_blank')
+                // יצירת קבצי Excel
+                const wb1 = XLSX.utils.book_new()
+                XLSX.utils.book_append_sheet(wb1, XLSX.utils.json_to_sheet(ordersData), 'הזמנות')
+                XLSX.writeFile(wb1, 'הזמנות_' + date.replace(/\//g,'-') + '.xlsx')
+
+                setTimeout(() => {
+                  const wb2 = XLSX.utils.book_new()
+                  XLSX.utils.book_append_sheet(wb2, XLSX.utils.json_to_sheet(customersData), 'לקוחות')
+                  XLSX.writeFile(wb2, 'לקוחות_' + date.replace(/\//g,'-') + '.xlsx')
+                }, 500)
+
+                // פתח אימייל
+                setTimeout(() => {
+                  const total = delivered.reduce((s,o) => s+o.total_price, 0)
+                  const subject = encodeURIComponent('דוח יומי פלאפל בתחנה — ' + date)
+                  const body = encodeURIComponent('שלום,
+
+מצורפים קבצי האקסל של הדוח היומי לתאריך ' + date + '
+
+סה"כ הכנסות: ₪' + total + '
+מספר הזמנות: ' + delivered.length + '
+
+פלאפל בתחנה')
+                  window.open('mailto:sssnoy81@gmail.com?subject=' + subject + '&body=' + body, '_blank')
+                }, 1000)
               }} style={{
                 background: 'rgba(74,222,128,0.15)', color: '#4ADE80',
                 border: '1px solid rgba(74,222,128,0.3)', borderRadius: 8,
                 padding: '4px 10px', fontSize: 11, fontWeight: 700,
                 cursor: 'pointer', fontFamily: 'Heebo, sans-serif', marginTop: 2,
-              }}>📧 דוח יומי</button>
+              }}>📊 דוח יומי</button>
 
               {!audioUnlocked && (
                 <button onClick={() => {
