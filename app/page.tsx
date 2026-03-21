@@ -913,12 +913,14 @@ export default function Home() {
                 </div>
               )}
 
+              {!categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('שתי') && (
               <div style={{ marginBottom: 22 }}>
                 <div style={{ fontWeight: 700, fontSize: 15, color: C.white, marginBottom: 10 }}>📝 הערות</div>
                 <textarea value={sheetNotes} onChange={e => setSheetNotes(e.target.value)}
                   placeholder="הערות מיוחדות..."
                   style={{ width: '100%', padding: 12, border: `1px solid ${C.border}`, borderRadius: 12, fontSize: 14, fontFamily: 'Heebo, sans-serif', resize: 'none', height: 80, boxSizing: 'border-box', outline: 'none', background: C.bg, color: C.white }} />
               </div>
+              )}
 
               <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, background: C.bg, borderRadius: 12, padding: '11px 16px', border: `1px solid ${C.border}` }}>
