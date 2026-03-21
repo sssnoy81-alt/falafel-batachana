@@ -426,6 +426,43 @@ export default function OrdersPage() {
             <div style={{ textAlign: 'left' }}>
               <div style={{ color: '#4ADE80', fontWeight: 700, fontSize: 15 }}>₪{todayTotal}</div>
               <div style={{ color: '#6B7280', fontSize: 10 }}>עודכן {formatTime(lastRefresh.toISOString())}</div>
+              <button onClick={() => {
+                const delivered = filteredOrders.filter(o => o.status === 'delivered')
+                const date = new Date().toLocaleDateString('he-IL')
+
+                // פירוט הזמנות
+                let ordersList = delivered.map(o => {
+                  const num = o.daily_number ? String(o.daily_number).padStart(4,'0') : o.id.slice(-4)
+                  const items = o.order_items.map(i => i.menu_items?.name_he + ' x' + i.quantity).join(', ')
+                  const pay = o.payment_method === 'cash' ? 'מזומן' : o.payment_method === 'cibus' ? 'סיבוס' : o.payment_method === 'bit' ? 'ביט' : 'אשראי'
+                  return '#' + num + ' | ' + (o.customer_name || '') + ' | ' + o.phone + ' | ' + items + ' | ₪' + o.total_price + ' | ' + pay
+                }).join('%0A')
+
+                // רשימת לקוחות
+                const byPhone: Record<string,any[]> = {}
+                delivered.forEach(o => { if(!byPhone[o.phone]) byPhone[o.phone]=[]; byPhone[o.phone].push(o) })
+                let customersList = Object.entries(byPhone).map(([phone, ords]: any) => {
+                  const name = ords[0]?.customer_name || ''
+                  const total = ords.reduce((s:number,o:any) => s+o.total_price, 0)
+                  return name + ' | ' + phone + ' | ' + ords.length + ' הזמנות | ₪' + total
+                }).join('%0A')
+
+                const total = delivered.reduce((s,o) => s+o.total_price, 0)
+                const subject = encodeURIComponent('דוח יומי פלאפל בתחנה — ' + date)
+                const body = 'דוח יומי ' + date + '%0A' +
+                  '================================%0A%0A' +
+                  'סה"כ הכנסות: ₪' + total + '%0A' +
+                  'מספר הזמנות שנמסרו: ' + delivered.length + '%0A%0A' +
+                  '--- פירוט הזמנות ---%0A' + ordersList + '%0A%0A' +
+                  '--- רשימת לקוחות ---%0A' + customersList
+                window.open('mailto:sssnoy81@gmail.com?subject=' + subject + '&body=' + body, '_blank')
+              }} style={{
+                background: 'rgba(74,222,128,0.15)', color: '#4ADE80',
+                border: '1px solid rgba(74,222,128,0.3)', borderRadius: 8,
+                padding: '4px 10px', fontSize: 11, fontWeight: 700,
+                cursor: 'pointer', fontFamily: 'Heebo, sans-serif', marginTop: 2,
+              }}>📧 דוח יומי</button>
+
               {!audioUnlocked && (
                 <button onClick={() => {
                   try {
