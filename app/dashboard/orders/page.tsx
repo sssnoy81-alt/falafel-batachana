@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import * as XLSX from 'xlsx'
 import { createClient } from '@supabase/supabase-js'
 
 const supabase = createClient(
@@ -453,15 +452,24 @@ export default function OrdersPage() {
                   'סה"כ': ords.reduce((s:number,o:any) => s+o.total_price, 0),
                 }))
 
-                // יצירת קבצי Excel
-                const wb1 = XLSX.utils.book_new()
-                XLSX.utils.book_append_sheet(wb1, XLSX.utils.json_to_sheet(ordersData), 'הזמנות')
-                XLSX.writeFile(wb1, 'הזמנות_' + date.replace(/\//g,'-') + '.xlsx')
+                // הורדת CSV הזמנות
+                const csvOrders = [Object.keys(ordersData[0] || {}).join(','),
+                  ...ordersData.map(r => Object.values(r).map(v => '"' + String(v).replace(/"/g,'""') + '"').join(','))
+                ].join('\n')
+                const a1 = document.createElement('a')
+                a1.href = URL.createObjectURL(new Blob(['\uFEFF'+csvOrders], {type:'text/csv;charset=utf-8'}))
+                a1.download = 'הזמנות_' + date.replace(/\//g,'-') + '.csv'
+                a1.click()
 
+                // הורדת CSV לקוחות
                 setTimeout(() => {
-                  const wb2 = XLSX.utils.book_new()
-                  XLSX.utils.book_append_sheet(wb2, XLSX.utils.json_to_sheet(customersData), 'לקוחות')
-                  XLSX.writeFile(wb2, 'לקוחות_' + date.replace(/\//g,'-') + '.xlsx')
+                  const csvCustomers = [Object.keys(customersData[0] || {}).join(','),
+                    ...customersData.map(r => Object.values(r).map(v => '"' + String(v).replace(/"/g,'""') + '"').join(','))
+                  ].join('\n')
+                  const a2 = document.createElement('a')
+                  a2.href = URL.createObjectURL(new Blob(['\uFEFF'+csvCustomers], {type:'text/csv;charset=utf-8'}))
+                  a2.download = 'לקוחות_' + date.replace(/\//g,'-') + '.csv'
+                  a2.click()
                 }, 500)
 
                 // פתח אימייל
