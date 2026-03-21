@@ -230,7 +230,7 @@ function OrderCard({ order, onAdvance, onKitchenOpen }: {
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <span style={{ color: '#FFD700', fontWeight: 700, fontSize: 15 }}>₪{order.total_price}</span>
           <span style={{ background: 'rgba(255,255,255,0.07)', borderRadius: 6, padding: '2px 8px', color: '#9CA3AF', fontSize: 11 }}>
-            {order.payment_method === 'cash' ? '💵 מזומן' : '💳 אשראי'}
+            {order.payment_method === 'cash' ? '💵 מזומן' : order.payment_method === 'cibus' ? '🍽️ סיבוס' : order.payment_method === 'bit' ? '💙 ביט' : '💳 אשראי'}
           </span>
         </div>
         {cfg.next && (
