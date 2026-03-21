@@ -8,7 +8,7 @@ const supabase = createClient(
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNxZ25yemNtamh3Z2ZqeG9jdmxyIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MjM2NzEwMSwiZXhwIjoyMDg3OTQzMTAxfQ.fAnUMR8cXgQ38VWz66UibT83u_JquuXeZRtpiYmbTzM'
 )
 
-type OrderStatus = 'received' | 'confirmed' | 'preparing' | 'ready' | 'delivered'
+type OrderStatus = 'received' | 'confirmed' | 'preparing' | 'ready' | 'delivered' | 'cancelled'
 
 interface OrderItem {
   id: string
@@ -42,9 +42,10 @@ const STATUS_CONFIG: Record<OrderStatus, {
   preparing: { label: 'בהכנה', color: '#F97316', bg: 'rgba(249,115,22,0.1)',   border: 'rgba(249,115,22,0.4)',  next: 'ready',     nextLabel: 'מוכן' },
   ready:     { label: 'מוכנה', color: '#4ADE80', bg: 'rgba(74,222,128,0.1)',   border: 'rgba(74,222,128,0.4)',  next: 'delivered', nextLabel: 'נמסר' },
   delivered: { label: 'נמסרה', color: '#6B7280', bg: 'rgba(107,114,128,0.08)', border: 'rgba(107,114,128,0.3)', next: null,        nextLabel: '' },
+  cancelled: { label: 'בוטלה', color: '#FF6B6B', bg: 'rgba(255,107,107,0.08)', border: 'rgba(255,107,107,0.3)', next: null,        nextLabel: '' },
 }
 
-const STATUSES: OrderStatus[] = ['received', 'confirmed', 'preparing', 'ready', 'delivered']
+const STATUSES: OrderStatus[] = ['received', 'confirmed', 'preparing', 'ready', 'delivered', 'cancelled']
 
 function formatTime(iso: string) {
   return new Date(iso).toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' })
@@ -171,10 +172,11 @@ function KitchenModal({ order, onClose, onDone }: {
   )
 }
 
-function OrderCard({ order, onAdvance, onKitchenOpen }: {
+function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
   order: Order
   onAdvance: (id: string, next: OrderStatus) => void
   onKitchenOpen?: (order: Order) => void
+  onEdit?: (order: Order) => void
 }) {
   const cfg = STATUS_CONFIG[order.status]
   const isNew = order.status === 'received'
@@ -233,16 +235,38 @@ function OrderCard({ order, onAdvance, onKitchenOpen }: {
             {order.payment_method === 'cash' ? '💵 מזומן' : order.payment_method === 'cibus' ? '🍽️ סיבוס' : order.payment_method === 'bit' ? '💙 ביט' : '💳 אשראי'}
           </span>
         </div>
-        {cfg.next && (
-          <button
-            onClick={e => { e.stopPropagation(); onAdvance(order.id, cfg.next!) }}
-            style={{
-              background: cfg.color, color: '#000', border: 'none', borderRadius: 8,
-              padding: '6px 14px', fontWeight: 700, fontSize: 13, cursor: 'pointer',
-              fontFamily: 'Heebo, sans-serif',
-            }}
-          >{cfg.nextLabel}</button>
-        )}
+        <div style={{ display: 'flex', gap: 6 }}>
+          {order.status !== 'delivered' && order.status !== 'cancelled' && onEdit && (
+            <button
+              onClick={e => { e.stopPropagation(); onEdit(order) }}
+              style={{
+                background: 'transparent', color: '#FFD700', border: '1px solid #FFD700', borderRadius: 8,
+                padding: '6px 10px', fontWeight: 700, fontSize: 12, cursor: 'pointer',
+                fontFamily: 'Heebo, sans-serif',
+              }}
+            >✏️ ערוך</button>
+          )}
+          {order.status !== 'delivered' && order.status !== 'cancelled' && (
+            <button
+              onClick={e => { e.stopPropagation(); if(confirm('לבטל הזמנה #' + num + '?')) onAdvance(order.id, 'cancelled') }}
+              style={{
+                background: 'transparent', color: '#FF6B6B', border: '1px solid #FF6B6B', borderRadius: 8,
+                padding: '6px 10px', fontWeight: 700, fontSize: 12, cursor: 'pointer',
+                fontFamily: 'Heebo, sans-serif',
+              }}
+            >✕ בטל</button>
+          )}
+          {cfg.next && (
+            <button
+              onClick={e => { e.stopPropagation(); onAdvance(order.id, cfg.next!) }}
+              style={{
+                background: cfg.color, color: '#000', border: 'none', borderRadius: 8,
+                padding: '6px 14px', fontWeight: 700, fontSize: 13, cursor: 'pointer',
+                fontFamily: 'Heebo, sans-serif',
+              }}
+            >{cfg.nextLabel}</button>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -294,6 +318,8 @@ export default function OrdersPage() {
   const [filterBranch, setFilterBranch] = useState<string>('all')
   const [branches, setBranches] = useState<{ id: string; name: string }[]>([])
   const [kitchenOrder, setKitchenOrder] = useState<Order | null>(null)
+  const [editOrder, setEditOrder] = useState<Order | null>(null)
+  const [editNotes, setEditNotes] = useState<Record<string, string>>({})
   const prevNewCount = useRef(0)
   const [audioUnlocked, setAudioUnlocked] = useState(false)
 
@@ -398,7 +424,7 @@ export default function OrdersPage() {
 
   const filteredOrders = filterBranch === 'all' ? orders : orders.filter(o => o.branch_id === filterBranch)
   const byStatus = STATUSES.reduce((acc, s) => { acc[s] = filteredOrders.filter(o => o.status === s); return acc }, {} as Record<OrderStatus, Order[]>)
-  const todayTotal = filteredOrders.filter(o => o.status !== 'received').reduce((s, o) => s + o.total_price, 0)
+  const todayTotal = filteredOrders.filter(o => o.status !== 'received' && o.status !== 'cancelled').reduce((s, o) => s + o.total_price, 0)
   const newCount = byStatus.received.length
 
   return (
@@ -410,6 +436,50 @@ export default function OrdersPage() {
         @keyframes pulse { 0%,100%{box-shadow:0 0 0 0 rgba(255,215,0,0.4)} 50%{box-shadow:0 0 0 6px rgba(255,215,0,0)} }
         ::-webkit-scrollbar{width:4px} ::-webkit-scrollbar-track{background:#1A1A1A} ::-webkit-scrollbar-thumb{background:#333;border-radius:2px}
       `}</style>
+
+      {editOrder && (
+        <div onClick={() => setEditOrder(null)} style={{
+          position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.85)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+        }}>
+          <div onClick={e => e.stopPropagation()} style={{
+            background: '#111', border: '2px solid #FFD700', borderRadius: 24,
+            padding: 28, maxWidth: 500, width: '100%', direction: 'rtl', maxHeight: '90vh', overflowY: 'auto',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+              <div style={{ color: '#FFD700', fontSize: 22, fontWeight: 900 }}>
+                ✏️ עריכת הזמנה #{editOrder.daily_number ? String(editOrder.daily_number).padStart(4,'0') : editOrder.id.slice(-4).toUpperCase()}
+              </div>
+              <button onClick={() => setEditOrder(null)} style={{ background: '#333', border: 'none', color: '#fff', borderRadius: 50, width: 36, height: 36, cursor: 'pointer', fontSize: 18, fontFamily: 'Heebo, sans-serif' }}>✕</button>
+            </div>
+            {editOrder.order_items.map(oi => (
+              <div key={oi.id} style={{ background: '#1A1A1A', borderRadius: 12, padding: 16, marginBottom: 12 }}>
+                <div style={{ color: '#fff', fontWeight: 700, fontSize: 16, marginBottom: 8 }}>
+                  {oi.quantity}× {oi.menu_items?.name_he}
+                </div>
+                <textarea
+                  value={editNotes[oi.id] ?? (oi.notes || '')}
+                  onChange={e => setEditNotes(prev => ({ ...prev, [oi.id]: e.target.value }))}
+                  placeholder="הערות למנה..."
+                  style={{ width: '100%', padding: 10, borderRadius: 8, border: '1px solid #333', background: '#0D0D0D', color: '#fff', fontSize: 14, fontFamily: 'Heebo, sans-serif', resize: 'none', height: 70, boxSizing: 'border-box' }}
+                />
+              </div>
+            ))}
+            <button onClick={async () => {
+              for (const [itemId, notes] of Object.entries(editNotes)) {
+                await supabase.from('order_items').update({ notes }).eq('id', itemId)
+              }
+              fetchOrders()
+              setEditOrder(null)
+              setEditNotes({})
+            }} style={{
+              width: '100%', padding: 14, background: '#FFD700', color: '#000',
+              border: 'none', borderRadius: 12, fontSize: 16, fontWeight: 900,
+              cursor: 'pointer', fontFamily: 'Heebo, sans-serif',
+            }}>✅ שמור שינויים</button>
+          </div>
+        </div>
+      )}
 
       {kitchenOrder && (
         <KitchenModal order={kitchenOrder} onClose={() => setKitchenOrder(null)} onDone={(id) => handleAdvance(id, 'ready')} />
@@ -538,7 +608,7 @@ export default function OrdersPage() {
                     {colOrders.length === 0
                       ? <div style={{ color: '#374151', textAlign: 'center', fontSize: 12, padding: '20px 0' }}>אין הזמנות</div>
                       : colOrders.map(order => (
-                        <OrderCard key={order.id} order={order} onAdvance={handleAdvance} onKitchenOpen={status === 'preparing' ? setKitchenOrder : undefined} />
+                        <OrderCard key={order.id} order={order} onAdvance={handleAdvance} onKitchenOpen={status === 'preparing' ? setKitchenOrder : undefined} onEdit={setEditOrder} />
                       ))}
                   </div>
                 </div>
