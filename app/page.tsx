@@ -97,6 +97,7 @@ export default function Home() {
   const [placingOrder, setPlacingOrder] = useState(false)
   const [orderId, setOrderId] = useState<string | null>(null)
   const [orderStatus, setOrderStatus] = useState<OrderStatus>('received')
+  const [orderDailyNumber, setOrderDailyNumber] = useState<number | null>(null)
 
   const categoryRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const [installPrompt, setInstallPrompt] = useState<any>(null)
@@ -289,6 +290,17 @@ export default function Home() {
   async function placeOrder() {
     if (!selectedBranch || !isValidPhone(orderPhone) || cart.length === 0 || customerName.trim().length < 2) return
     setPlacingOrder(true)
+    // חשב מספר הזמנה יומי
+    const today = new Date(); today.setHours(0, 0, 0, 0)
+    const { data: lastOrder } = await supabase
+      .from('orders')
+      .select('daily_number')
+      .gte('created_at', today.toISOString())
+      .order('daily_number', { ascending: false })
+      .limit(1)
+      .single()
+    const dailyNumber = ((lastOrder?.daily_number) || 0) + 1
+
     const { data: order, error } = await supabase.from('orders').insert([{
       branch_id: selectedBranch.id,
       phone: orderPhone.replace(/[-\s]/g, ''),
@@ -296,6 +308,7 @@ export default function Home() {
       payment_method: paymentMethod,
       status: 'received',
       total_price: cartTotal,
+      daily_number: dailyNumber,
     }]).select().single()
 
     if (error || !order) {
@@ -322,7 +335,7 @@ export default function Home() {
       }))
     )
     localStorage.setItem('falafel_session', JSON.stringify({ orderId: order.id, expires: Date.now() + 6 * 3600 * 1000 }))
-    setOrderId(order.id); setOrderStatus('received'); setCart([])
+    setOrderId(order.id); setOrderStatus('received'); setOrderDailyNumber(dailyNumber); setCart([])
     setPlacingOrder(false); setScreen('tracking')
   }
 
@@ -439,7 +452,7 @@ export default function Home() {
         <div style={{ padding: '36px 24px 28px', textAlign: 'center', borderBottom: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
           <img src={LOGO} alt="" style={{ width: 100, height: 100, objectFit: 'contain', marginBottom: 14 }} />
           <h1 style={{ color: C.white, fontSize: 22, fontWeight: 800, margin: '0 0 4px' }}>מעקב הזמנה</h1>
-          <div style={{ color: C.gold, fontSize: 13, fontWeight: 600 }}>#{orderId?.slice(-6).toUpperCase()}</div>
+          <div style={{ color: C.gold, fontSize: 13, fontWeight: 600 }}>#{orderDailyNumber ? String(orderDailyNumber).padStart(4, '0') : orderId?.slice(-4).toUpperCase()}</div>
         </div>
         <div style={{ padding: '24px 16px', maxWidth: 480, margin: '0 auto' }}>
           <div style={{ background: C.bgCard, borderRadius: 20, padding: 28, marginBottom: 16, border: `1px solid ${C.border}` }}>
