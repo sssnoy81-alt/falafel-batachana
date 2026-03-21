@@ -24,6 +24,7 @@ interface Order {
   branch_id: string
   phone: string
   customer_name?: string
+  daily_number?: number
   status: OrderStatus
   total_price: number
   payment_method: string
@@ -65,7 +66,7 @@ function KitchenModal({ order, onClose, onDone }: {
   onClose: () => void
   onDone: (id: string) => void
 }) {
-  const num = order.id.slice(-4).toUpperCase()
+  const num = order.daily_number ? String(order.daily_number).padStart(4, '0') : order.id.slice(-4).toUpperCase()
 
   return (
     <div onClick={onClose} style={{
@@ -178,7 +179,7 @@ function OrderCard({ order, onAdvance, onKitchenOpen }: {
   const cfg = STATUS_CONFIG[order.status]
   const isNew = order.status === 'received'
   const isPreparing = order.status === 'preparing'
-  const num = order.id.slice(-4).toUpperCase()
+  const num = order.daily_number ? String(order.daily_number).padStart(4, '0') : order.id.slice(-4).toUpperCase()
 
   return (
     <div
