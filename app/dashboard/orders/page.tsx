@@ -370,14 +370,29 @@ export default function OrdersPage() {
   }, [fetchOrders, fetchBranches])
 
   const handleAdvance = async (orderId: string, nextStatus: OrderStatus) => {
-    // עדכון אופטימיסטי מיידי — לא מפעילים fetchOrders (race condition!)
+    // עדכון אופטימיסטי מיידי
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: nextStatus } : o))
     setKitchenOrder(prev => prev?.id === orderId ? null : prev)
+
+    // שליחת ווטסאפ כשההזמנה מוכנה
+    if (nextStatus === 'ready') {
+      const order = orders.find(o => o.id === orderId)
+      if (order?.phone) {
+        const num = order.daily_number ? String(order.daily_number).padStart(4, '0') : order.id.slice(-4).toUpperCase()
+        const name = order.customer_name ? ` ${order.customer_name}` : ''
+        const msg = encodeURIComponent(`שלום${name}! 🧆
+הזמנה מספר #${num} מוכנה לאיסוף.
+מחכים לך! — פלאפל בתחנה`)
+        const phone = order.phone.replace(/[^0-9]/g, '').replace(/^0/, '972')
+        window.open(\`https://wa.me/\${phone}?text=\${msg}\`, '_blank')
+      }
+    }
+
     // שמירה ב-DB
     const { error } = await supabase.from('orders').update({ status: nextStatus }).eq('id', orderId)
     if (error) {
       console.error('שגיאה:', error)
-      fetchOrders() // רק אם נכשל — שחזר מה-DB
+      fetchOrders()
     }
   }
 
