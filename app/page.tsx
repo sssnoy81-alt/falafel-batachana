@@ -80,7 +80,7 @@ export default function Home() {
 
   const [customerName, setCustomerName] = useState('')
   const [orderPhone, setOrderPhone] = useState('')
-  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'credit' | 'cibus'>('cash')
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'credit' | 'cibus' | 'bit'>('cash')
   const [placingOrder, setPlacingOrder] = useState(false)
   const [orderId, setOrderId] = useState<string | null>(null)
   const [orderStatus, setOrderStatus] = useState<OrderStatus>('received')
@@ -515,11 +515,11 @@ export default function Home() {
 
         <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 24, border: `1px solid ${C.border}` }}>
           <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>💳 אמצעי תשלום</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-            {(['cash', 'credit', 'cibus'] as const).map(v => (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            {(['cash', 'credit', 'cibus', 'bit'] as const).map(v => (
               <button key={v} onClick={() => setPaymentMethod(v)}
                 style={{ padding: 14, border: `1px solid ${paymentMethod === v ? C.gold : C.border}`, borderRadius: 12, background: paymentMethod === v ? 'rgba(255,215,0,0.1)' : C.bg, fontWeight: 700, fontSize: 14, color: paymentMethod === v ? C.gold : C.gray, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
-                {v === 'cash' ? '💵 מזומן' : v === 'credit' ? '💳 אשראי' : '🍽️ סיבוס'}
+                {v === 'cash' ? '💵 מזומן' : v === 'credit' ? '💳 אשראי' : v === 'cibus' ? '🍽️ סיבוס' : '💙 ביט'}
               </button>
             ))}
           </div>
