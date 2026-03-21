@@ -305,29 +305,52 @@ export default function OrdersPage() {
     setLoading(false)
   }, [])
 
-  // צפצוף כשנכנסת הזמנה חדשה
+  // צלצול לופ כשיש הזמנות חדשות שלא אושרו
+  const alarmRef = useRef<any>(null)
+  const alarmCtxRef = useRef<any>(null)
+
   useEffect(() => {
-    const newCount = orders.filter(o => o.status === 'received').length
-    if (newCount > prevNewCount.current && prevNewCount.current >= 0) {
+    const hasNew = orders.some(o => o.status === 'received')
+
+    if (hasNew && !alarmRef.current) {
+      // התחל צלצול לופ
       try {
         const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
-        const playBeep = (freq: number, start: number, duration: number) => {
-          const osc = ctx.createOscillator()
-          const gain = ctx.createGain()
-          osc.connect(gain)
-          gain.connect(ctx.destination)
-          osc.frequency.value = freq
-          osc.type = 'sine'
-          gain.gain.setValueAtTime(0.3, ctx.currentTime + start)
-          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + duration)
-          osc.start(ctx.currentTime + start)
-          osc.stop(ctx.currentTime + start + duration)
+        alarmCtxRef.current = ctx
+
+        const playLoop = () => {
+          if (!alarmRef.current) return
+          const now = ctx.currentTime
+          const beep = (freq: number, start: number, dur: number) => {
+            const osc = ctx.createOscillator()
+            const gain = ctx.createGain()
+            osc.connect(gain); gain.connect(ctx.destination)
+            osc.frequency.value = freq; osc.type = 'sine'
+            gain.gain.setValueAtTime(0.4, now + start)
+            gain.gain.exponentialRampToValueAtTime(0.001, now + start + dur)
+            osc.start(now + start); osc.stop(now + start + dur + 0.05)
+          }
+          beep(880, 0, 0.12)
+          beep(1100, 0.15, 0.12)
+          beep(880, 0.3, 0.12)
+          beep(1100, 0.45, 0.12)
+          alarmRef.current = setTimeout(playLoop, 1500)
         }
-        playBeep(880, 0, 0.15)
-        playBeep(1100, 0.2, 0.15)
-        playBeep(880, 0.4, 0.15)
+
+        alarmRef.current = setTimeout(playLoop, 0)
+        playLoop()
       } catch {}
+    } else if (!hasNew && alarmRef.current) {
+      // עצור צלצול
+      clearTimeout(alarmRef.current)
+      alarmRef.current = null
+      try { alarmCtxRef.current?.close() } catch {}
+      alarmCtxRef.current = null
     }
+  }, [orders])
+
+  useEffect(() => {
+    const newCount = orders.filter(o => o.status === 'received').length
     prevNewCount.current = newCount
   }, [orders])
 
