@@ -263,13 +263,16 @@ function CustomerTab({ orders }: { orders: Order[] }) {
       {customers.length === 0 && <div style={{ color: '#6B7280', textAlign: 'center', marginTop: 40 }}>אין היסטוריית לקוחות</div>}
       {customers.map(c => (
         <div key={c.phone} style={{ background: '#1A1A1A', border: '1px solid #2A2A2A', borderRadius: 12, padding: '14px 16px', marginBottom: 10, direction: 'rtl' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
             <span style={{ color: '#E5E7EB', fontSize: 14, direction: 'ltr' }}>📞 {c.phone}</span>
             <div style={{ display: 'flex', gap: 12 }}>
               <span style={{ color: '#9CA3AF', fontSize: 12 }}>{c.orders.length} הזמנות</span>
               <span style={{ color: '#FFD700', fontWeight: 700 }}>₪{c.total}</span>
             </div>
           </div>
+          {c.orders[0]?.customer_name && (
+            <div style={{ color: '#9CA3AF', fontSize: 12, marginBottom: 6 }}>👤 {c.orders[0].customer_name}</div>
+          )}
           {c.orders.slice(0, 3).map(o => (
             <div key={o.id} style={{ fontSize: 12, color: '#6B7280', borderTop: '1px solid #2A2A2A', paddingTop: 6, marginTop: 6 }}>
               <span style={{ color: STATUS_CONFIG[o.status].color }}>●</span>{' '}
