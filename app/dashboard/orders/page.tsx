@@ -457,7 +457,7 @@ export default function OrdersPage() {
                   ...ordersData.map(r => Object.values(r).map(v => '"' + String(v).replace(/"/g,'""') + '"').join(','))
                 ].join('\n')
                 const a1 = document.createElement('a')
-                a1.href = URL.createObjectURL(new Blob(['\uFEFF'+csvOrders], {type:'text/csv;charset=utf-8'}))
+                a1.href = URL.createObjectURL(new Blob([csvOrders], {type:'text/csv;charset=utf-8'}))
                 a1.download = 'הזמנות_' + date.replace(/\//g,'-') + '.csv'
                 a1.click()
 
@@ -467,7 +467,7 @@ export default function OrdersPage() {
                     ...customersData.map(r => Object.values(r).map(v => '"' + String(v).replace(/"/g,'""') + '"').join(','))
                   ].join('\n')
                   const a2 = document.createElement('a')
-                  a2.href = URL.createObjectURL(new Blob(['\uFEFF'+csvCustomers], {type:'text/csv;charset=utf-8'}))
+                  a2.href = URL.createObjectURL(new Blob([csvCustomers], {type:'text/csv;charset=utf-8'}))
                   a2.download = 'לקוחות_' + date.replace(/\//g,'-') + '.csv'
                   a2.click()
                 }, 500)
@@ -476,14 +476,7 @@ export default function OrdersPage() {
                 setTimeout(() => {
                   const total = delivered.reduce((s,o) => s+o.total_price, 0)
                   const subject = encodeURIComponent('דוח יומי פלאפל בתחנה — ' + date)
-                  const body = encodeURIComponent('שלום,
-
-מצורפים קבצי האקסל של הדוח היומי לתאריך ' + date + '
-
-סה"כ הכנסות: ₪' + total + '
-מספר הזמנות: ' + delivered.length + '
-
-פלאפל בתחנה')
+                  const body = encodeURIComponent('שלום, מצורפים קבצי הדוח היומי לתאריך ' + date + '. סהכ הכנסות: ' + total + ' שח. מספר הזמנות: ' + delivered.length + '. פלאפל בתחנה')
                   window.open('mailto:sssnoy81@gmail.com?subject=' + subject + '&body=' + body, '_blank')
                 }, 1000)
               }} style={{
