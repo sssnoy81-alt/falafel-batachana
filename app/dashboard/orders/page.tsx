@@ -292,6 +292,7 @@ export default function OrdersPage() {
   const [branches, setBranches] = useState<{ id: string; name: string }[]>([])
   const [kitchenOrder, setKitchenOrder] = useState<Order | null>(null)
   const prevNewCount = useRef(0)
+  const [audioUnlocked, setAudioUnlocked] = useState(false)
 
   const fetchOrders = useCallback(async () => {
     const today = new Date(); today.setHours(0, 0, 0, 0)
@@ -312,7 +313,7 @@ export default function OrdersPage() {
   useEffect(() => {
     const hasNew = orders.some(o => o.status === 'received')
 
-    if (hasNew && !alarmRef.current) {
+    if (hasNew && !alarmRef.current && audioUnlocked) {
       // התחל צלצול לופ
       try {
         const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
@@ -347,7 +348,7 @@ export default function OrdersPage() {
       try { alarmCtxRef.current?.close() } catch {}
       alarmCtxRef.current = null
     }
-  }, [orders])
+  }, [orders, audioUnlocked])
 
   useEffect(() => {
     const newCount = orders.filter(o => o.status === 'received').length
@@ -407,6 +408,19 @@ export default function OrdersPage() {
             <div style={{ textAlign: 'left' }}>
               <div style={{ color: '#4ADE80', fontWeight: 700, fontSize: 15 }}>₪{todayTotal}</div>
               <div style={{ color: '#6B7280', fontSize: 10 }}>עודכן {formatTime(lastRefresh.toISOString())}</div>
+              {!audioUnlocked && (
+                <button onClick={() => {
+                  try {
+                    const ctx = new ((window as any).AudioContext || (window as any).webkitAudioContext)()
+                    ctx.resume().then(() => { setAudioUnlocked(true); ctx.close() })
+                  } catch { setAudioUnlocked(true) }
+                }} style={{
+                  background: '#FF6B6B', color: '#000', border: 'none', borderRadius: 8,
+                  padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                  fontFamily: 'Heebo, sans-serif', marginTop: 2,
+                }}>🔔 הפעל התראות</button>
+              )}
+              {audioUnlocked && <div style={{ color: '#4ADE80', fontSize: 10 }}>🔔 פעיל</div>}
             </div>
           </div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
