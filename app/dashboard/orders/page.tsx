@@ -88,7 +88,6 @@ function KitchenModal({ order, onClose, onDone }: {
         maxHeight: '90vh',
         overflowY: 'auto',
       }}>
-        {/* Header */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 32 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <div style={{
@@ -111,7 +110,6 @@ function KitchenModal({ order, onClose, onDone }: {
           }}>✕</button>
         </div>
 
-        {/* פריטים */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18, marginBottom: 36 }}>
           {order.order_items.map((oi) => (
             <div key={oi.id} style={{
@@ -154,7 +152,6 @@ function KitchenModal({ order, onClose, onDone }: {
           ))}
         </div>
 
-        {/* כפתור מוכן */}
         <button
           onClick={() => { onDone(order.id); onClose() }}
           style={{
@@ -335,7 +332,6 @@ export default function OrdersPage() {
     setLoading(false)
   }, [])
 
-  // צלצול לופ כשיש הזמנות חדשות שלא אושרו
   const alarmRef = useRef<any>(null)
   const alarmCtxRef = useRef<any>(null)
 
@@ -343,7 +339,6 @@ export default function OrdersPage() {
     const hasNew = orders.some(o => o.status === 'received')
 
     if (hasNew && !alarmRef.current && audioUnlocked) {
-      // התחל צלצול לופ
       try {
         const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
         alarmCtxRef.current = ctx
@@ -371,7 +366,6 @@ export default function OrdersPage() {
         playLoop()
       } catch {}
     } else if (!hasNew && alarmRef.current) {
-      // עצור צלצול
       clearTimeout(alarmRef.current)
       alarmRef.current = null
       try { alarmCtxRef.current?.close() } catch {}
@@ -396,25 +390,20 @@ export default function OrdersPage() {
   }, [fetchOrders, fetchBranches])
 
   const handleAdvance = async (orderId: string, nextStatus: OrderStatus) => {
-    // עדכון אופטימיסטי מיידי
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: nextStatus } : o))
     setKitchenOrder(prev => prev?.id === orderId ? null : prev)
 
-    // שליחת ווטסאפ כשההזמנה מוכנה
     if (nextStatus === 'ready') {
       const order = orders.find(o => o.id === orderId)
       if (order?.phone) {
         const num = order.daily_number ? String(order.daily_number).padStart(4, '0') : order.id.slice(-4).toUpperCase()
         const name = order.customer_name ? ` ${order.customer_name}` : ''
-        const msg = encodeURIComponent(`שלום${name}! 🧆
-הזמנה מספר #${num} מוכנה לאיסוף.
-מחכים לך! — פלאפל בתחנה`)
+        const msg = encodeURIComponent(`שלום${name}! 🧆\nהזמנה מספר #${num} מוכנה לאיסוף.\nמחכים לך! — פלאפל בתחנה`)
         const phone = order.phone.replace(/[^0-9]/g, '').replace(/^0/, '972')
         window.open('https://wa.me/' + phone + '?text=' + msg, '_blank')
       }
     }
 
-    // שמירה ב-DB
     const { error } = await supabase.from('orders').update({ status: nextStatus }).eq('id', orderId)
     if (error) {
       console.error('שגיאה:', error)
@@ -501,7 +490,6 @@ export default function OrdersPage() {
                 if (delivered.length === 0) { alert('אין הזמנות שנמסרו היום'); return }
                 const date = new Date().toLocaleDateString('he-IL')
 
-                // Excel הזמנות
                 const ordersData = delivered.map(o => ({
                   'מספר': o.daily_number ? String(o.daily_number).padStart(4,'0') : o.id.slice(-4),
                   'שם לקוח': o.customer_name || '',
@@ -513,7 +501,6 @@ export default function OrdersPage() {
                   'סניף': o.branches?.name || '',
                 }))
 
-                // Excel לקוחות
                 const byPhone: Record<string,any[]> = {}
                 delivered.forEach(o => { if(!byPhone[o.phone]) byPhone[o.phone]=[]; byPhone[o.phone].push(o) })
                 const customersData = Object.entries(byPhone).map(([phone, ords]: any) => ({
@@ -523,7 +510,6 @@ export default function OrdersPage() {
                   'סה"כ': ords.reduce((s:number,o:any) => s+o.total_price, 0),
                 }))
 
-                // הורדת CSV הזמנות
                 const csvOrders = [Object.keys(ordersData[0] || {}).join(','),
                   ...ordersData.map(r => Object.values(r).map(v => '"' + String(v).replace(/"/g,'""') + '"').join(','))
                 ].join('\n')
@@ -532,7 +518,6 @@ export default function OrdersPage() {
                 a1.download = 'הזמנות_' + date.replace(/\//g,'-') + '.csv'
                 a1.click()
 
-                // הורדת CSV לקוחות
                 setTimeout(() => {
                   const csvCustomers = [Object.keys(customersData[0] || {}).join(','),
                     ...customersData.map(r => Object.values(r).map(v => '"' + String(v).replace(/"/g,'""') + '"').join(','))
@@ -543,7 +528,6 @@ export default function OrdersPage() {
                   a2.click()
                 }, 500)
 
-                // הצג הנחיה + פתח אימייל
                 setTimeout(() => {
                   const total = delivered.reduce((s,o) => s+o.total_price, 0)
                   alert('✅ 2 קבצי CSV הורדו!\n\n📎 כעת יפתח האימייל — צרף את הקבצים שהורדו:\n• הזמנות_' + date.replace(/\//g,'-') + '.csv\n• לקוחות_' + date.replace(/\//g,'-') + '.csv')
@@ -581,7 +565,7 @@ export default function OrdersPage() {
         </div>
 
         <div style={{ display: 'flex', borderBottom: '1px solid #222', background: '#111' }}>
-          {([['kanban', '📋 רשימת הזמנות יומי'], ['customers', '👥 לקוחות']] as const).map(([tab, label]) => (
+          {([['kanban', '📋 הזמנות היום'], ['customers', '👥 לקוחות']] as const).map(([tab, label]) => (
             <button key={tab} onClick={() => setActiveTab(tab)} style={{ flex: 1, padding: '10px 0', background: 'none', border: 'none', color: activeTab === tab ? '#FFD700' : '#6B7280', fontWeight: activeTab === tab ? 700 : 400, fontSize: 14, fontFamily: 'Heebo, sans-serif', cursor: 'pointer', borderBottom: activeTab === tab ? '2px solid #FFD700' : '2px solid transparent' }}>{label}</button>
           ))}
         </div>
