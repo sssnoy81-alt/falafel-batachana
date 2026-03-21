@@ -585,7 +585,7 @@ export default function Home() {
             </div>
             {selectedBranch && BRANCH_INFO[selectedBranch.id] && (
               <a href={`tel:${BRANCH_INFO[selectedBranch.id].phone.replace(/-/g,'')}`}
-                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, background: 'rgba(255,215,0,0.1)', border: `1px solid rgba(255,215,0,0.3)`, borderRadius: 10, textDecoration: 'none', fontSize: 18, flexShrink: 0 }}>
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 44, height: 44, background: C.gold, border: 'none', borderRadius: 12, textDecoration: 'none', fontSize: 22, flexShrink: 0, boxShadow: '0 4px 16px rgba(255,215,0,0.4)' }}>
                 📞
               </a>
             )}
