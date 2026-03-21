@@ -236,25 +236,25 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
           </span>
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
-          {order.status !== 'delivered' && order.status !== 'cancelled' && onEdit && (
+          {(order.status === 'confirmed' || order.status === 'preparing') && onEdit && (
             <button
               onClick={e => { e.stopPropagation(); onEdit(order) }}
               style={{
-                background: 'transparent', color: '#FFD700', border: '1px solid #FFD700', borderRadius: 8,
-                padding: '6px 10px', fontWeight: 700, fontSize: 12, cursor: 'pointer',
-                fontFamily: 'Heebo, sans-serif',
+                background: 'transparent', color: '#FFD700', border: '1px solid #FFD700', borderRadius: 6,
+                padding: '4px 8px', fontWeight: 700, fontSize: 11, cursor: 'pointer',
+                fontFamily: 'Heebo, sans-serif', whiteSpace: 'nowrap',
               }}
-            >✏️ ערוך</button>
+            >✏️</button>
           )}
-          {order.status !== 'delivered' && order.status !== 'cancelled' && (
+          {(order.status === 'confirmed' || order.status === 'preparing') && (
             <button
               onClick={e => { e.stopPropagation(); if(confirm('לבטל הזמנה #' + num + '?')) onAdvance(order.id, 'cancelled') }}
               style={{
-                background: 'transparent', color: '#FF6B6B', border: '1px solid #FF6B6B', borderRadius: 8,
-                padding: '6px 10px', fontWeight: 700, fontSize: 12, cursor: 'pointer',
-                fontFamily: 'Heebo, sans-serif',
+                background: 'transparent', color: '#FF6B6B', border: '1px solid #FF6B6B', borderRadius: 6,
+                padding: '4px 8px', fontWeight: 700, fontSize: 11, cursor: 'pointer',
+                fontFamily: 'Heebo, sans-serif', whiteSpace: 'nowrap',
               }}
-            >✕ בטל</button>
+            >✕</button>
           )}
           {cfg.next && (
             <button
