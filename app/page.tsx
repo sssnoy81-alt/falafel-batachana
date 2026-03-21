@@ -589,12 +589,7 @@ export default function Home() {
                 📞
               </a>
             )}
-            {selectedBranch && BRANCH_INFO[selectedBranch.id] && (
-              <a href={`tel:${BRANCH_INFO[selectedBranch.id].phone.replace(/-/g,'')}`}
-                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 38, height: 38, background: 'rgba(255,215,0,0.1)', border: `1px solid ${C.gold}`, borderRadius: 10, textDecoration: 'none', fontSize: 18, flexShrink: 0 }}>
-                📞
-              </a>
-            )}
+
           </div>
           <div style={{ display: 'flex', overflowX: 'auto', padding: '0 16px 12px', gap: 8, scrollbarWidth: 'none', msOverflowStyle: 'none' } as React.CSSProperties}>
             {categories.map(cat => (
