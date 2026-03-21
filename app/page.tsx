@@ -577,7 +577,7 @@ export default function Home() {
             <button onClick={() => { localStorage.removeItem('falafel_session'); setScreen('branch'); setCart([]) }}
               style={{ background: C.border, border: 'none', borderRadius: 10, padding: '8px 10px', cursor: 'pointer', fontSize: 18, lineHeight: 1, color: C.white }}>→</button>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1 }}>
-              <img src={LOGO} alt="לוגו" style={{ width: 34, height: 34, objectFit: 'contain', borderRadius: 8 }} />
+              <img src={LOGO} alt="לוגו" style={{ width: 48, height: 48, objectFit: 'contain', borderRadius: 10 }} />
               <div>
                 <div style={{ fontWeight: 900, fontSize: 16, color: C.white, letterSpacing: -0.3 }}>פלאפל בתחנה</div>
                 <div style={{ fontSize: 12, color: C.gray }}>{selectedBranch?.name}</div>
