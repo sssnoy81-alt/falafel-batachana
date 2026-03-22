@@ -197,7 +197,7 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
     >
       {isPreparing && (
         <div style={{
-          position: 'absolute', top: 8, left: 10,
+          position: 'absolute', top: 8, right: 10,
           background: '#F97316', color: '#000',
           borderRadius: 6, padding: '2px 7px', fontSize: 11, fontWeight: 700,
         }}>🔍 הגדל</div>
