@@ -127,7 +127,8 @@ export default function Home() {
         const s = JSON.parse(saved)
         if (s.orderId && s.expires > Date.now()) {
           setOrderId(s.orderId); setLoading(false); setScreen('tracking');
-          fetchBranches(); return
+          // *** תיקון 1: שחזר סניף לפי branchId שנשמר ***
+          fetchBranchesAndRestore(s.branchId); return
         }
         if (s.branch && s.screen && s.screen !== 'tracking') {
           setSelectedBranch(s.branch)
@@ -164,6 +165,17 @@ export default function Home() {
   async function fetchBranches() {
     const { data } = await supabase.from('branches').select('id, name, address').order('sort_order')
     setBranches(data || [])
+    setLoading(false)
+  }
+
+  // *** תיקון 2: פונקציה חדשה — טוענת סניפים ומשחזרת את הסניף הנבחר לפי ID ***
+  async function fetchBranchesAndRestore(branchId?: string) {
+    const { data } = await supabase.from('branches').select('id, name, address').order('sort_order')
+    setBranches(data || [])
+    if (branchId && data) {
+      const branch = (data as Branch[]).find(b => b.id === branchId)
+      if (branch) setSelectedBranch(branch)
+    }
     setLoading(false)
   }
 
@@ -331,7 +343,12 @@ export default function Home() {
         ].filter(Boolean).join(' | '),
       }))
     )
-    localStorage.setItem('falafel_session', JSON.stringify({ orderId: order.id, expires: Date.now() + 6 * 3600 * 1000 }))
+    // *** תיקון 3: שמור גם branchId ב-session כדי לשחזר אחרי ריפרש ***
+    localStorage.setItem('falafel_session', JSON.stringify({
+      orderId: order.id,
+      branchId: selectedBranch.id,
+      expires: Date.now() + 6 * 3600 * 1000
+    }))
     setOrderId(order.id); setOrderStatus('received'); setOrderDailyNumber(dailyNumber); setCart([])
     setPlacingOrder(false); setScreen('tracking')
   }
@@ -468,7 +485,7 @@ export default function Home() {
             + הזמנה חדשה
           </button>
 
-          {/* פרטי סניף */}
+          {/* פרטי סניף — מוצג תמיד כל עוד selectedBranch קיים (כולל אחרי ריפרש) */}
           {selectedBranch && BRANCH_INFO[selectedBranch.id] && (
             <div style={{ background: C.bgCard, borderRadius: 16, padding: '18px 20px', border: `1px solid ${C.border}`, marginTop: 12 }}>
               <div style={{ fontWeight: 800, fontSize: 15, color: C.white, marginBottom: 12 }}>📍 {selectedBranch.name}</div>
@@ -783,7 +800,6 @@ export default function Home() {
                           background: C.bg, borderRadius: 14, padding: '10px 14px',
                           border: `1px solid ${C.border}`,
                         }}>
-                          {/* תמונה */}
                           <div style={{ width: 60, height: 60, borderRadius: 10, overflow: 'hidden', flexShrink: 0, background: C.bgCard, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                             {drink.image_url
                               ? <img src={drink.image_url} alt={drink.name_he} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
@@ -835,7 +851,6 @@ export default function Home() {
                           background: C.bg, borderRadius: 14, padding: '10px 14px',
                           border: `1px solid ${C.border}`,
                         }}>
-                          {/* תמונה */}
                           <div style={{ width: 60, height: 60, borderRadius: 10, overflow: 'hidden', flexShrink: 0, background: C.bgCard, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                             {a.image_url
                               ? <img src={a.image_url} alt={a.name_he} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
