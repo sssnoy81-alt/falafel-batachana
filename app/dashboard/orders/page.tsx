@@ -8,29 +8,128 @@ const supabase = createClient(
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNxZ25yemNtamh3Z2ZqeG9jdmxyIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MjM2NzEwMSwiZXhwIjoyMDg3OTQzMTAxfQ.fAnUMR8cXgQ38VWz66UibT83u_JquuXeZRtpiYmbTzM'
 )
 
+/* ─── AUTH ─── */
+type UserRole = 'admin' | 'adumim' | 'mikhmas'
+
+const USERS: Record<string, { password: string; role: UserRole; label: string; branchId: string | null }> = {
+  'admin':   { password: 'Falafel2025!', role: 'admin',   label: 'אדמין — כל הסניפים',    branchId: null },
+  'adumim':  { password: 'Adumim123',   role: 'adumim',  label: 'מישור אדומים',           branchId: '8fed141d-0e7c-46c1-803b-88d3d811c1f8' },
+  'mikhmas': { password: 'Mikhmas123',  role: 'mikhmas', label: 'מעבר מכמש',              branchId: '3ab15ad1-e835-492b-bae5-11b202ee2314' },
+}
+
+interface AuthUser { username: string; role: UserRole; label: string; branchId: string | null }
+
+function LoginScreen({ onLogin }: { onLogin: (user: AuthUser) => void }) {
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [showPass, setShowPass] = useState(false)
+
+  function handleLogin() {
+    const u = USERS[username.trim().toLowerCase()]
+    if (!u || u.password !== password) {
+      setError('שם משתמש או סיסמה שגויים')
+      return
+    }
+    setError('')
+    onLogin({ username: username.trim().toLowerCase(), role: u.role, label: u.label, branchId: u.branchId })
+  }
+
+  return (
+    <div style={{
+      minHeight: '100vh', background: '#0D0D0D',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      fontFamily: 'Heebo, sans-serif', direction: 'rtl', padding: 20,
+    }}>
+      <div style={{
+        background: '#111', border: '1px solid #2A2A2A', borderRadius: 24,
+        padding: '40px 36px', maxWidth: 400, width: '100%',
+        boxShadow: '0 0 60px rgba(255,215,0,0.08)',
+      }}>
+        <div style={{ textAlign: 'center', marginBottom: 32 }}>
+          <div style={{ fontSize: 48, marginBottom: 12 }}>🧆</div>
+          <div style={{ color: '#FFD700', fontSize: 22, fontWeight: 900, marginBottom: 4 }}>פלאפל בתחנה</div>
+          <div style={{ color: '#6B7280', fontSize: 14 }}>מערכת ניהול הזמנות</div>
+        </div>
+
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ color: '#9CA3AF', fontSize: 13, marginBottom: 6, fontWeight: 600 }}>שם משתמש</div>
+          <input
+            value={username}
+            onChange={e => setUsername(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleLogin()}
+            placeholder="admin / adumim / mikhmas"
+            dir="ltr"
+            style={{
+              width: '100%', padding: '12px 14px', borderRadius: 12,
+              border: '1px solid #2A2A2A', background: '#0D0D0D',
+              color: '#fff', fontSize: 15, fontFamily: 'Heebo, sans-serif',
+              outline: 'none', boxSizing: 'border-box',
+            }}
+          />
+        </div>
+
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ color: '#9CA3AF', fontSize: 13, marginBottom: 6, fontWeight: 600 }}>סיסמה</div>
+          <div style={{ position: 'relative' }}>
+            <input
+              type={showPass ? 'text' : 'password'}
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleLogin()}
+              placeholder="הזן סיסמה"
+              dir="ltr"
+              style={{
+                width: '100%', padding: '12px 44px 12px 14px', borderRadius: 12,
+                border: `1px solid ${error ? '#FF6B6B' : '#2A2A2A'}`, background: '#0D0D0D',
+                color: '#fff', fontSize: 15, fontFamily: 'Heebo, sans-serif',
+                outline: 'none', boxSizing: 'border-box',
+              }}
+            />
+            <button
+              onClick={() => setShowPass(p => !p)}
+              style={{
+                position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)',
+                background: 'none', border: 'none', color: '#6B7280', cursor: 'pointer', fontSize: 18,
+              }}
+            >{showPass ? '🙈' : '👁️'}</button>
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ color: '#FF6B6B', fontSize: 13, marginBottom: 16, textAlign: 'center', background: 'rgba(255,107,107,0.1)', borderRadius: 8, padding: '8px 12px' }}>
+            ❌ {error}
+          </div>
+        )}
+
+        <button
+          onClick={handleLogin}
+          style={{
+            width: '100%', padding: 14, background: '#FFD700', color: '#000',
+            border: 'none', borderRadius: 14, fontSize: 17, fontWeight: 900,
+            cursor: 'pointer', fontFamily: 'Heebo, sans-serif',
+          }}
+        >
+          כניסה →
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/* ─── TYPES ─── */
 type OrderStatus = 'received' | 'confirmed' | 'preparing' | 'ready' | 'delivered' | 'cancelled'
 
 interface OrderItem {
-  id: string
-  item_id: string
-  quantity: number
-  unit_price: number
-  notes: string | null
-  menu_items: { name_he: string } | null
+  id: string; item_id: string; quantity: number; unit_price: number
+  notes: string | null; menu_items: { name_he: string } | null
 }
 
 interface Order {
-  id: string
-  branch_id: string
-  phone: string
-  customer_name?: string
-  daily_number?: number
-  status: OrderStatus
-  total_price: number
-  payment_method: string
-  created_at: string
-  order_items: OrderItem[]
-  branches: { name: string } | null
+  id: string; branch_id: string; phone: string
+  customer_name?: string; daily_number?: number
+  status: OrderStatus; total_price: number; payment_method: string
+  created_at: string; order_items: OrderItem[]; branches: { name: string } | null
 }
 
 const STATUS_CONFIG: Record<OrderStatus, {
@@ -50,11 +149,9 @@ const STATUSES: OrderStatus[] = ['received', 'confirmed', 'preparing', 'ready', 
 function formatTime(iso: string) {
   return new Date(iso).toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' })
 }
-
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('he-IL', { day: '2-digit', month: '2-digit', year: '2-digit' })
 }
-
 function timeSince(iso: string) {
   const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 60000)
   if (diff < 1) return 'עכשיו'
@@ -63,105 +160,39 @@ function timeSince(iso: string) {
 }
 
 function KitchenModal({ order, onClose, onDone }: {
-  order: Order
-  onClose: () => void
-  onDone: (id: string) => void
+  order: Order; onClose: () => void; onDone: (id: string) => void
 }) {
   const num = order.daily_number ? String(order.daily_number).padStart(4, '0') : order.id.slice(-4).toUpperCase()
-
   return (
-    <div onClick={onClose} style={{
-      position: 'fixed', inset: 0, zIndex: 1000,
-      background: 'rgba(0,0,0,0.93)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      padding: '20px',
-    }}>
-      <div onClick={e => e.stopPropagation()} style={{
-        background: '#0F0F0F',
-        border: '3px solid #F97316',
-        borderRadius: 28,
-        padding: '36px 40px',
-        maxWidth: 700,
-        width: '100%',
-        direction: 'rtl',
-        boxShadow: '0 0 80px rgba(249,115,22,0.25)',
-        maxHeight: '90vh',
-        overflowY: 'auto',
-      }}>
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.93)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: '#0F0F0F', border: '3px solid #F97316', borderRadius: 28, padding: '36px 40px', maxWidth: 700, width: '100%', direction: 'rtl', boxShadow: '0 0 80px rgba(249,115,22,0.25)', maxHeight: '90vh', overflowY: 'auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 32 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            <div style={{
-              background: 'rgba(249,115,22,0.2)', border: '2px solid #F97316',
-              borderRadius: 16, width: 64, height: 64,
-              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 32,
-            }}>🍳</div>
+            <div style={{ background: 'rgba(249,115,22,0.2)', border: '2px solid #F97316', borderRadius: 16, width: 64, height: 64, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 32 }}>🍳</div>
             <div>
               <div style={{ color: '#F97316', fontSize: 40, fontWeight: 900, lineHeight: 1 }}>#{num}</div>
-              <div style={{ color: '#9CA3AF', fontSize: 16, marginTop: 6 }}>
-                {formatTime(order.created_at)} &nbsp;·&nbsp; {timeSince(order.created_at)}
-              </div>
+              <div style={{ color: '#9CA3AF', fontSize: 16, marginTop: 6 }}>{formatTime(order.created_at)} &nbsp;·&nbsp; {timeSince(order.created_at)}</div>
             </div>
           </div>
-          <button onClick={onClose} style={{
-            background: '#1A1A1A', border: '1px solid #333', color: '#9CA3AF',
-            borderRadius: 50, width: 48, height: 48, fontSize: 22,
-            cursor: 'pointer', fontFamily: 'Heebo, sans-serif',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>✕</button>
+          <button onClick={onClose} style={{ background: '#1A1A1A', border: '1px solid #333', color: '#9CA3AF', borderRadius: 50, width: 48, height: 48, fontSize: 22, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
         </div>
-
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18, marginBottom: 36 }}>
           {order.order_items.map((oi) => (
-            <div key={oi.id} style={{
-              background: '#1A1A1A',
-              border: '2px solid #2A2A2A',
-              borderRadius: 18,
-              padding: '22px 26px',
-            }}>
+            <div key={oi.id} style={{ background: '#1A1A1A', border: '2px solid #2A2A2A', borderRadius: 18, padding: '22px 26px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: oi.notes ? 16 : 0 }}>
-                <div style={{
-                  background: '#F97316', color: '#000',
-                  borderRadius: 14, minWidth: 56, height: 56,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 28, fontWeight: 900, flexShrink: 0,
-                }}>
-                  {oi.quantity}
-                </div>
-                <div style={{ color: '#fff', fontSize: 30, fontWeight: 800, lineHeight: 1.2 }}>
-                  {oi.menu_items?.name_he ?? 'פריט'}
-                </div>
+                <div style={{ background: '#F97316', color: '#000', borderRadius: 14, minWidth: 56, height: 56, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, fontWeight: 900, flexShrink: 0 }}>{oi.quantity}</div>
+                <div style={{ color: '#fff', fontSize: 30, fontWeight: 800, lineHeight: 1.2 }}>{oi.menu_items?.name_he ?? 'פריט'}</div>
               </div>
-
               {oi.notes && (
-                <div style={{
-                  background: 'rgba(249,115,22,0.1)',
-                  border: '1.5px solid rgba(249,115,22,0.5)',
-                  borderRadius: 12,
-                  padding: '14px 18px',
-                  marginTop: 4,
-                }}>
-                  <div style={{ color: '#F97316', fontSize: 14, fontWeight: 700, marginBottom: 6 }}>
-                    📝 הערות:
-                  </div>
-                  <div style={{ color: '#FED7AA', fontSize: 22, fontWeight: 700, lineHeight: 1.5 }}>
-                    {oi.notes}
-                  </div>
+                <div style={{ background: 'rgba(249,115,22,0.1)', border: '1.5px solid rgba(249,115,22,0.5)', borderRadius: 12, padding: '14px 18px', marginTop: 4 }}>
+                  <div style={{ color: '#F97316', fontSize: 14, fontWeight: 700, marginBottom: 6 }}>📝 הערות:</div>
+                  <div style={{ color: '#FED7AA', fontSize: 22, fontWeight: 700, lineHeight: 1.5 }}>{oi.notes}</div>
                 </div>
               )}
             </div>
           ))}
         </div>
-
-        <button
-          onClick={() => { onDone(order.id); onClose() }}
-          style={{
-            width: '100%', padding: '20px 0',
-            background: '#4ADE80', color: '#000',
-            border: 'none', borderRadius: 18,
-            fontSize: 26, fontWeight: 900,
-            cursor: 'pointer', fontFamily: 'Heebo, sans-serif',
-          }}
-        >
+        <button onClick={() => { onDone(order.id); onClose() }} style={{ width: '100%', padding: '20px 0', background: '#4ADE80', color: '#000', border: 'none', borderRadius: 18, fontSize: 26, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
           ✅ מוכן — העבר להגשה
         </button>
       </div>
@@ -170,10 +201,8 @@ function KitchenModal({ order, onClose, onDone }: {
 }
 
 function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
-  order: Order
-  onAdvance: (id: string, next: OrderStatus) => void
-  onKitchenOpen?: (order: Order) => void
-  onEdit?: (order: Order) => void
+  order: Order; onAdvance: (id: string, next: OrderStatus) => void
+  onKitchenOpen?: (order: Order) => void; onEdit?: (order: Order) => void
 }) {
   const cfg = STATUS_CONFIG[order.status]
   const isNew = order.status === 'received'
@@ -183,26 +212,11 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
   return (
     <div
       onClick={isPreparing && onKitchenOpen ? () => onKitchenOpen(order) : undefined}
-      style={{
-        background: cfg.bg,
-        border: `1px solid ${cfg.border}`,
-        borderRadius: 12,
-        padding: '14px 16px',
-        marginBottom: 10,
-        position: 'relative',
-        animation: isNew ? 'pulse 2s infinite' : 'none',
-        direction: 'rtl',
-        cursor: isPreparing ? 'pointer' : 'default',
-      }}
+      style={{ background: cfg.bg, border: `1px solid ${cfg.border}`, borderRadius: 12, padding: '14px 16px', marginBottom: 10, position: 'relative', animation: isNew ? 'pulse 2s infinite' : 'none', direction: 'rtl', cursor: isPreparing ? 'pointer' : 'default' }}
     >
       {isPreparing && (
-        <div style={{
-          position: 'absolute', top: 8, right: 10,
-          background: '#F97316', color: '#000',
-          borderRadius: 6, padding: '2px 7px', fontSize: 11, fontWeight: 700,
-        }}>🔍 הגדל</div>
+        <div style={{ position: 'absolute', top: 8, right: 10, background: '#F97316', color: '#000', borderRadius: 6, padding: '2px 7px', fontSize: 11, fontWeight: 700 }}>🔍 הגדל</div>
       )}
-
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ color: cfg.color, fontWeight: 700, fontSize: 15 }}>#{num}</span>
@@ -214,7 +228,6 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
           <div style={{ color: '#D1D5DB', fontSize: 13, direction: 'ltr' }}>📞 {order.phone}</div>
         </div>
       </div>
-
       <div style={{ marginBottom: 10 }}>
         {order.order_items.map((oi) => (
           <div key={oi.id} style={{ color: '#E5E7EB', fontSize: 13, lineHeight: '1.6' }}>
@@ -224,7 +237,6 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
           </div>
         ))}
       </div>
-
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <span style={{ color: '#FFD700', fontWeight: 700, fontSize: 15 }}>₪{order.total_price}</span>
@@ -234,34 +246,13 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
           {(order.status === 'confirmed' || order.status === 'preparing') && onEdit && (
-            <button
-              onClick={e => { e.stopPropagation(); onEdit(order) }}
-              style={{
-                background: 'transparent', color: '#FFD700', border: '1px solid #FFD700', borderRadius: 6,
-                padding: '4px 8px', fontWeight: 700, fontSize: 11, cursor: 'pointer',
-                fontFamily: 'Heebo, sans-serif', whiteSpace: 'nowrap',
-              }}
-            >✏️</button>
+            <button onClick={e => { e.stopPropagation(); onEdit(order) }} style={{ background: 'transparent', color: '#FFD700', border: '1px solid #FFD700', borderRadius: 6, padding: '4px 8px', fontWeight: 700, fontSize: 11, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', whiteSpace: 'nowrap' }}>✏️</button>
           )}
           {(order.status === 'confirmed' || order.status === 'preparing') && (
-            <button
-              onClick={e => { e.stopPropagation(); if(confirm('לבטל הזמנה #' + num + '?')) onAdvance(order.id, 'cancelled') }}
-              style={{
-                background: 'transparent', color: '#FF6B6B', border: '1px solid #FF6B6B', borderRadius: 6,
-                padding: '4px 8px', fontWeight: 700, fontSize: 11, cursor: 'pointer',
-                fontFamily: 'Heebo, sans-serif', whiteSpace: 'nowrap',
-              }}
-            >✕</button>
+            <button onClick={e => { e.stopPropagation(); if(confirm('לבטל הזמנה #' + num + '?')) onAdvance(order.id, 'cancelled') }} style={{ background: 'transparent', color: '#FF6B6B', border: '1px solid #FF6B6B', borderRadius: 6, padding: '4px 8px', fontWeight: 700, fontSize: 11, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', whiteSpace: 'nowrap' }}>✕</button>
           )}
           {cfg.next && (
-            <button
-              onClick={e => { e.stopPropagation(); onAdvance(order.id, cfg.next!) }}
-              style={{
-                background: cfg.color, color: '#000', border: 'none', borderRadius: 8,
-                padding: '6px 14px', fontWeight: 700, fontSize: 13, cursor: 'pointer',
-                fontFamily: 'Heebo, sans-serif',
-              }}
-            >{cfg.nextLabel}</button>
+            <button onClick={e => { e.stopPropagation(); onAdvance(order.id, cfg.next!) }} style={{ background: cfg.color, color: '#000', border: 'none', borderRadius: 8, padding: '6px 14px', fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>{cfg.nextLabel}</button>
           )}
         </div>
       </div>
@@ -271,10 +262,7 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
 
 function CustomerTab({ orders }: { orders: Order[] }) {
   const byPhone: Record<string, Order[]> = {}
-  orders.forEach(o => {
-    if (!byPhone[o.phone]) byPhone[o.phone] = []
-    byPhone[o.phone].push(o)
-  })
+  orders.forEach(o => { if (!byPhone[o.phone]) byPhone[o.phone] = []; byPhone[o.phone].push(o) })
   const customers = Object.entries(byPhone)
     .map(([phone, ords]) => ({ phone, orders: ords.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()), total: ords.reduce((s, o) => s + o.total_price, 0) }))
     .sort((a, b) => b.total - a.total)
@@ -291,9 +279,7 @@ function CustomerTab({ orders }: { orders: Order[] }) {
               <span style={{ color: '#FFD700', fontWeight: 700 }}>₪{c.total}</span>
             </div>
           </div>
-          {c.orders[0]?.customer_name && (
-            <div style={{ color: '#9CA3AF', fontSize: 12, marginBottom: 6 }}>👤 {c.orders[0].customer_name}</div>
-          )}
+          {c.orders[0]?.customer_name && <div style={{ color: '#9CA3AF', fontSize: 12, marginBottom: 6 }}>👤 {c.orders[0].customer_name}</div>}
           {c.orders.slice(0, 3).map(o => (
             <div key={o.id} style={{ fontSize: 12, color: '#6B7280', borderTop: '1px solid #2A2A2A', paddingTop: 6, marginTop: 6 }}>
               <span style={{ color: STATUS_CONFIG[o.status].color }}>●</span>{' '}
@@ -307,12 +293,52 @@ function CustomerTab({ orders }: { orders: Order[] }) {
   )
 }
 
+/* ══════════════════════════════════════════════════
+   MAIN PAGE
+══════════════════════════════════════════════════ */
 export default function OrdersPage() {
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null)
+  const [authChecked, setAuthChecked] = useState(false)
+
+  // בדוק session קיים
+  useEffect(() => {
+    const saved = localStorage.getItem('dashboard_user')
+    if (saved) {
+      try {
+        const u = JSON.parse(saved) as AuthUser
+        // ודא שהמשתמש עדיין תקין
+        if (USERS[u.username]) setCurrentUser(u)
+      } catch {}
+    }
+    setAuthChecked(true)
+  }, [])
+
+  function handleLogin(user: AuthUser) {
+    localStorage.setItem('dashboard_user', JSON.stringify(user))
+    setCurrentUser(user)
+  }
+
+  function handleLogout() {
+    localStorage.removeItem('dashboard_user')
+    setCurrentUser(null)
+  }
+
+  if (!authChecked) return null
+
+  if (!currentUser) return <LoginScreen onLogin={handleLogin} />
+
+  return <Dashboard user={currentUser} onLogout={handleLogout} />
+}
+
+/* ══════════════════════════════════════════════════
+   DASHBOARD
+══════════════════════════════════════════════════ */
+function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<'kanban' | 'customers'>('kanban')
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date())
-  const [filterBranch, setFilterBranch] = useState<string>('all')
+  const [filterBranch, setFilterBranch] = useState<string>(user.branchId ?? 'all')
   const [branches, setBranches] = useState<{ id: string; name: string }[]>([])
   const [kitchenOrder, setKitchenOrder] = useState<Order | null>(null)
   const [editOrder, setEditOrder] = useState<Order | null>(null)
@@ -322,27 +348,32 @@ export default function OrdersPage() {
 
   const fetchOrders = useCallback(async () => {
     const today = new Date(); today.setHours(0, 0, 0, 0)
-    const { data, error } = await supabase
+    let query = supabase
       .from('orders')
       .select(`*, branches(name), order_items(id, item_id, quantity, unit_price, notes, menu_items(name_he))`)
       .gte('created_at', today.toISOString())
       .order('created_at', { ascending: false })
+
+    // סניף ספציפי — הגבלה ברמת DB
+    if (user.branchId) {
+      query = query.eq('branch_id', user.branchId)
+    }
+
+    const { data, error } = await query
     if (!error && data) setOrders(data as Order[])
     setLastRefresh(new Date())
     setLoading(false)
-  }, [])
+  }, [user.branchId])
 
   const alarmRef = useRef<any>(null)
   const alarmCtxRef = useRef<any>(null)
 
   useEffect(() => {
     const hasNew = orders.some(o => o.status === 'received')
-
     if (hasNew && !alarmRef.current && audioUnlocked) {
       try {
         const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
         alarmCtxRef.current = ctx
-
         const playLoop = () => {
           if (!alarmRef.current) return
           const now = ctx.currentTime
@@ -405,13 +436,14 @@ export default function OrdersPage() {
     }
 
     const { error } = await supabase.from('orders').update({ status: nextStatus }).eq('id', orderId)
-    if (error) {
-      console.error('שגיאה:', error)
-      fetchOrders()
-    }
+    if (error) { console.error('שגיאה:', error); fetchOrders() }
   }
 
-  const filteredOrders = filterBranch === 'all' ? orders : orders.filter(o => o.branch_id === filterBranch)
+  // אדמין יכול לסנן לפי סניף, סניף רגיל — קבוע
+  const filteredOrders = user.role === 'admin'
+    ? (filterBranch === 'all' ? orders : orders.filter(o => o.branch_id === filterBranch))
+    : orders  // כבר מסונן ברמת DB
+
   const byStatus = STATUSES.reduce((acc, s) => { acc[s] = filteredOrders.filter(o => o.status === s); return acc }, {} as Record<OrderStatus, Order[]>)
   const todayTotal = filteredOrders.filter(o => o.status !== 'received' && o.status !== 'cancelled').reduce((s, o) => s + o.total_price, 0)
   const newCount = byStatus.received.length
@@ -427,14 +459,8 @@ export default function OrdersPage() {
       `}</style>
 
       {editOrder && (
-        <div onClick={() => setEditOrder(null)} style={{
-          position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.85)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
-        }}>
-          <div onClick={e => e.stopPropagation()} style={{
-            background: '#111', border: '2px solid #FFD700', borderRadius: 24,
-            padding: 28, maxWidth: 500, width: '100%', direction: 'rtl', maxHeight: '90vh', overflowY: 'auto',
-          }}>
+        <div onClick={() => setEditOrder(null)} style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: '#111', border: '2px solid #FFD700', borderRadius: 24, padding: 28, maxWidth: 500, width: '100%', direction: 'rtl', maxHeight: '90vh', overflowY: 'auto' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
               <div style={{ color: '#FFD700', fontSize: 22, fontWeight: 900 }}>
                 ✏️ עריכת הזמנה #{editOrder.daily_number ? String(editOrder.daily_number).padStart(4,'0') : editOrder.id.slice(-4).toUpperCase()}
@@ -443,9 +469,7 @@ export default function OrdersPage() {
             </div>
             {editOrder.order_items.map(oi => (
               <div key={oi.id} style={{ background: '#1A1A1A', borderRadius: 12, padding: 16, marginBottom: 12 }}>
-                <div style={{ color: '#fff', fontWeight: 700, fontSize: 16, marginBottom: 8 }}>
-                  {oi.quantity}× {oi.menu_items?.name_he}
-                </div>
+                <div style={{ color: '#fff', fontWeight: 700, fontSize: 16, marginBottom: 8 }}>{oi.quantity}× {oi.menu_items?.name_he}</div>
                 <textarea
                   value={editNotes[oi.id] ?? (oi.notes || '')}
                   onChange={e => setEditNotes(prev => ({ ...prev, [oi.id]: e.target.value }))}
@@ -458,14 +482,8 @@ export default function OrdersPage() {
               for (const [itemId, notes] of Object.entries(editNotes)) {
                 await supabase.from('order_items').update({ notes }).eq('id', itemId)
               }
-              fetchOrders()
-              setEditOrder(null)
-              setEditNotes({})
-            }} style={{
-              width: '100%', padding: 14, background: '#FFD700', color: '#000',
-              border: 'none', borderRadius: 12, fontSize: 16, fontWeight: 900,
-              cursor: 'pointer', fontFamily: 'Heebo, sans-serif',
-            }}>✅ שמור שינויים</button>
+              fetchOrders(); setEditOrder(null); setEditNotes({})
+            }} style={{ width: '100%', padding: 14, background: '#FFD700', color: '#000', border: 'none', borderRadius: 12, fontSize: 16, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>✅ שמור שינויים</button>
           </div>
         </div>
       )}
@@ -481,87 +499,71 @@ export default function OrdersPage() {
               <a href="/dashboard" style={{ color: '#6B7280', textDecoration: 'none', fontSize: 13 }}>← דשבורד</a>
               <span style={{ color: '#FFD700', fontSize: 18, fontWeight: 800 }}>🧆 הזמנות היום</span>
               {newCount > 0 && <span style={{ background: '#FFD700', color: '#000', borderRadius: 20, padding: '2px 10px', fontSize: 12, fontWeight: 700, animation: 'pulse 1.5s infinite' }}>{newCount} חדשות!</span>}
+              {/* תג הסניף הנוכחי */}
+              <span style={{ background: user.role === 'admin' ? 'rgba(96,165,250,0.15)' : 'rgba(74,222,128,0.15)', color: user.role === 'admin' ? '#60A5FA' : '#4ADE80', border: `1px solid ${user.role === 'admin' ? 'rgba(96,165,250,0.4)' : 'rgba(74,222,128,0.4)'}`, borderRadius: 20, padding: '2px 10px', fontSize: 11, fontWeight: 700 }}>
+                {user.role === 'admin' ? '👑' : '📍'} {user.label}
+              </span>
             </div>
             <div style={{ textAlign: 'left' }}>
               <div style={{ color: '#4ADE80', fontWeight: 700, fontSize: 15 }}>₪{todayTotal}</div>
               <div style={{ color: '#6B7280', fontSize: 10 }}>עודכן {formatTime(lastRefresh.toISOString())}</div>
-              <button onClick={() => {
-                const delivered = filteredOrders.filter(o => o.status === 'delivered')
-                if (delivered.length === 0) { alert('אין הזמנות שנמסרו היום'); return }
-                const date = new Date().toLocaleDateString('he-IL')
-
-                const ordersData = delivered.map(o => ({
-                  'מספר': o.daily_number ? String(o.daily_number).padStart(4,'0') : o.id.slice(-4),
-                  'שם לקוח': o.customer_name || '',
-                  'טלפון': o.phone,
-                  'פריטים': o.order_items.map(i => (i.menu_items?.name_he || '') + ' x' + i.quantity).join(', '),
-                  'סכום': o.total_price,
-                  'תשלום': o.payment_method === 'cash' ? 'מזומן' : o.payment_method === 'cibus' ? 'סיבוס' : o.payment_method === 'bit' ? 'ביט' : 'אשראי',
-                  'שעה': formatTime(o.created_at),
-                  'סניף': o.branches?.name || '',
-                }))
-
-                const byPhone: Record<string,any[]> = {}
-                delivered.forEach(o => { if(!byPhone[o.phone]) byPhone[o.phone]=[]; byPhone[o.phone].push(o) })
-                const customersData = Object.entries(byPhone).map(([phone, ords]: any) => ({
-                  'שם': ords[0]?.customer_name || '',
-                  'טלפון': phone,
-                  'מספר הזמנות': ords.length,
-                  'סה"כ': ords.reduce((s:number,o:any) => s+o.total_price, 0),
-                }))
-
-                const csvOrders = [Object.keys(ordersData[0] || {}).join(','),
-                  ...ordersData.map(r => Object.values(r).map(v => '"' + String(v).replace(/"/g,'""') + '"').join(','))
-                ].join('\n')
-                const a1 = document.createElement('a')
-                a1.href = URL.createObjectURL(new Blob([csvOrders], {type:'text/csv;charset=utf-8'}))
-                a1.download = 'הזמנות_' + date.replace(/\//g,'-') + '.csv'
-                a1.click()
-
-                setTimeout(() => {
-                  const csvCustomers = [Object.keys(customersData[0] || {}).join(','),
-                    ...customersData.map(r => Object.values(r).map(v => '"' + String(v).replace(/"/g,'""') + '"').join(','))
-                  ].join('\n')
-                  const a2 = document.createElement('a')
-                  a2.href = URL.createObjectURL(new Blob([csvCustomers], {type:'text/csv;charset=utf-8'}))
-                  a2.download = 'לקוחות_' + date.replace(/\//g,'-') + '.csv'
-                  a2.click()
-                }, 500)
-
-                setTimeout(() => {
-                  const total = delivered.reduce((s,o) => s+o.total_price, 0)
-                  alert('✅ 2 קבצי CSV הורדו!\n\n📎 כעת יפתח האימייל — צרף את הקבצים שהורדו:\n• הזמנות_' + date.replace(/\//g,'-') + '.csv\n• לקוחות_' + date.replace(/\//g,'-') + '.csv')
-                  const subject = encodeURIComponent('דוח יומי פלאפל בתחנה — ' + date)
-                  const body = encodeURIComponent('שלום, מצורפים קבצי הדוח היומי לתאריך ' + date + '. סהכ הכנסות: ' + total + ' שח. מספר הזמנות: ' + delivered.length + '. פלאפל בתחנה')
-                  window.location.href = 'mailto:sssnoy81@gmail.com?subject=' + subject + '&body=' + body
-                }, 1000)
-              }} style={{
-                background: 'rgba(74,222,128,0.15)', color: '#4ADE80',
-                border: '1px solid rgba(74,222,128,0.3)', borderRadius: 8,
-                padding: '4px 10px', fontSize: 11, fontWeight: 700,
-                cursor: 'pointer', fontFamily: 'Heebo, sans-serif', marginTop: 2,
-              }}>📊 דוח יומי</button>
-
-              {!audioUnlocked && (
+              <div style={{ display: 'flex', gap: 4, marginTop: 2, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                 <button onClick={() => {
-                  try {
-                    const ctx = new ((window as any).AudioContext || (window as any).webkitAudioContext)()
-                    ctx.resume().then(() => { setAudioUnlocked(true); ctx.close() })
-                  } catch { setAudioUnlocked(true) }
-                }} style={{
-                  background: '#FF6B6B', color: '#000', border: 'none', borderRadius: 8,
-                  padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
-                  fontFamily: 'Heebo, sans-serif', marginTop: 2,
-                }}>🔔 הפעל התראות</button>
-              )}
-              {audioUnlocked && <div style={{ color: '#4ADE80', fontSize: 10 }}>🔔 פעיל</div>}
+                  const delivered = filteredOrders.filter(o => o.status === 'delivered')
+                  if (delivered.length === 0) { alert('אין הזמנות שנמסרו היום'); return }
+                  const date = new Date().toLocaleDateString('he-IL')
+                  const ordersData = delivered.map(o => ({
+                    'מספר': o.daily_number ? String(o.daily_number).padStart(4,'0') : o.id.slice(-4),
+                    'שם לקוח': o.customer_name || '', 'טלפון': o.phone,
+                    'פריטים': o.order_items.map(i => (i.menu_items?.name_he || '') + ' x' + i.quantity).join(', '),
+                    'סכום': o.total_price,
+                    'תשלום': o.payment_method === 'cash' ? 'מזומן' : o.payment_method === 'cibus' ? 'סיבוס' : o.payment_method === 'bit' ? 'ביט' : 'אשראי',
+                    'שעה': formatTime(o.created_at), 'סניף': o.branches?.name || '',
+                  }))
+                  const byPhone: Record<string,any[]> = {}
+                  delivered.forEach(o => { if(!byPhone[o.phone]) byPhone[o.phone]=[]; byPhone[o.phone].push(o) })
+                  const customersData = Object.entries(byPhone).map(([phone, ords]: any) => ({
+                    'שם': ords[0]?.customer_name || '', 'טלפון': phone,
+                    'מספר הזמנות': ords.length, 'סה"כ': ords.reduce((s:number,o:any) => s+o.total_price, 0),
+                  }))
+                  const csvOrders = [Object.keys(ordersData[0]||{}).join(','), ...ordersData.map(r => Object.values(r).map(v => '"' + String(v).replace(/"/g,'""') + '"').join(','))].join('\n')
+                  const a1 = document.createElement('a'); a1.href = URL.createObjectURL(new Blob([csvOrders], {type:'text/csv;charset=utf-8'})); a1.download = 'הזמנות_' + date.replace(/\//g,'-') + '.csv'; a1.click()
+                  setTimeout(() => {
+                    const csvCustomers = [Object.keys(customersData[0]||{}).join(','), ...customersData.map(r => Object.values(r).map(v => '"' + String(v).replace(/"/g,'""') + '"').join(','))].join('\n')
+                    const a2 = document.createElement('a'); a2.href = URL.createObjectURL(new Blob([csvCustomers], {type:'text/csv;charset=utf-8'})); a2.download = 'לקוחות_' + date.replace(/\//g,'-') + '.csv'; a2.click()
+                  }, 500)
+                  setTimeout(() => {
+                    const total = delivered.reduce((s,o) => s+o.total_price, 0)
+                    alert('✅ 2 קבצי CSV הורדו!\n\n📎 כעת יפתח האימייל — צרף את הקבצים שהורדו:\n• הזמנות_' + date.replace(/\//g,'-') + '.csv\n• לקוחות_' + date.replace(/\//g,'-') + '.csv')
+                    window.location.href = 'mailto:sssnoy81@gmail.com?subject=' + encodeURIComponent('דוח יומי פלאפל בתחנה — ' + date) + '&body=' + encodeURIComponent('שלום, מצורפים קבצי הדוח היומי לתאריך ' + date + '. סהכ הכנסות: ' + total + ' שח. מספר הזמנות: ' + delivered.length + '. פלאפל בתחנה')
+                  }, 1000)
+                }} style={{ background: 'rgba(74,222,128,0.15)', color: '#4ADE80', border: '1px solid rgba(74,222,128,0.3)', borderRadius: 8, padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>📊 דוח יומי</button>
+
+                {!audioUnlocked ? (
+                  <button onClick={() => {
+                    try {
+                      const ctx = new ((window as any).AudioContext || (window as any).webkitAudioContext)()
+                      ctx.resume().then(() => { setAudioUnlocked(true); ctx.close() })
+                    } catch { setAudioUnlocked(true) }
+                  }} style={{ background: '#FF6B6B', color: '#000', border: 'none', borderRadius: 8, padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>🔔 הפעל התראות</button>
+                ) : (
+                  <div style={{ color: '#4ADE80', fontSize: 10, alignSelf: 'center' }}>🔔 פעיל</div>
+                )}
+
+                {/* כפתור יציאה */}
+                <button onClick={onLogout} style={{ background: 'rgba(255,107,107,0.1)', color: '#FF6B6B', border: '1px solid rgba(255,107,107,0.3)', borderRadius: 8, padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>יציאה</button>
+              </div>
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {[{ id: 'all', name: 'כל הסניפים' }, ...branches].map(b => (
-              <button key={b.id} onClick={() => setFilterBranch(b.id)} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 12, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', fontWeight: filterBranch === b.id ? 700 : 400, background: filterBranch === b.id ? '#FFD700' : '#1A1A1A', color: filterBranch === b.id ? '#000' : '#9CA3AF', border: `1px solid ${filterBranch === b.id ? '#FFD700' : '#333'}` }}>{b.name}</button>
-            ))}
-          </div>
+
+          {/* אדמין בלבד — פילטר סניפים */}
+          {user.role === 'admin' && (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {[{ id: 'all', name: 'כל הסניפים' }, ...branches].map(b => (
+                <button key={b.id} onClick={() => setFilterBranch(b.id)} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 12, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', fontWeight: filterBranch === b.id ? 700 : 400, background: filterBranch === b.id ? '#FFD700' : '#1A1A1A', color: filterBranch === b.id ? '#000' : '#9CA3AF', border: `1px solid ${filterBranch === b.id ? '#FFD700' : '#333'}` }}>{b.name}</button>
+              ))}
+            </div>
+          )}
         </div>
 
         <div style={{ display: 'flex', borderBottom: '1px solid #222', background: '#111' }}>
