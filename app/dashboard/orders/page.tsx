@@ -427,8 +427,6 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: nextStatus } : o))
     setKitchenOrder(prev => prev?.id === orderId ? null : prev)
 
-    }
-
     const { error } = await supabase.from('orders').update({ status: nextStatus }).eq('id', orderId)
     if (error) { console.error('שגיאה:', error); fetchOrders() }
   }
