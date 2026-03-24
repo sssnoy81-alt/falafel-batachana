@@ -344,7 +344,10 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
   const [editOrder, setEditOrder] = useState<Order | null>(null)
   const [editNotes, setEditNotes] = useState<Record<string, string>>({})
   const prevNewCount = useRef(0)
-  const [audioUnlocked, setAudioUnlocked] = useState(false)
+  const [audioUnlocked, setAudioUnlocked] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
+    return localStorage.getItem('audio_unlocked_date') === new Date().toDateString()
+  })
 
   const fetchOrders = useCallback(async () => {
     const today = new Date(); today.setHours(0, 0, 0, 0)
@@ -543,8 +546,8 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
                   <button onClick={() => {
                     try {
                       const ctx = new ((window as any).AudioContext || (window as any).webkitAudioContext)()
-                      ctx.resume().then(() => { setAudioUnlocked(true); ctx.close() })
-                    } catch { setAudioUnlocked(true) }
+                      ctx.resume().then(() => { localStorage.setItem('audio_unlocked_date', new Date().toDateString()); setAudioUnlocked(true); ctx.close() })
+                    } catch { localStorage.setItem('audio_unlocked_date', new Date().toDateString()); setAudioUnlocked(true) }
                   }} style={{ background: '#FF6B6B', color: '#000', border: 'none', borderRadius: 8, padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>🔔 הפעל התראות</button>
                 ) : (
                   <div style={{ color: '#4ADE80', fontSize: 10, alignSelf: 'center' }}>🔔 פעיל</div>
