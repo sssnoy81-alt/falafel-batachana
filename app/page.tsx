@@ -949,7 +949,9 @@ export default function Home() {
                 <div style={{ marginBottom: 22 }}>
                   <div style={{ fontWeight: 700, fontSize: 15, color: C.white, marginBottom: 10 }}>🧄 רטבים</div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    {sauces.map(s => (
+                    {sauces
+                      .filter(s => !(s.name_he === 'לימון כבוש' && selectedBranch?.id === '3ab15ad1-e835-492b-bae5-11b202ee2314'))
+                      .map(s => (
                       <DarkChip key={s.id} label={s.name_he} selected={sheetSauces.includes(s.name_he)}
                         onToggle={() => setSheetSauces(prev => prev.includes(s.name_he) ? prev.filter(x => x !== s.name_he) : [...prev, s.name_he])} />
                     ))}
