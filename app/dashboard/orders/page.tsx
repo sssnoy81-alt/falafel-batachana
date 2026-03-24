@@ -427,15 +427,6 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: nextStatus } : o))
     setKitchenOrder(prev => prev?.id === orderId ? null : prev)
 
-    if (nextStatus === 'ready') {
-      const order = orders.find(o => o.id === orderId)
-      if (order?.phone) {
-        const num = order.daily_number ? String(order.daily_number).padStart(4, '0') : order.id.slice(-4).toUpperCase()
-        const name = order.customer_name ? ` ${order.customer_name}` : ''
-        const msg = encodeURIComponent(`שלום${name}! 🧆\nהזמנה מספר #${num} מוכנה לאיסוף.\nמחכים לך! — פלאפל בתחנה`)
-        const phone = order.phone.replace(/[^0-9]/g, '').replace(/^0/, '972')
-        window.open('https://wa.me/' + phone + '?text=' + msg, '_blank')
-      }
     }
 
     const { error } = await supabase.from('orders').update({ status: nextStatus }).eq('id', orderId)
