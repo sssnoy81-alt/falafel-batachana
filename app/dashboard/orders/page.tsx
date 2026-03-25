@@ -488,7 +488,7 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
         <div style={{ background: '#111', borderBottom: '1px solid #222', padding: '12px 16px', position: 'sticky', top: 0, zIndex: 50 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <a href="/dashboard" style={{ color: '#6B7280', textDecoration: 'none', fontSize: 13 }}>← דשבורד</a>
+              {user.role === 'admin' && <a href="/dashboard" style={{ color: '#6B7280', textDecoration: 'none', fontSize: 13 }}>← דשבורד</a>}
               <span style={{ color: '#FFD700', fontSize: 18, fontWeight: 800 }}>🧆 הזמנות היום</span>
               {newCount > 0 && <span style={{ background: '#FFD700', color: '#000', borderRadius: 20, padding: '2px 10px', fontSize: 12, fontWeight: 700, animation: 'pulse 1.5s infinite' }}>{newCount} חדשות!</span>}
               {/* תג הסניף הנוכחי */}
