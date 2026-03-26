@@ -21,7 +21,13 @@ type CartItem = {
   item: MenuItem; quantity: number
   sauces: string[]; salads: string[]; paidAddons: string[]
   noLettuce: boolean; notes: string
+  setDrink?: string; setDrinkExtra?: number
 }
+
+/* ─── שתיות עסקיות ─── */
+const SET_DRINKS_FREE = ['פחית קולה', 'פחית ספרייט', 'פחית פאנטה', 'מים', 'סודה']
+const SET_DRINKS_PAID = ['בקבוק זכוכית', 'פיוז טי']
+const SET_DRINK_EXTRA = 3
 type OrderStatus = 'received' | 'confirmed' | 'preparing' | 'ready' | 'delivered'
 type Screen = 'branch' | 'menu' | 'order' | 'tracking'
 
@@ -105,6 +111,7 @@ export default function Home() {
   const [showUpsell, setShowUpsell] = useState(false)
   const [showCart, setShowCart] = useState(false)
   const [editCartIndex, setEditCartIndex] = useState<number | null>(null)
+  const [sheetSetDrink, setSheetSetDrink] = useState<string>('')
 
   useEffect(() => {
     const handler = (e: any) => {
@@ -205,7 +212,7 @@ export default function Home() {
       const t = toppings.find(t => t.name_he === name)
       return s + (t?.price ?? 4)
     }, 0)
-    return sum + ((c.item.price || 0) + addonsTotal) * c.quantity
+    return sum + ((c.item.price || 0) + addonsTotal + (c.setDrinkExtra || 0)) * c.quantity
   }, 0)
   const cartCount = cart.reduce((s, c) => s + c.quantity, 0)
 
@@ -242,6 +249,7 @@ export default function Home() {
   function openItem(item: MenuItem) {
     setSelectedItem(item); setSheetSauces([]); setSheetSalads([])
     setSheetPaidAddons([]); setSheetNoLettuce(false); setSheetNotes(''); setSheetQty(1)
+    setSheetSetDrink('')
     setShowBottomSheet(true)
   }
 
@@ -254,6 +262,7 @@ export default function Home() {
     setSheetNoLettuce(c.noLettuce)
     setSheetNotes(c.notes)
     setSheetQty(c.quantity)
+    setSheetSetDrink(c.setDrink || '')
     setEditCartIndex(index)
     setShowCart(false)
     setShowBottomSheet(true)
@@ -261,10 +270,13 @@ export default function Home() {
 
   function addToCart() {
     if (!selectedItem) return
+    const drinkExtra = SET_DRINKS_PAID.includes(sheetSetDrink) ? SET_DRINK_EXTRA : 0
     const newItem: CartItem = {
       item: selectedItem, quantity: sheetQty, sauces: sheetSauces,
       salads: sheetSalads,
       paidAddons: sheetPaidAddons, noLettuce: sheetNoLettuce, notes: sheetNotes,
+      setDrink: sheetSetDrink || undefined,
+      setDrinkExtra: drinkExtra || undefined,
     }
     if (editCartIndex !== null) {
       setCart(prev => prev.map((c, i) => i === editCartIndex ? newItem : c))
@@ -339,6 +351,7 @@ export default function Home() {
           c.sauces.length > 0 ? `רטבים: ${c.sauces.join(', ')}` : '',
           c.salads.length > 0 ? `סלטים: ${c.salads.join(', ')}` : '',
           c.paidAddons.length > 0 ? `תוספות: ${c.paidAddons.join(', ')}` : '',
+          c.setDrink ? `שתייה: ${c.setDrink}${c.setDrinkExtra ? ` (+₪${c.setDrinkExtra})` : ''}` : '',
           c.notes || '',
         ].filter(Boolean).join(' | '),
       }))
@@ -523,6 +536,7 @@ export default function Home() {
                 {c.sauces.length > 0 && <div style={{ fontSize: 12, color: C.gray, marginTop: 2 }}>רטבים: {c.sauces.join(', ')}</div>}
                 {c.salads.length > 0 && <div style={{ fontSize: 12, color: C.gray }}>סלטים: {c.salads.join(', ')}</div>}
                 {c.paidAddons.length > 0 && <div style={{ fontSize: 12, color: C.gold }}>תוספות: {c.paidAddons.join(', ')}</div>}
+                {c.setDrink && <div style={{ fontSize: 12, color: '#60A5FA' }}>🥤 {c.setDrink}{c.setDrinkExtra ? ` (+₪${c.setDrinkExtra})` : ' (כלול)'}</div>}
                 {c.notes && <div style={{ fontSize: 12, color: C.gray, fontStyle: 'italic' }}>הערה: {c.notes}</div>}
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginRight: 10 }}>
@@ -534,7 +548,7 @@ export default function Home() {
                     style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.gold, fontWeight: 700, lineHeight: 1 }}>+</button>
                 </div>
                 <span style={{ fontWeight: 800, color: C.gold, minWidth: 44, textAlign: 'left' }}>
-                  {fmt(((c.item.price || 0) + c.paidAddons.reduce((s, name) => {
+                  {fmt(((c.item.price || 0) + (c.setDrinkExtra || 0) + c.paidAddons.reduce((s, name) => {
                     const t = toppings.find(t => t.name_he === name); return s + (t?.price ?? 4)
                   }, 0)) * c.quantity)}
                 </span>
@@ -721,6 +735,7 @@ export default function Home() {
                       {c.sauces.length > 0 && <div style={{ fontSize: 12, color: C.gray, marginTop: 2 }}>רטבים: {c.sauces.join(', ')}</div>}
                       {c.salads.length > 0 && <div style={{ fontSize: 12, color: C.gray }}>סלטים: {c.salads.join(', ')}</div>}
                       {c.paidAddons.length > 0 && <div style={{ fontSize: 12, color: C.gold }}>תוספות: {c.paidAddons.join(', ')}</div>}
+                      {c.setDrink && <div style={{ fontSize: 12, color: '#60A5FA' }}>🥤 {c.setDrink}{c.setDrinkExtra ? ` (+₪${c.setDrinkExtra})` : ' (כלול)'}</div>}
                       {c.notes && <div style={{ fontSize: 12, color: C.gray, fontStyle: 'italic' }}>הערה: {c.notes}</div>}
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginRight: 10 }}>
@@ -732,7 +747,7 @@ export default function Home() {
                           style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.gold, fontWeight: 700, lineHeight: 1 }}>+</button>
                       </div>
                       <span style={{ fontWeight: 800, color: C.gold, minWidth: 44, textAlign: 'left', fontSize: 14 }}>
-                        {fmt(((c.item.price || 0) + c.paidAddons.reduce((s, name) => {
+                        {fmt(((c.item.price || 0) + (c.setDrinkExtra || 0) + c.paidAddons.reduce((s, name) => {
                     const t = toppings.find(t => t.name_he === name); return s + (t?.price ?? 4)
                   }, 0)) * c.quantity)}
                       </span>
@@ -977,6 +992,31 @@ export default function Home() {
                 </div>
               )}
 
+              {/* ── שתייה לעסקיות ── */}
+              {categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('עסקי') && (
+                <div style={{ marginBottom: 22 }}>
+                  <div style={{ fontWeight: 700, fontSize: 15, color: C.white, marginBottom: 6 }}>🥤 בחר שתייה לעסקית</div>
+                  <div style={{ color: C.gray, fontSize: 12, marginBottom: 10 }}>פחיות, מים וסודה — כלולים במחיר</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+                    {SET_DRINKS_FREE.map(d => (
+                      <button key={d} onClick={() => setSheetSetDrink(sheetSetDrink === d ? '' : d)}
+                        style={{ padding: '7px 14px', borderRadius: 20, border: `1px solid ${sheetSetDrink === d ? C.green : C.border}`, background: sheetSetDrink === d ? 'rgba(74,222,128,0.15)' : 'transparent', color: sheetSetDrink === d ? C.green : C.gray, fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', transition: 'all 0.12s' }}>
+                        {d}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ color: C.gray, fontSize: 12, marginBottom: 8 }}>בקבוק / פיוז טי — תוספת ₪{SET_DRINK_EXTRA}</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    {SET_DRINKS_PAID.map(d => (
+                      <button key={d} onClick={() => setSheetSetDrink(sheetSetDrink === d ? '' : d)}
+                        style={{ padding: '7px 14px', borderRadius: 20, border: `1px solid ${sheetSetDrink === d ? C.gold : C.border}`, background: sheetSetDrink === d ? 'rgba(255,215,0,0.15)' : 'transparent', color: sheetSetDrink === d ? C.gold : C.gray, fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', transition: 'all 0.12s' }}>
+                        {d} <span style={{ fontSize: 11, opacity: 0.8 }}>+₪{SET_DRINK_EXTRA}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {!categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('שתי') && (
               <div style={{ marginBottom: 22 }}>
                 <div style={{ fontWeight: 700, fontSize: 15, color: C.white, marginBottom: 10 }}>📝 הערות</div>
@@ -996,7 +1036,7 @@ export default function Home() {
                 </div>
                 <button onClick={addToCart}
                   style={{ flex: 1, padding: 15, background: C.gold, color: '#000', border: 'none', borderRadius: 14, fontSize: 16, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', boxShadow: '0 4px 20px rgba(255,215,0,0.3)' }}>
-                  {editCartIndex !== null ? '✅ עדכן מנה' : 'הוסף לסל'} • {fmt(((selectedItem.price || 0) + sheetPaidAddons.reduce((s, name) => {
+                  {editCartIndex !== null ? '✅ עדכן מנה' : 'הוסף לסל'} • {fmt(((selectedItem.price || 0) + (SET_DRINKS_PAID.includes(sheetSetDrink) ? SET_DRINK_EXTRA : 0) + sheetPaidAddons.reduce((s, name) => {
                     const t = toppings.find(t => t.name_he === name); return s + (t?.price ?? 4)
                   }, 0)) * sheetQty)}
                 </button>
