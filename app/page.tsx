@@ -25,8 +25,8 @@ type CartItem = {
 }
 
 /* ─── שתיות עסקיות ─── */
-const SET_DRINKS_FREE = ['פחית קולה', 'פחית ספרייט', 'פחית פאנטה', 'מים', 'סודה']
-const SET_DRINKS_PAID = ['בקבוק זכוכית', 'פיוז טי']
+const SET_DRINKS_FREE = ['פחית קולה', 'פחית זירו', 'פחית ענבים', 'מים', 'סודה']
+const SET_DRINKS_PAID = ['קולה זכוכית', 'זירו זכוכית', 'פיוז טי']
 const SET_DRINK_EXTRA = 3
 type OrderStatus = 'received' | 'confirmed' | 'preparing' | 'ready' | 'delivered'
 type Screen = 'branch' | 'menu' | 'order' | 'tracking'
