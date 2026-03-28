@@ -230,10 +230,22 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
       </div>
       <div style={{ marginBottom: 10 }}>
         {order.order_items.map((oi) => (
-          <div key={oi.id} style={{ color: '#E5E7EB', fontSize: 13, lineHeight: '1.6' }}>
-            <span style={{ color: cfg.color, fontWeight: 600 }}>{oi.quantity}×</span>{' '}
-            {oi.menu_items?.name_he ?? 'פריט'}
-            {oi.notes && <span style={{ color: '#9CA3AF', fontSize: 12 }}> ({oi.notes})</span>}
+          <div key={oi.id} style={{ marginBottom: oi.notes ? 8 : 2 }}>
+            <div style={{ color: '#E5E7EB', fontSize: 13, lineHeight: '1.6' }}>
+              <span style={{ color: cfg.color, fontWeight: 700 }}>{oi.quantity}×</span>{' '}
+              <span style={{ fontWeight: 700 }}>{oi.menu_items?.name_he ?? 'פריט'}</span>
+            </div>
+            {oi.notes && (
+              <div style={{
+                background: 'rgba(249,115,22,0.12)',
+                border: '1px solid rgba(249,115,22,0.5)',
+                borderRadius: 8, padding: '5px 10px', marginTop: 4,
+                display: 'flex', alignItems: 'flex-start', gap: 6,
+              }}>
+                <span style={{ fontSize: 13 }}>📝</span>
+                <span style={{ color: '#FED7AA', fontSize: 13, fontWeight: 700, lineHeight: 1.4 }}>{oi.notes}</span>
+              </div>
+            )}
           </div>
         ))}
       </div>
