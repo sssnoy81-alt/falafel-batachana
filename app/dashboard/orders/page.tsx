@@ -160,13 +160,14 @@ function timeSince(iso: string) {
 }
 
 /* ─── זיהוי סוג פריט לפי שם ─── */
-const ADDON_NAMES = ['ציפס', 'טבעות בצל', 'שניצלונים']
-const DRINK_NAMES = ['זכוכית זירו', 'זכוכית קולה', 'פחית זירו', 'פחית קולה', 'פחית ענבים', 'מים', 'סודה']
+// זיהוי לפי מילות מפתח — גמיש לכל סדר מילים
+const DRINK_KEYWORDS = ['פחית', 'זכוכית', 'מים', 'סודה', 'פיוז', 'קולה', 'זירו', 'ענבים', 'ספרייט']
+const ADDON_KEYWORDS = ['ציפס', 'טבעות', 'שניצלון']
 
 function getItemType(name: string): 'addon' | 'drink' | 'main' {
   const n = name || ''
-  if (DRINK_NAMES.some(d => n.includes(d))) return 'drink'
-  if (ADDON_NAMES.some(a => n.includes(a))) return 'addon'
+  if (DRINK_KEYWORDS.some(k => n.includes(k))) return 'drink'
+  if (ADDON_KEYWORDS.some(k => n.includes(k))) return 'addon'
   return 'main'
 }
 
