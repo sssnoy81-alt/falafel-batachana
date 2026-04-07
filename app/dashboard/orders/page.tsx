@@ -225,10 +225,14 @@ function KitchenModal({ order, onClose, onDone }: {
               {addons.length > 0 && (
                 <div style={{ background: 'rgba(255,215,0,0.06)', border: '1.5px solid rgba(255,215,0,0.25)', borderRadius: 16, padding: '16px 20px', marginBottom: 10 }}>
                   <div style={{ color: '#FFD700', fontSize: 13, fontWeight: 700, marginBottom: 10 }}>🍟 תוספות</div>
-                  {addons.map(oi => (
-                    <div key={oi.id} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
-                      <div style={{ background: '#FFD700', color: '#000', borderRadius: 8, minWidth: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, fontWeight: 900 }}>{oi.quantity}</div>
-                      <div style={{ color: '#fff', fontSize: 20, fontWeight: 700 }}>{oi.menu_items?.name_he ?? 'תוספת'}</div>
+                  {Object.entries(addons.reduce((acc, oi) => {
+                    const n = oi.menu_items?.name_he ?? 'תוספת'
+                    acc[n] = (acc[n] || 0) + oi.quantity
+                    return acc
+                  }, {} as Record<string,number>)).map(([name, qty]) => (
+                    <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
+                      <div style={{ background: '#FFD700', color: '#000', borderRadius: 8, minWidth: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, fontWeight: 900 }}>{qty}</div>
+                      <div style={{ color: '#fff', fontSize: 20, fontWeight: 700 }}>{name}</div>
                     </div>
                   ))}
                 </div>
@@ -238,10 +242,14 @@ function KitchenModal({ order, onClose, onDone }: {
               {drinks.length > 0 && (
                 <div style={{ background: 'rgba(96,165,250,0.06)', border: '1.5px solid rgba(96,165,250,0.25)', borderRadius: 16, padding: '16px 20px', marginBottom: 10 }}>
                   <div style={{ color: '#60A5FA', fontSize: 13, fontWeight: 700, marginBottom: 10 }}>🥤 שתייה</div>
-                  {drinks.map(oi => (
-                    <div key={oi.id} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
-                      <div style={{ background: '#60A5FA', color: '#000', borderRadius: 8, minWidth: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, fontWeight: 900 }}>{oi.quantity}</div>
-                      <div style={{ color: '#fff', fontSize: 20, fontWeight: 700 }}>{oi.menu_items?.name_he ?? 'שתייה'}</div>
+                  {Object.entries(drinks.reduce((acc, oi) => {
+                    const n = oi.menu_items?.name_he ?? 'שתייה'
+                    acc[n] = (acc[n] || 0) + oi.quantity
+                    return acc
+                  }, {} as Record<string,number>)).map(([name, qty]) => (
+                    <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
+                      <div style={{ background: '#60A5FA', color: '#000', borderRadius: 8, minWidth: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, fontWeight: 900 }}>{qty}</div>
+                      <div style={{ color: '#fff', fontSize: 20, fontWeight: 700 }}>{name}</div>
                     </div>
                   ))}
                 </div>
@@ -314,22 +322,30 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
                   </div>
                 )
               })}
-              {/* תוספות */}
+              {/* תוספות — מרוכז לפי שם */}
               {addons.length > 0 && (
                 <div style={{ background: 'rgba(255,215,0,0.05)', border: '1px solid rgba(255,215,0,0.2)', borderRadius: 8, padding: '5px 8px', marginBottom: 5 }}>
-                  {addons.map(oi => (
-                    <div key={oi.id} style={{ fontSize: 12, color: '#FFD700', fontWeight: 700 }}>
-                      🍟 <span style={{ fontWeight: 900 }}>{oi.quantity}×</span> {oi.menu_items?.name_he}
+                  {Object.entries(addons.reduce((acc, oi) => {
+                    const n = oi.menu_items?.name_he ?? 'תוספת'
+                    acc[n] = (acc[n] || 0) + oi.quantity
+                    return acc
+                  }, {} as Record<string,number>)).map(([name, qty]) => (
+                    <div key={name} style={{ fontSize: 12, color: '#FFD700', fontWeight: 700 }}>
+                      🍟 <span style={{ fontWeight: 900 }}>{qty}×</span> {name}
                     </div>
                   ))}
                 </div>
               )}
-              {/* שתייה */}
+              {/* שתייה — מרוכז לפי שם */}
               {drinks.length > 0 && (
                 <div style={{ background: 'rgba(96,165,250,0.05)', border: '1px solid rgba(96,165,250,0.2)', borderRadius: 8, padding: '5px 8px' }}>
-                  {drinks.map(oi => (
-                    <div key={oi.id} style={{ fontSize: 12, color: '#60A5FA', fontWeight: 700 }}>
-                      🥤 <span style={{ fontWeight: 900 }}>{oi.quantity}×</span> {oi.menu_items?.name_he}
+                  {Object.entries(drinks.reduce((acc, oi) => {
+                    const n = oi.menu_items?.name_he ?? 'שתייה'
+                    acc[n] = (acc[n] || 0) + oi.quantity
+                    return acc
+                  }, {} as Record<string,number>)).map(([name, qty]) => (
+                    <div key={name} style={{ fontSize: 12, color: '#60A5FA', fontWeight: 700 }}>
+                      🥤 <span style={{ fontWeight: 900 }}>{qty}×</span> {name}
                     </div>
                   ))}
                 </div>
