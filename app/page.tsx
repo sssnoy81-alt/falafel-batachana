@@ -28,6 +28,7 @@ type CartItem = {
 const SET_DRINKS_FREE = ['פחית קולה', 'פחית זירו', 'פחית ענבים', 'מים', 'סודה']
 const SET_DRINKS_PAID = ['קולה זכוכית', 'זירו זכוכית', 'פיוז טי']
 const SET_DRINK_EXTRA = 3
+const APP_DISCOUNT = 0.05  // הנחה 5% לתשלום שאינו סיבוס
 type OrderStatus = 'received' | 'confirmed' | 'preparing' | 'ready' | 'delivered'
 type Screen = 'branch' | 'menu' | 'order' | 'tracking'
 
@@ -216,6 +217,11 @@ export default function Home() {
   }, 0)
   const cartCount = cart.reduce((s, c) => s + c.quantity, 0)
 
+  // הנחה 5% לכל תשלום שאינו סיבוס
+  const hasDiscount = paymentMethod !== 'cibus'
+  const discountAmount = hasDiscount ? Math.round(cartTotal * APP_DISCOUNT) : 0
+  const finalTotal = cartTotal - discountAmount
+
   useEffect(() => {
     if (screen === 'branch' || screen === 'tracking') return
     if (!selectedBranch) return
@@ -314,7 +320,8 @@ export default function Home() {
   async function placeOrder() {
     if (!selectedBranch || !isValidPhone(orderPhone) || cart.length === 0 || customerName.trim().length < 2) return
     setPlacingOrder(true)
-    // חשב מספר הזמנה יומי לפי ספירת הזמנות היום
+
+    // חשב מספר הזמנה יומי
     const today = new Date(); today.setHours(0, 0, 0, 0)
     const { count } = await supabase
       .from('orders')
@@ -322,47 +329,51 @@ export default function Home() {
       .gte('created_at', today.toISOString())
     const dailyNumber = (count || 0) + 1
 
-    const { data: order, error } = await supabase.from('orders').insert([{
-      branch_id: selectedBranch.id,
-      phone: orderPhone.replace(/[-\s]/g, ''),
-      customer_name: customerName.trim(),
-      payment_method: paymentMethod,
-      status: 'received',
-      total_price: cartTotal,
-      daily_number: dailyNumber,
-    }]).select().single()
+    // בנה רשימת פריטים
+    const items = cart.map(c => ({
+      item_id: c.item.id,
+      quantity: c.quantity,
+      unit_price: (c.item.price || 0) + c.paidAddons.reduce((s, name) => {
+        const t = toppings.find(t => t.name_he === name)
+        return s + (t?.price ?? 4)
+      }, 0),
+      notes: [
+        c.sauces.length > 0 ? `רטבים: ${c.sauces.join(', ')}` : '',
+        c.salads.length > 0 ? `סלטים: ${c.salads.join(', ')}` : '',
+        c.paidAddons.length > 0 ? `תוספות: ${c.paidAddons.join(', ')}` : '',
+        c.setDrink ? `שתייה: ${c.setDrink}${c.setDrinkExtra ? ` (+₪${c.setDrinkExtra})` : ''}` : '',
+        c.notes || '',
+      ].filter(Boolean).join(' | '),
+    }))
 
-    if (error || !order) {
-      console.error('ORDER ERROR:', JSON.stringify(error))
-      alert('שגיאה: ' + JSON.stringify(error?.message))
+    // שלח דרך API Route (עם rate limiting)
+    const res = await fetch('/api/orders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        branch_id: selectedBranch.id,
+        phone: orderPhone,
+        customer_name: customerName,
+        payment_method: paymentMethod,
+        total_price: finalTotal,
+        daily_number: dailyNumber,
+        items,
+      }),
+    })
+
+    const data = await res.json()
+
+    if (!res.ok) {
+      alert(data.error || 'שגיאה בשליחת הזמנה')
       setPlacingOrder(false); return
     }
 
-    await supabase.from('order_items').insert(
-      cart.map(c => ({
-        order_id: order.id,
-        item_id: c.item.id,
-        quantity: c.quantity,
-        unit_price: (c.item.price || 0) + c.paidAddons.reduce((s, name) => {
-          const t = toppings.find(t => t.name_he === name)
-          return s + (t?.price ?? 4)
-        }, 0),
-        notes: [
-          c.sauces.length > 0 ? `רטבים: ${c.sauces.join(', ')}` : '',
-          c.salads.length > 0 ? `סלטים: ${c.salads.join(', ')}` : '',
-          c.paidAddons.length > 0 ? `תוספות: ${c.paidAddons.join(', ')}` : '',
-          c.setDrink ? `שתייה: ${c.setDrink}${c.setDrinkExtra ? ` (+₪${c.setDrinkExtra})` : ''}` : '',
-          c.notes || '',
-        ].filter(Boolean).join(' | '),
-      }))
-    )
-    // *** תיקון 3: שמור גם branchId ב-session כדי לשחזר אחרי ריפרש ***
     localStorage.setItem('falafel_session', JSON.stringify({
-      orderId: order.id,
+      orderId: data.id,
       branchId: selectedBranch.id,
       expires: Date.now() + 6 * 3600 * 1000
     }))
-    setOrderId(order.id); setOrderStatus('received'); setOrderDailyNumber(dailyNumber); setCart([])
+    setOrderId(data.id); setOrderStatus('received'); setOrderDailyNumber(dailyNumber); setCart([])
     setPlacingOrder(false); setScreen('tracking')
   }
 
@@ -557,9 +568,19 @@ export default function Home() {
               </div>
             </div>
           ))}
-          <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 12, borderTop: `1px solid ${C.border}`, fontWeight: 800, fontSize: 18 }}>
-            <span style={{ color: C.gray }}>סה"כ</span>
-            <span style={{ color: C.gold }}>{fmt(cartTotal)}</span>
+          <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 12, borderTop: `1px solid ${C.border}`, fontWeight: 600, fontSize: 15, marginBottom: 6 }}>
+            <span style={{ color: C.gray }}>סכום לפני הנחה</span>
+            <span style={{ color: C.gray }}>{fmt(cartTotal)}</span>
+          </div>
+          {hasDiscount && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+              <span style={{ color: C.green, fontWeight: 700, fontSize: 14 }}>🎉 הנחת אפליקציה 5%</span>
+              <span style={{ color: C.green, fontWeight: 700, fontSize: 14 }}>−{fmt(discountAmount)}</span>
+            </div>
+          )}
+          <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 8, borderTop: `1px solid ${C.border}`, fontWeight: 900, fontSize: 20 }}>
+            <span style={{ color: C.white }}>לתשלום</span>
+            <span style={{ color: C.gold }}>{fmt(finalTotal)}</span>
           </div>
         </div>
 
@@ -584,7 +605,10 @@ export default function Home() {
         </div>
 
         <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 24, border: `1px solid ${C.border}` }}>
-          <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>💳 אמצעי תשלום</div>
+          <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 6 }}>💳 אמצעי תשלום</div>
+          <div style={{ color: C.green, fontSize: 12, fontWeight: 600, marginBottom: 12, background: 'rgba(74,222,128,0.08)', borderRadius: 8, padding: '6px 10px' }}>
+            🎉 הנחה 5% על תשלום במזומן, אשראי או ביט — לא חל על סיבוס
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             {(['cash', 'credit', 'cibus', 'bit'] as const).map(v => (
               <button key={v} onClick={() => setPaymentMethod(v)}
@@ -597,7 +621,7 @@ export default function Home() {
 
         <button onClick={placeOrder} disabled={!isValidPhone(orderPhone) || cart.length === 0 || placingOrder || customerName.trim().length < 2}
           style={{ width: '100%', padding: 17, background: isValidPhone(orderPhone) && cart.length > 0 ? C.gold : C.grayDim, color: '#000', border: 'none', borderRadius: 16, fontSize: 18, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', boxShadow: isValidPhone(orderPhone) ? '0 6px 32px rgba(255,215,0,0.3)' : 'none' }}>
-          {placingOrder ? '⏳ שולח הזמנה...' : `✅ שלח הזמנה • ${fmt(cartTotal)}`}
+          {placingOrder ? '⏳ שולח הזמנה...' : `✅ שלח הזמנה • ${fmt(finalTotal)}`}
         </button>
       </div>
     </div>
@@ -697,7 +721,7 @@ export default function Home() {
             style={{ flex: 1, padding: '15px 20px', background: C.gold, color: '#000', border: 'none', borderRadius: 16, fontSize: 16, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 8px 32px rgba(255,215,0,0.35)' }}>
             <span />
             <span>לתשלום</span>
-            <span>{fmt(cartTotal)}</span>
+            <span>{fmt(finalTotal)}</span>
           </button>
         </div>
       )}
@@ -766,7 +790,7 @@ export default function Home() {
 
                 <button onClick={() => { setShowCart(false); handleCartButton() }}
                   style={{ width: '100%', padding: 16, background: C.gold, color: '#000', border: 'none', borderRadius: 14, fontSize: 17, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', boxShadow: '0 4px 20px rgba(255,215,0,0.3)' }}>
-                  לתשלום • {fmt(cartTotal)}
+                  לתשלום • {fmt(finalTotal)}
                 </button>
                 <button onClick={() => setShowCart(false)}
                   style={{ width: '100%', marginTop: 10, padding: 12, background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 14, fontSize: 14, fontWeight: 600, color: C.gray, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
@@ -904,7 +928,7 @@ export default function Home() {
                 border: 'none', borderRadius: 14, fontSize: 16, fontWeight: 900,
                 cursor: 'pointer', fontFamily: 'Heebo, sans-serif', marginBottom: 10,
               }}>
-              המשך לתשלום ← {fmt(cartTotal)}
+              המשך לתשלום ← {fmt(finalTotal)}
             </button>
             <button onClick={() => setShowUpsell(false)}
               style={{
