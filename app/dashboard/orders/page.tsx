@@ -176,21 +176,47 @@ function KitchenModal({ order, onClose, onDone }: {
           </div>
           <button onClick={onClose} style={{ background: '#1A1A1A', border: '1px solid #333', color: '#9CA3AF', borderRadius: 50, width: 48, height: 48, fontSize: 22, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 18, marginBottom: 36 }}>
-          {order.order_items.map((oi) => (
-            <div key={oi.id} style={{ background: '#1A1A1A', border: '2px solid #2A2A2A', borderRadius: 18, padding: '22px 26px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: oi.notes ? 16 : 0 }}>
-                <div style={{ background: '#F97316', color: '#000', borderRadius: 14, minWidth: 56, height: 56, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, fontWeight: 900, flexShrink: 0 }}>{oi.quantity}</div>
-                <div style={{ color: '#fff', fontSize: 30, fontWeight: 800, lineHeight: 1.2 }}>{oi.menu_items?.name_he ?? 'פריט'}</div>
-              </div>
-              {oi.notes && (
-                <div style={{ background: 'rgba(249,115,22,0.1)', border: '1.5px solid rgba(249,115,22,0.5)', borderRadius: 12, padding: '14px 18px', marginTop: 4 }}>
-                  <div style={{ color: '#F97316', fontSize: 14, fontWeight: 700, marginBottom: 6 }}>📝 הערות:</div>
-                  <div style={{ color: '#FED7AA', fontSize: 22, fontWeight: 700, lineHeight: 1.5 }}>{oi.notes}</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 36 }}>
+          {order.order_items.map((oi) => {
+            const parts = (oi.notes || '').split(' | ').filter(Boolean)
+            const sauces = parts.find(p => p.startsWith('רטבים:'))
+            const salads = parts.find(p => p.startsWith('סלטים:'))
+            const addons = parts.find(p => p.startsWith('תוספות:'))
+            const drink  = parts.find(p => p.startsWith('שתייה:'))
+            const note   = parts.find(p => !p.startsWith('רטבים:') && !p.startsWith('סלטים:') && !p.startsWith('תוספות:') && !p.startsWith('שתייה:'))
+            return (
+              <div key={oi.id} style={{ background: '#1A1A1A', border: '2px solid #2A2A2A', borderRadius: 18, padding: '20px 24px' }}>
+                {/* שם המנה */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 10 }}>
+                  <div style={{ background: '#F97316', color: '#000', borderRadius: 14, minWidth: 56, height: 56, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, fontWeight: 900, flexShrink: 0 }}>{oi.quantity}</div>
+                  <div style={{ color: '#fff', fontSize: 28, fontWeight: 800, lineHeight: 1.2 }}>{oi.menu_items?.name_he ?? 'פריט'}</div>
                 </div>
-              )}
-            </div>
-          ))}
+                {/* רטבים */}
+                {sauces && (
+                  <div style={{ color: '#9CA3AF', fontSize: 16, marginBottom: 4 }}>🧄 {sauces.replace('רטבים: ', '')}</div>
+                )}
+                {/* סלטים */}
+                {salads && (
+                  <div style={{ color: '#9CA3AF', fontSize: 16, marginBottom: 4 }}>🥗 {salads.replace('סלטים: ', '')}</div>
+                )}
+                {/* תוספות */}
+                {addons && (
+                  <div style={{ color: '#FFD700', fontSize: 16, fontWeight: 700, marginBottom: 4 }}>🍟 {addons.replace('תוספות: ', '')}</div>
+                )}
+                {/* שתייה */}
+                {drink && (
+                  <div style={{ color: '#60A5FA', fontSize: 16, fontWeight: 700, marginBottom: 4 }}>🥤 {drink.replace('שתייה: ', '')}</div>
+                )}
+                {/* הערה — בולטת מאוד */}
+                {note && (
+                  <div style={{ background: 'rgba(249,115,22,0.15)', border: '2px solid rgba(249,115,22,0.6)', borderRadius: 12, padding: '12px 16px', marginTop: 8 }}>
+                    <div style={{ color: '#F97316', fontSize: 13, fontWeight: 700, marginBottom: 4 }}>📝 הערה:</div>
+                    <div style={{ color: '#FED7AA', fontSize: 22, fontWeight: 800, lineHeight: 1.4 }}>{note}</div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
         </div>
         <button onClick={() => { onDone(order.id); onClose() }} style={{ width: '100%', padding: '20px 0', background: '#4ADE80', color: '#000', border: 'none', borderRadius: 18, fontSize: 26, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
           ✅ מוכן — העבר להגשה
@@ -229,25 +255,38 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
         </div>
       </div>
       <div style={{ marginBottom: 10 }}>
-        {order.order_items.map((oi) => (
-          <div key={oi.id} style={{ marginBottom: oi.notes ? 8 : 2 }}>
-            <div style={{ color: '#E5E7EB', fontSize: 13, lineHeight: '1.6' }}>
-              <span style={{ color: cfg.color, fontWeight: 700 }}>{oi.quantity}×</span>{' '}
-              <span style={{ fontWeight: 700 }}>{oi.menu_items?.name_he ?? 'פריט'}</span>
-            </div>
-            {oi.notes && (
-              <div style={{
-                background: 'rgba(249,115,22,0.12)',
-                border: '1px solid rgba(249,115,22,0.5)',
-                borderRadius: 8, padding: '5px 10px', marginTop: 4,
-                display: 'flex', alignItems: 'flex-start', gap: 6,
-              }}>
-                <span style={{ fontSize: 13 }}>📝</span>
-                <span style={{ color: '#FED7AA', fontSize: 13, fontWeight: 700, lineHeight: 1.4 }}>{oi.notes}</span>
+        {order.order_items.map((oi) => {
+          const parts = (oi.notes || '').split(' | ').filter(Boolean)
+          const sauces  = parts.find(p => p.startsWith('רטבים:'))
+          const salads  = parts.find(p => p.startsWith('סלטים:'))
+          const addons  = parts.find(p => p.startsWith('תוספות:'))
+          const drink   = parts.find(p => p.startsWith('שתייה:'))
+          const note    = parts.find(p => !p.startsWith('רטבים:') && !p.startsWith('סלטים:') && !p.startsWith('תוספות:') && !p.startsWith('שתייה:'))
+          return (
+            <div key={oi.id} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 10, padding: '8px 10px', marginBottom: 6 }}>
+              {/* שם המנה */}
+              <div style={{ color: '#fff', fontSize: 14, fontWeight: 800, marginBottom: sauces || salads || addons || drink || note ? 6 : 0 }}>
+                <span style={{ color: cfg.color, fontWeight: 900 }}>{oi.quantity}×</span>{' '}
+                {oi.menu_items?.name_he ?? 'פריט'}
               </div>
-            )}
-          </div>
-        ))}
+              {/* רטבים */}
+              {sauces && <div style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 2 }}>🧄 {sauces.replace('רטבים: ', '')}</div>}
+              {/* סלטים */}
+              {salads && <div style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 2 }}>🥗 {salads.replace('סלטים: ', '')}</div>}
+              {/* תוספות */}
+              {addons && <div style={{ fontSize: 12, color: '#FFD700', fontWeight: 700, marginBottom: 2 }}>🍟 {addons.replace('תוספות: ', '')}</div>}
+              {/* שתייה */}
+              {drink && <div style={{ fontSize: 12, color: '#60A5FA', fontWeight: 700, marginBottom: 2 }}>🥤 {drink.replace('שתייה: ', '')}</div>}
+              {/* הערה — בולטת */}
+              {note && (
+                <div style={{ background: 'rgba(249,115,22,0.15)', border: '1px solid rgba(249,115,22,0.5)', borderRadius: 6, padding: '4px 8px', marginTop: 4, display: 'flex', alignItems: 'flex-start', gap: 5 }}>
+                  <span style={{ fontSize: 12 }}>📝</span>
+                  <span style={{ color: '#FED7AA', fontSize: 12, fontWeight: 800, lineHeight: 1.4 }}>{note}</span>
+                </div>
+              )}
+            </div>
+          )
+        })}
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
