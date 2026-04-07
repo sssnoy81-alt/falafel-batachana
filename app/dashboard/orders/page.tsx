@@ -159,6 +159,17 @@ function timeSince(iso: string) {
   return `לפני ${Math.floor(diff / 60)} שעות`
 }
 
+/* ─── זיהוי סוג פריט לפי שם ─── */
+const ADDON_NAMES = ['ציפס', 'טבעות בצל', 'שניצלונים']
+const DRINK_NAMES = ['זכוכית זירו', 'זכוכית קולה', 'פחית זירו', 'פחית קולה', 'פחית ענבים', 'מים', 'סודה']
+
+function getItemType(name: string): 'addon' | 'drink' | 'main' {
+  const n = name || ''
+  if (DRINK_NAMES.some(d => n.includes(d))) return 'drink'
+  if (ADDON_NAMES.some(a => n.includes(a))) return 'addon'
+  return 'main'
+}
+
 function KitchenModal({ order, onClose, onDone }: {
   order: Order; onClose: () => void; onDone: (id: string) => void
 }) {
@@ -176,38 +187,24 @@ function KitchenModal({ order, onClose, onDone }: {
           </div>
           <button onClick={onClose} style={{ background: '#1A1A1A', border: '1px solid #333', color: '#9CA3AF', borderRadius: 50, width: 48, height: 48, fontSize: 22, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 36 }}>
-          {order.order_items.map((oi) => {
+        {(() => {
+          const mains  = order.order_items.filter(oi => getItemType(oi.menu_items?.name_he ?? '') === 'main')
+          const addons = order.order_items.filter(oi => getItemType(oi.menu_items?.name_he ?? '') === 'addon')
+          const drinks = order.order_items.filter(oi => getItemType(oi.menu_items?.name_he ?? '') === 'drink')
+
+          const renderMain = (oi: OrderItem) => {
             const parts = (oi.notes || '').split(' | ').filter(Boolean)
             const sauces = parts.find(p => p.startsWith('רטבים:'))
             const salads = parts.find(p => p.startsWith('סלטים:'))
-            const addons = parts.find(p => p.startsWith('תוספות:'))
-            const drink  = parts.find(p => p.startsWith('שתייה:'))
             const note   = parts.find(p => !p.startsWith('רטבים:') && !p.startsWith('סלטים:') && !p.startsWith('תוספות:') && !p.startsWith('שתייה:'))
             return (
-              <div key={oi.id} style={{ background: '#1A1A1A', border: '2px solid #2A2A2A', borderRadius: 18, padding: '20px 24px' }}>
-                {/* שם המנה */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 10 }}>
+              <div key={oi.id} style={{ background: '#1A1A1A', border: '2px solid #2A2A2A', borderRadius: 18, padding: '20px 24px', marginBottom: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: sauces || salads || note ? 10 : 0 }}>
                   <div style={{ background: '#F97316', color: '#000', borderRadius: 14, minWidth: 56, height: 56, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, fontWeight: 900, flexShrink: 0 }}>{oi.quantity}</div>
                   <div style={{ color: '#fff', fontSize: 28, fontWeight: 800, lineHeight: 1.2 }}>{oi.menu_items?.name_he ?? 'פריט'}</div>
                 </div>
-                {/* רטבים */}
-                {sauces && (
-                  <div style={{ color: '#9CA3AF', fontSize: 16, marginBottom: 4 }}>🧄 {sauces.replace('רטבים: ', '')}</div>
-                )}
-                {/* סלטים */}
-                {salads && (
-                  <div style={{ color: '#9CA3AF', fontSize: 16, marginBottom: 4 }}>🥗 {salads.replace('סלטים: ', '')}</div>
-                )}
-                {/* תוספות */}
-                {addons && (
-                  <div style={{ color: '#FFD700', fontSize: 16, fontWeight: 700, marginBottom: 4 }}>🍟 {addons.replace('תוספות: ', '')}</div>
-                )}
-                {/* שתייה */}
-                {drink && (
-                  <div style={{ color: '#60A5FA', fontSize: 16, fontWeight: 700, marginBottom: 4 }}>🥤 {drink.replace('שתייה: ', '')}</div>
-                )}
-                {/* הערה — בולטת מאוד */}
+                {sauces && <div style={{ color: '#9CA3AF', fontSize: 16, marginBottom: 4 }}>🧄 {sauces.replace('רטבים: ', '')}</div>}
+                {salads && <div style={{ color: '#9CA3AF', fontSize: 16, marginBottom: 4 }}>🥗 {salads.replace('סלטים: ', '')}</div>}
                 {note && (
                   <div style={{ background: 'rgba(249,115,22,0.15)', border: '2px solid rgba(249,115,22,0.6)', borderRadius: 12, padding: '12px 16px', marginTop: 8 }}>
                     <div style={{ color: '#F97316', fontSize: 13, fontWeight: 700, marginBottom: 4 }}>📝 הערה:</div>
@@ -216,8 +213,41 @@ function KitchenModal({ order, onClose, onDone }: {
                 )}
               </div>
             )
-          })}
-        </div>
+          }
+
+          return (
+            <div style={{ marginBottom: 36 }}>
+              {/* מנות ראשיות */}
+              {mains.map(renderMain)}
+
+              {/* תוספות מרוכזות */}
+              {addons.length > 0 && (
+                <div style={{ background: 'rgba(255,215,0,0.06)', border: '1.5px solid rgba(255,215,0,0.25)', borderRadius: 16, padding: '16px 20px', marginBottom: 10 }}>
+                  <div style={{ color: '#FFD700', fontSize: 13, fontWeight: 700, marginBottom: 10 }}>🍟 תוספות</div>
+                  {addons.map(oi => (
+                    <div key={oi.id} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
+                      <div style={{ background: '#FFD700', color: '#000', borderRadius: 8, minWidth: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, fontWeight: 900 }}>{oi.quantity}</div>
+                      <div style={{ color: '#fff', fontSize: 20, fontWeight: 700 }}>{oi.menu_items?.name_he ?? 'תוספת'}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* שתייה מרוכזת */}
+              {drinks.length > 0 && (
+                <div style={{ background: 'rgba(96,165,250,0.06)', border: '1.5px solid rgba(96,165,250,0.25)', borderRadius: 16, padding: '16px 20px', marginBottom: 10 }}>
+                  <div style={{ color: '#60A5FA', fontSize: 13, fontWeight: 700, marginBottom: 10 }}>🥤 שתייה</div>
+                  {drinks.map(oi => (
+                    <div key={oi.id} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
+                      <div style={{ background: '#60A5FA', color: '#000', borderRadius: 8, minWidth: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, fontWeight: 900 }}>{oi.quantity}</div>
+                      <div style={{ color: '#fff', fontSize: 20, fontWeight: 700 }}>{oi.menu_items?.name_he ?? 'שתייה'}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })()}
         <button onClick={() => { onDone(order.id); onClose() }} style={{ width: '100%', padding: '20px 0', background: '#4ADE80', color: '#000', border: 'none', borderRadius: 18, fontSize: 26, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
           ✅ מוכן — העבר להגשה
         </button>
@@ -255,38 +285,57 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
         </div>
       </div>
       <div style={{ marginBottom: 10 }}>
-        {order.order_items.map((oi) => {
-          const parts = (oi.notes || '').split(' | ').filter(Boolean)
-          const sauces  = parts.find(p => p.startsWith('רטבים:'))
-          const salads  = parts.find(p => p.startsWith('סלטים:'))
-          const addons  = parts.find(p => p.startsWith('תוספות:'))
-          const drink   = parts.find(p => p.startsWith('שתייה:'))
-          const note    = parts.find(p => !p.startsWith('רטבים:') && !p.startsWith('סלטים:') && !p.startsWith('תוספות:') && !p.startsWith('שתייה:'))
+        {(() => {
+          const mains  = order.order_items.filter(oi => getItemType(oi.menu_items?.name_he ?? '') === 'main')
+          const addons = order.order_items.filter(oi => getItemType(oi.menu_items?.name_he ?? '') === 'addon')
+          const drinks = order.order_items.filter(oi => getItemType(oi.menu_items?.name_he ?? '') === 'drink')
           return (
-            <div key={oi.id} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 10, padding: '8px 10px', marginBottom: 6 }}>
-              {/* שם המנה */}
-              <div style={{ color: '#fff', fontSize: 14, fontWeight: 800, marginBottom: sauces || salads || addons || drink || note ? 6 : 0 }}>
-                <span style={{ color: cfg.color, fontWeight: 900 }}>{oi.quantity}×</span>{' '}
-                {oi.menu_items?.name_he ?? 'פריט'}
-              </div>
-              {/* רטבים */}
-              {sauces && <div style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 2 }}>🧄 {sauces.replace('רטבים: ', '')}</div>}
-              {/* סלטים */}
-              {salads && <div style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 2 }}>🥗 {salads.replace('סלטים: ', '')}</div>}
+            <>
+              {/* מנות ראשיות */}
+              {mains.map(oi => {
+                const parts = (oi.notes || '').split(' | ').filter(Boolean)
+                const sauces = parts.find(p => p.startsWith('רטבים:'))
+                const salads = parts.find(p => p.startsWith('סלטים:'))
+                const note   = parts.find(p => !p.startsWith('רטבים:') && !p.startsWith('סלטים:') && !p.startsWith('תוספות:') && !p.startsWith('שתייה:'))
+                return (
+                  <div key={oi.id} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 10, padding: '8px 10px', marginBottom: 5 }}>
+                    <div style={{ color: '#fff', fontSize: 14, fontWeight: 800, marginBottom: sauces || salads || note ? 5 : 0 }}>
+                      <span style={{ color: cfg.color, fontWeight: 900 }}>{oi.quantity}×</span>{' '}{oi.menu_items?.name_he ?? 'פריט'}
+                    </div>
+                    {sauces && <div style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 2 }}>🧄 {sauces.replace('רטבים: ', '')}</div>}
+                    {salads && <div style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 2 }}>🥗 {salads.replace('סלטים: ', '')}</div>}
+                    {note && (
+                      <div style={{ background: 'rgba(249,115,22,0.15)', border: '1px solid rgba(249,115,22,0.5)', borderRadius: 6, padding: '4px 8px', marginTop: 3, display: 'flex', gap: 4 }}>
+                        <span style={{ fontSize: 11 }}>📝</span>
+                        <span style={{ color: '#FED7AA', fontSize: 12, fontWeight: 800 }}>{note}</span>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
               {/* תוספות */}
-              {addons && <div style={{ fontSize: 12, color: '#FFD700', fontWeight: 700, marginBottom: 2 }}>🍟 {addons.replace('תוספות: ', '')}</div>}
-              {/* שתייה */}
-              {drink && <div style={{ fontSize: 12, color: '#60A5FA', fontWeight: 700, marginBottom: 2 }}>🥤 {drink.replace('שתייה: ', '')}</div>}
-              {/* הערה — בולטת */}
-              {note && (
-                <div style={{ background: 'rgba(249,115,22,0.15)', border: '1px solid rgba(249,115,22,0.5)', borderRadius: 6, padding: '4px 8px', marginTop: 4, display: 'flex', alignItems: 'flex-start', gap: 5 }}>
-                  <span style={{ fontSize: 12 }}>📝</span>
-                  <span style={{ color: '#FED7AA', fontSize: 12, fontWeight: 800, lineHeight: 1.4 }}>{note}</span>
+              {addons.length > 0 && (
+                <div style={{ background: 'rgba(255,215,0,0.05)', border: '1px solid rgba(255,215,0,0.2)', borderRadius: 8, padding: '5px 8px', marginBottom: 5 }}>
+                  {addons.map(oi => (
+                    <div key={oi.id} style={{ fontSize: 12, color: '#FFD700', fontWeight: 700 }}>
+                      🍟 <span style={{ fontWeight: 900 }}>{oi.quantity}×</span> {oi.menu_items?.name_he}
+                    </div>
+                  ))}
                 </div>
               )}
-            </div>
+              {/* שתייה */}
+              {drinks.length > 0 && (
+                <div style={{ background: 'rgba(96,165,250,0.05)', border: '1px solid rgba(96,165,250,0.2)', borderRadius: 8, padding: '5px 8px' }}>
+                  {drinks.map(oi => (
+                    <div key={oi.id} style={{ fontSize: 12, color: '#60A5FA', fontWeight: 700 }}>
+                      🥤 <span style={{ fontWeight: 900 }}>{oi.quantity}×</span> {oi.menu_items?.name_he}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
           )
-        })}
+        })()}
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
