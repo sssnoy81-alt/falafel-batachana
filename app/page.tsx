@@ -329,51 +329,47 @@ export default function Home() {
       .gte('created_at', today.toISOString())
     const dailyNumber = (count || 0) + 1
 
-    // בנה רשימת פריטים
-    const items = cart.map(c => ({
-      item_id: c.item.id,
-      quantity: c.quantity,
-      unit_price: (c.item.price || 0) + c.paidAddons.reduce((s, name) => {
-        const t = toppings.find(t => t.name_he === name)
-        return s + (t?.price ?? 4)
-      }, 0),
-      notes: [
-        c.sauces.length > 0 ? `רטבים: ${c.sauces.join(', ')}` : '',
-        c.salads.length > 0 ? `סלטים: ${c.salads.join(', ')}` : '',
-        c.paidAddons.length > 0 ? `תוספות: ${c.paidAddons.join(', ')}` : '',
-        c.setDrink ? `שתייה: ${c.setDrink}${c.setDrinkExtra ? ` (+₪${c.setDrinkExtra})` : ''}` : '',
-        c.notes || '',
-      ].filter(Boolean).join(' | '),
-    }))
+    const { data: order, error } = await supabase.from('orders').insert([{
+      branch_id: selectedBranch.id,
+      phone: orderPhone.replace(/[-\s]/g, ''),
+      customer_name: customerName.trim(),
+      payment_method: paymentMethod,
+      status: 'received',
+      total_price: finalTotal,
+      daily_number: dailyNumber,
+    }]).select().single()
 
-    // שלח דרך API Route (עם rate limiting)
-    const res = await fetch('/api/orders', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        branch_id: selectedBranch.id,
-        phone: orderPhone,
-        customer_name: customerName,
-        payment_method: paymentMethod,
-        total_price: finalTotal,
-        daily_number: dailyNumber,
-        items,
-      }),
-    })
-
-    const data = await res.json()
-
-    if (!res.ok) {
-      alert(data.error || 'שגיאה בשליחת הזמנה')
+    if (error || !order) {
+      console.error('ORDER ERROR:', JSON.stringify(error))
+      alert('שגיאה: ' + JSON.stringify(error?.message))
       setPlacingOrder(false); return
     }
 
+    await supabase.from('order_items').insert(
+      cart.map(c => ({
+        order_id: order.id,
+        item_id: c.item.id,
+        quantity: c.quantity,
+        unit_price: (c.item.price || 0) + c.paidAddons.reduce((s, name) => {
+          const t = toppings.find(t => t.name_he === name)
+          return s + (t?.price ?? 4)
+        }, 0),
+        notes: [
+          c.sauces.length > 0 ? `רטבים: ${c.sauces.join(', ')}` : '',
+          c.salads.length > 0 ? `סלטים: ${c.salads.join(', ')}` : '',
+          c.paidAddons.length > 0 ? `תוספות: ${c.paidAddons.join(', ')}` : '',
+          c.setDrink ? `שתייה: ${c.setDrink}${c.setDrinkExtra ? ` (+₪${c.setDrinkExtra})` : ''}` : '',
+          c.notes || '',
+        ].filter(Boolean).join(' | '),
+      }))
+    )
+
     localStorage.setItem('falafel_session', JSON.stringify({
-      orderId: data.id,
+      orderId: order.id,
       branchId: selectedBranch.id,
       expires: Date.now() + 6 * 3600 * 1000
     }))
-    setOrderId(data.id); setOrderStatus('received'); setOrderDailyNumber(dailyNumber); setCart([])
+    setOrderId(order.id); setOrderStatus('received'); setOrderDailyNumber(dailyNumber); setCart([])
     setPlacingOrder(false); setScreen('tracking')
   }
 
