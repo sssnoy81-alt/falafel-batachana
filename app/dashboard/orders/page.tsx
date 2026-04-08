@@ -162,7 +162,7 @@ function timeSince(iso: string) {
 /* ─── זיהוי סוג פריט לפי שם ─── */
 // זיהוי לפי מילות מפתח — גמיש לכל סדר מילים
 const DRINK_KEYWORDS = ['פחית', 'זכוכית', 'מים', 'סודה', 'פיוז', 'קולה', 'זירו', 'ענבים', 'ספרייט']
-const ADDON_KEYWORDS = ['ציפס', 'טבעות', 'שניצלון']
+const ADDON_KEYWORDS = ['ציפס','טבעות','שניצלון']
 
 function getItemType(name: string): 'addon' | 'drink' | 'main' {
   const n = name || ''
