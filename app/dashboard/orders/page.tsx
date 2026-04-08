@@ -471,6 +471,8 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
   const [editOrder, setEditOrder] = useState<Order | null>(null)
   const [editNotes, setEditNotes] = useState<Record<string, string>>({})
   const prevNewCount = useRef(0)
+  const [installPrompt, setInstallPrompt] = useState<any>(null)
+  const [showInstallBanner, setShowInstallBanner] = useState(false)
   const [audioUnlocked, setAudioUnlocked] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false
     return localStorage.getItem('audio_unlocked_date') === new Date().toDateString()
@@ -549,6 +551,13 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
     const interval = setInterval(fetchOrders, 20000)
     return () => clearInterval(interval)
   }, [fetchOrders, fetchBranches])
+
+  useEffect(() => {
+    const handler = (e: any) => { e.preventDefault(); setInstallPrompt(e); setShowInstallBanner(true) }
+    window.addEventListener('beforeinstallprompt', handler)
+    if (window.matchMedia('(display-mode: standalone)').matches) setShowInstallBanner(false)
+    return () => window.removeEventListener('beforeinstallprompt', handler)
+  }, [])
 
   const handleAdvance = async (orderId: string, nextStatus: OrderStatus) => {
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: nextStatus } : o))
@@ -669,6 +678,16 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
                   <div style={{ color: '#4ADE80', fontSize: 10, alignSelf: 'center' }}>🔔 פעיל</div>
                 )}
 
+                {/* כפתור התקנה PWA */}
+                {showInstallBanner && (
+                  <button onClick={async () => {
+                    if (installPrompt) {
+                      installPrompt.prompt()
+                      const result = await installPrompt.userChoice
+                      if (result.outcome === 'accepted') setShowInstallBanner(false)
+                    }
+                  }} style={{ background: 'rgba(255,215,0,0.15)', color: '#FFD700', border: '1px solid rgba(255,215,0,0.4)', borderRadius: 8, padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>📲 התקן</button>
+                )}
                 {/* כפתור יציאה */}
                 <button onClick={onLogout} style={{ background: 'rgba(255,107,107,0.1)', color: '#FF6B6B', border: '1px solid rgba(255,107,107,0.3)', borderRadius: 8, padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>יציאה</button>
               </div>
