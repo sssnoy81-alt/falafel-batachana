@@ -160,15 +160,25 @@ function timeSince(iso: string) {
 }
 
 /* ─── זיהוי סוג פריט לפי שם ─── */
-// זיהוי לפי מילות מפתח — גמיש לכל סדר מילים
+// זיהוי סוג פריט — מנות ראשיות לפי שם מדויק, שתייה לפי מילת מפתח, שאר = תוספת
+const MAIN_KEYWORDS = [
+  'פלאפל בפיתה', 'פלאפל בבגט', 'פלאפל בצלחת',
+  'סביח בפיתה', 'סביח בבגט', 'סביח בצלחת',
+  'תסביח בפיתה', 'תסביח בבגט',
+  'שניצל בפיתה', 'שניצל בבגט',
+  'חזה עוף בפיתה', 'חזה עוף בבגט',
+  'המבורגר',
+  'סלט חזה עוף', 'סלט שניצל',
+  'עסקית המבורגר', 'עסקית חזה עוף', 'עסקית שניצל', 'עסקית פלאפל', 'עסקית סביח',
+  'ארוחת ילדים',
+]
 const DRINK_KEYWORDS = ['פחית', 'זכוכית', 'מים', 'סודה', 'פיוז', 'קולה', 'זירו', 'ענבים', 'ספרייט']
-const ADDON_KEYWORDS = ['ציפס','טבעות','שניצלון']
 
 function getItemType(name: string): 'addon' | 'drink' | 'main' {
-  const n = name || ''
+  const n = (name || '').trim()
   if (DRINK_KEYWORDS.some(k => n.includes(k))) return 'drink'
-  if (ADDON_KEYWORDS.some(k => n.includes(k))) return 'addon'
-  return 'main'
+  if (MAIN_KEYWORDS.some(k => n.includes(k))) return 'main'
+  return 'addon'
 }
 
 function KitchenModal({ order, onClose, onDone }: {
