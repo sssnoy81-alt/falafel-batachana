@@ -1,0 +1,26 @@
+{
+  "name": "פלאפל בתחנה — מטבח",
+  "short_name": "מטבח 🍳",
+  "description": "דשבורד הזמנות מטבח",
+  "start_url": "/dashboard/orders",
+  "display": "standalone",
+  "background_color": "#0D0D0D",
+  "theme_color": "#F97316",
+  "orientation": "landscape",
+  "lang": "he",
+  "dir": "rtl",
+  "icons": [
+    {
+      "src": "https://sqgnrzcmjhwgfjxocvlr.supabase.co/storage/v1/object/public/menu-images/logo-k.jpg",
+      "sizes": "192x192",
+      "type": "image/jpeg",
+      "purpose": "any"
+    },
+    {
+      "src": "https://sqgnrzcmjhwgfjxocvlr.supabase.co/storage/v1/object/public/menu-images/logo-k.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any"
+    }
+  ]
+}
