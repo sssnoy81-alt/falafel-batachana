@@ -509,20 +509,37 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
         const playLoop = () => {
           if (!alarmRef.current) return
           const now = ctx.currentTime
-          const beep = (freq: number, start: number, dur: number) => {
+
+          // צליל מסעדה חזק — 3 שלבים חדים
+          const beep = (freq: number, start: number, dur: number, vol: number) => {
             const osc = ctx.createOscillator()
             const gain = ctx.createGain()
-            osc.connect(gain); gain.connect(ctx.destination)
-            osc.frequency.value = freq; osc.type = 'sine'
-            gain.gain.setValueAtTime(0.4, now + start)
-            gain.gain.exponentialRampToValueAtTime(0.001, now + start + dur)
+            // distortion להגברת עוצמה
+            const dist = ctx.createWaveShaper()
+            const curve = new Float32Array(256)
+            for (let i = 0; i < 256; i++) {
+              const x = (i * 2) / 256 - 1
+              curve[i] = (Math.PI + 200) * x / (Math.PI + 200 * Math.abs(x))
+            }
+            dist.curve = curve
+            osc.connect(dist); dist.connect(gain); gain.connect(ctx.destination)
+            osc.frequency.value = freq
+            osc.type = 'square'
+            gain.gain.setValueAtTime(0, now + start)
+            gain.gain.linearRampToValueAtTime(vol, now + start + 0.01)
+            gain.gain.setValueAtTime(vol, now + start + dur - 0.02)
+            gain.gain.linearRampToValueAtTime(0, now + start + dur)
             osc.start(now + start); osc.stop(now + start + dur + 0.05)
           }
-          beep(880, 0, 0.12)
-          beep(1100, 0.15, 0.12)
-          beep(880, 0.3, 0.12)
-          beep(1100, 0.45, 0.12)
-          alarmRef.current = setTimeout(playLoop, 1500)
+
+          // 3 צלצולים חדים וחזקים
+          beep(1400, 0,    0.18, 1.0)
+          beep(1800, 0.22, 0.18, 1.0)
+          beep(1400, 0.44, 0.18, 1.0)
+          beep(1800, 0.66, 0.18, 1.0)
+          beep(2200, 0.88, 0.25, 1.0)
+
+          alarmRef.current = setTimeout(playLoop, 2000)
         }
 
         alarmRef.current = setTimeout(playLoop, 0)
