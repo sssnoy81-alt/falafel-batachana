@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>התקנת אפליקציית מטבח</title>
+  <link rel="manifest" href="/manifest-kitchen.json">
+  <meta name="theme-color" content="#F97316">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="מטבח פלאפל">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      background: #0D0D0D;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Heebo', sans-serif;
+      direction: rtl;
+      padding: 24px;
+    }
+    .card {
+      background: #1A1A1A;
+      border: 2px solid #F97316;
+      border-radius: 24px;
+      padding: 40px 32px;
+      max-width: 400px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 0 60px rgba(249,115,22,0.2);
+    }
+    .icon { font-size: 64px; margin-bottom: 16px; }
+    h1 { color: #F97316; font-size: 24px; font-weight: 900; margin-bottom: 8px; }
+    p { color: #9CA3AF; font-size: 15px; margin-bottom: 32px; line-height: 1.6; }
+    .btn-install {
+      width: 100%;
+      padding: 16px;
+      background: #F97316;
+      color: #000;
+      border: none;
+      border-radius: 14px;
+      font-size: 18px;
+      font-weight: 900;
+      cursor: pointer;
+      font-family: inherit;
+      margin-bottom: 12px;
+      display: none;
+    }
+    .btn-open {
+      width: 100%;
+      padding: 14px;
+      background: transparent;
+      color: #F97316;
+      border: 1px solid #F97316;
+      border-radius: 14px;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      font-family: inherit;
+      text-decoration: none;
+      display: block;
+    }
+    .installed { color: #4ADE80; font-size: 14px; margin-top: 16px; display: none; }
+    .steps {
+      background: #111;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 24px;
+      text-align: right;
+      display: none;
+    }
+    .steps p { color: #9CA3AF; font-size: 13px; margin-bottom: 6px; }
+    .steps strong { color: #fff; }
+  </style>
+  <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;700;900&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="card">
+    <div class="icon">🍳</div>
+    <h1>אפליקציית מטבח</h1>
+    <p>פלאפל בתחנה — מערכת הזמנות<br>התקן על הטאבלט לגישה מהירה</p>
+
+    <!-- Android Chrome: install button -->
+    <button class="btn-install" id="installBtn" onclick="installApp()">
+      📲 התקן עכשיו
+    </button>
+
+    <!-- iOS: manual instructions -->
+    <div class="steps" id="iosSteps">
+      <p>להתקנה על iPad / iPhone:</p>
+      <p>1. לחץ על כפתור השיתוף <strong>📤</strong></p>
+      <p>2. בחר <strong>"הוסף למסך הבית"</strong></p>
+      <p>3. לחץ <strong>"הוסף"</strong></p>
+    </div>
+
+    <a class="btn-open" href="/dashboard/orders">
+      🚪 כניסה לדשבורד המטבח
+    </a>
+    <div class="installed" id="installedMsg">✅ האפליקציה הותקנה בהצלחה!</div>
+  </div>
+
+  <script>
+    let deferredPrompt = null;
+
+    // Android Chrome PWA
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      document.getElementById('installBtn').style.display = 'block';
+    });
+
+    function installApp() {
+      if (!deferredPrompt) return;
+      deferredPrompt.prompt();
+      deferredPrompt.userChoice.then((result) => {
+        if (result.outcome === 'accepted') {
+          document.getElementById('installedMsg').style.display = 'block';
+          document.getElementById('installBtn').style.display = 'none';
+        }
+        deferredPrompt = null;
+      });
+    }
+
+    // iOS detection
+    const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches;
+
+    if (isIOS && !isStandalone) {
+      document.getElementById('iosSteps').style.display = 'block';
+    }
+
+    // Already installed? redirect
+    if (isStandalone) {
+      window.location.href = '/dashboard/orders';
+    }
+  </script>
+</body>
+</html>
