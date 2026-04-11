@@ -83,6 +83,45 @@ const BRANCH_INFO: Record<string, { address: string; phone: string; waze: string
 const isValidPhone = (p: string) => /^05\d{8}$/.test(p.replace(/[-\s]/g, ''))
 const fmt = (n: number) => `₪${n.toFixed(0)}`
 
+/* ─── שעות פעילות ─── */
+function getBusinessStatus(): { isOpen: boolean; nextOpen: string } {
+  const now = new Date()
+  const day = now.getDay() // 0=ראשון, 5=שישי, 6=שבת
+  const hour = now.getHours()
+  const minute = now.getMinutes()
+  const timeNum = hour * 60 + minute
+  const openTime  = 10 * 60 + 30  // 10:30
+  const closeTime = 19 * 60 + 30  // 19:30
+
+  const isFriOrSat = day === 5 || day === 6
+  const isWithinHours = timeNum >= openTime && timeNum < closeTime
+
+  if (!isFriOrSat && isWithinHours) {
+    return { isOpen: true, nextOpen: '' }
+  }
+
+  // חשב מתי פותחים בפעם הבאה
+  let nextOpen = ''
+  if (isFriOrSat) {
+    const daysUntilSun = day === 5 ? 2 : 1
+    const nextSun = new Date(now)
+    nextSun.setDate(now.getDate() + daysUntilSun)
+    nextOpen = `ראשון ${nextSun.toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })} בשעה 10:30`
+  } else if (timeNum < openTime) {
+    nextOpen = 'היום בשעה 10:30'
+  } else {
+    // אחרי שעות — מחר (אם לא יום ה' שאז מחר שישי)
+    if (day === 4) { // יום ה'
+      const nextSun = new Date(now)
+      nextSun.setDate(now.getDate() + 3)
+      nextOpen = `ראשון ${nextSun.toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })} בשעה 10:30`
+    } else {
+      nextOpen = 'מחר בשעה 10:30'
+    }
+  }
+  return { isOpen: false, nextOpen }
+}
+
 /* ══════════════════════════════════════════════════════
    MAIN
 ══════════════════════════════════════════════════════ */
@@ -422,6 +461,39 @@ export default function Home() {
       <div style={{ textAlign: 'center' }}>
         <img src={LOGO} alt="פלאפל בתחנה" style={{ width: 130, height: 130, objectFit: 'contain', marginBottom: 16 }} />
         <div style={{ color: C.gold, fontSize: 15, fontWeight: 600, letterSpacing: 1 }}>טוען...</div>
+      </div>
+    </div>
+  )
+
+  /* ── CLOSED SCREEN ── */
+  const { isOpen, nextOpen } = getBusinessStatus()
+  if (!isOpen && screen !== 'tracking') return (
+    <div style={{ minHeight: '100vh', background: C.bg, fontFamily: 'Heebo, sans-serif', direction: 'rtl', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+      <img src={LOGO} alt="פלאפל בתחנה" style={{ width: 110, height: 110, objectFit: 'contain', marginBottom: 24, opacity: 0.85 }} />
+      <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 24, padding: '36px 28px', maxWidth: 380, width: '100%', textAlign: 'center' }}>
+        <div style={{ fontSize: 52, marginBottom: 16 }}>🕙</div>
+        <h1 style={{ color: C.white, fontSize: 22, fontWeight: 900, marginBottom: 8 }}>אנחנו סגורים כרגע</h1>
+        <p style={{ color: C.gray, fontSize: 14, marginBottom: 24, lineHeight: 1.6 }}>
+          שעות פעילות:<br />
+          <strong style={{ color: C.white }}>ראשון–חמישי | 10:30–19:30</strong><br />
+          שישי ושבת — סגור
+        </p>
+        {nextOpen && (
+          <div style={{ background: 'rgba(255,215,0,0.08)', border: `1px solid rgba(255,215,0,0.2)`, borderRadius: 12, padding: '12px 16px', marginBottom: 20 }}>
+            <div style={{ color: C.gray, fontSize: 12, marginBottom: 4 }}>פתיחה הבאה</div>
+            <div style={{ color: C.gold, fontWeight: 800, fontSize: 16 }}>{nextOpen}</div>
+          </div>
+        )}
+        {orderId && (
+          <button onClick={() => setScreen('tracking')}
+            style={{ width: '100%', background: 'rgba(255,215,0,0.08)', border: `1px solid ${C.gold}`, borderRadius: 14, padding: '14px 20px', display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
+            <span style={{ fontSize: 20 }}>⏳</span>
+            <div style={{ flex: 1, textAlign: 'right' }}>
+              <div style={{ fontWeight: 800, fontSize: 15, color: C.gold }}>מעקב הזמנה פעילה</div>
+            </div>
+            <span style={{ color: C.gold }}>←</span>
+          </button>
+        )}
       </div>
     </div>
   )
