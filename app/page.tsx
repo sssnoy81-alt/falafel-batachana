@@ -220,14 +220,17 @@ export default function Home() {
 
   async function fetchBranches() {
     const { data } = await supabase.from('branches').select('id, name, address').order('sort_order')
-    setBranches(data || [])
+    // מסתיר זמנית את סניף מעבר מכמש
+    const HIDDEN_BRANCH_ID = '3ab15ad1-e835-492b-bae5-11b202ee2314'
+    setBranches((data || []).filter((b: any) => b.id !== HIDDEN_BRANCH_ID))
     setLoading(false)
   }
 
   // *** תיקון 2: פונקציה חדשה — טוענת סניפים ומשחזרת את הסניף הנבחר לפי ID ***
   async function fetchBranchesAndRestore(branchId?: string) {
     const { data } = await supabase.from('branches').select('id, name, address').order('sort_order')
-    setBranches(data || [])
+    const HIDDEN_BRANCH_ID = '3ab15ad1-e835-492b-bae5-11b202ee2314'
+    setBranches((data || []).filter((b: any) => b.id !== HIDDEN_BRANCH_ID))
     if (branchId && data) {
       const branch = (data as Branch[]).find(b => b.id === branchId)
       if (branch) setSelectedBranch(branch)
