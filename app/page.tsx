@@ -93,25 +93,32 @@ function getBusinessStatus(): { isOpen: boolean; nextOpen: string } {
   const openTime  = 10 * 60 + 30  // 10:30
   const closeTime = 20 * 60 + 0   // 20:00
 
-  const isFriOrSat = day === 5 || day === 6
-  const isWithinHours = timeNum >= openTime && timeNum < closeTime
+  const isSat = day === 6
+  const isFri = day === 5
+  const friCloseTime = 14 * 60 + 0  // 14:00 בשישי
 
-  if (!isFriOrSat && isWithinHours) {
+  // בדוק אם פתוח
+  const isWeekdayOpen = !isFri && !isSat && timeNum >= openTime && timeNum < closeTime
+  const isFriOpen = isFri && timeNum >= openTime && timeNum < friCloseTime
+  if (isWeekdayOpen || isFriOpen) {
     return { isOpen: true, nextOpen: '' }
   }
 
   // חשב מתי פותחים בפעם הבאה
   let nextOpen = ''
-  if (isFriOrSat) {
-    const daysUntilSun = day === 5 ? 2 : 1
+  if (isSat) {
     const nextSun = new Date(now)
-    nextSun.setDate(now.getDate() + daysUntilSun)
+    nextSun.setDate(now.getDate() + 1)
+    nextOpen = `ראשון ${nextSun.toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })} בשעה 10:30`
+  } else if (isFri) {
+    // שישי אחרי 14:00
+    const nextSun = new Date(now)
+    nextSun.setDate(now.getDate() + 2)
     nextOpen = `ראשון ${nextSun.toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })} בשעה 10:30`
   } else if (timeNum < openTime) {
     nextOpen = 'היום בשעה 10:30'
   } else {
-    // אחרי שעות — מחר (אם לא יום ה' שאז מחר שישי)
-    if (day === 4) { // יום ה'
+    if (day === 4) { // יום ה' אחרי 20:00
       const nextSun = new Date(now)
       nextSun.setDate(now.getDate() + 3)
       nextOpen = `ראשון ${nextSun.toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })} בשעה 10:30`
@@ -479,7 +486,7 @@ export default function Home() {
         <p style={{ color: C.gray, fontSize: 14, marginBottom: 24, lineHeight: 1.6 }}>
           שעות פעילות:<br />
           <strong style={{ color: C.white }}>ראשון–חמישי | 10:30–20:00</strong><br />
-          שישי ושבת — סגור
+          שישי | 10:30–14:00 &nbsp;&nbsp; שבת — סגור
         </p>
         {nextOpen && (
           <div style={{ background: 'rgba(255,215,0,0.08)', border: `1px solid rgba(255,215,0,0.2)`, borderRadius: 12, padding: '12px 16px', marginBottom: 20 }}>
