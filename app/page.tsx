@@ -91,7 +91,7 @@ function getBusinessStatus(): { isOpen: boolean; nextOpen: string } {
   const minute = now.getMinutes()
   const timeNum = hour * 60 + minute
   const openTime  = 10 * 60 + 30  // 10:30
-  const closeTime = 19 * 60 + 30  // 19:30
+  const closeTime = 20 * 60 + 0   // 20:00
 
   const isFriOrSat = day === 5 || day === 6
   const isWithinHours = timeNum >= openTime && timeNum < closeTime
@@ -478,7 +478,7 @@ export default function Home() {
         <h1 style={{ color: C.white, fontSize: 22, fontWeight: 900, marginBottom: 8 }}>אנחנו סגורים כרגע</h1>
         <p style={{ color: C.gray, fontSize: 14, marginBottom: 24, lineHeight: 1.6 }}>
           שעות פעילות:<br />
-          <strong style={{ color: C.white }}>ראשון–חמישי | 10:30–19:30</strong><br />
+          <strong style={{ color: C.white }}>ראשון–חמישי | 10:30–20:00</strong><br />
           שישי ושבת — סגור
         </p>
         {nextOpen && (
