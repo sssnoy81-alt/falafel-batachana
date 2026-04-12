@@ -171,13 +171,6 @@ export default function Home() {
   const [showClosedPopup, setShowClosedPopup] = useState(false)
 
   useEffect(() => {
-    if (!isOpen) {
-      const timer = setTimeout(() => setShowClosedPopup(true), 30000)
-      return () => clearTimeout(timer)
-    }
-  }, [isOpen])
-
-  useEffect(() => {
     const handler = (e: any) => {
       e.preventDefault()
       setInstallPrompt(e)
@@ -485,6 +478,14 @@ export default function Home() {
 
   /* ── CLOSED POPUP STATE ── */
   const { isOpen, nextOpen } = getBusinessStatus()
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!isOpen) {
+      const timer = setTimeout(() => setShowClosedPopup(true), 30000)
+      return () => clearTimeout(timer)
+    }
+  }, [isOpen])
 
   /* ── BRANCH SCREEN ── */
   if (screen === 'branch') return (
