@@ -168,6 +168,14 @@ export default function Home() {
   const [editCartIndex, setEditCartIndex] = useState<number | null>(null)
   const [sheetSetDrink, setSheetSetDrink] = useState<string>('')
   const [sheetSetAddon, setSheetSetAddon] = useState<string>('')
+  const [showClosedPopup, setShowClosedPopup] = useState(false)
+
+  useEffect(() => {
+    if (!isOpen) {
+      const timer = setTimeout(() => setShowClosedPopup(true), 30000)
+      return () => clearTimeout(timer)
+    }
+  }, [isOpen])
 
   useEffect(() => {
     const handler = (e: any) => {
@@ -475,38 +483,8 @@ export default function Home() {
     </div>
   )
 
-  /* ── CLOSED SCREEN ── */
+  /* ── CLOSED POPUP STATE ── */
   const { isOpen, nextOpen } = getBusinessStatus()
-  if (!isOpen && screen !== 'tracking') return (
-    <div style={{ minHeight: '100vh', background: C.bg, fontFamily: 'Heebo, sans-serif', direction: 'rtl', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-      <img src={LOGO} alt="פלאפל בתחנה" style={{ width: 110, height: 110, objectFit: 'contain', marginBottom: 24, opacity: 0.85 }} />
-      <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 24, padding: '36px 28px', maxWidth: 380, width: '100%', textAlign: 'center' }}>
-        <div style={{ fontSize: 52, marginBottom: 16 }}>🕙</div>
-        <h1 style={{ color: C.white, fontSize: 22, fontWeight: 900, marginBottom: 8 }}>אנחנו סגורים כרגע</h1>
-        <p style={{ color: C.gray, fontSize: 14, marginBottom: 24, lineHeight: 1.6 }}>
-          שעות פעילות:<br />
-          <strong style={{ color: C.white }}>ראשון–חמישי | 10:30–20:00</strong><br />
-          שישי | 10:30–14:00 &nbsp;&nbsp; שבת — סגור
-        </p>
-        {nextOpen && (
-          <div style={{ background: 'rgba(255,215,0,0.08)', border: `1px solid rgba(255,215,0,0.2)`, borderRadius: 12, padding: '12px 16px', marginBottom: 20 }}>
-            <div style={{ color: C.gray, fontSize: 12, marginBottom: 4 }}>פתיחה הבאה</div>
-            <div style={{ color: C.gold, fontWeight: 800, fontSize: 16 }}>{nextOpen}</div>
-          </div>
-        )}
-        {orderId && (
-          <button onClick={() => setScreen('tracking')}
-            style={{ width: '100%', background: 'rgba(255,215,0,0.08)', border: `1px solid ${C.gold}`, borderRadius: 14, padding: '14px 20px', display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
-            <span style={{ fontSize: 20 }}>⏳</span>
-            <div style={{ flex: 1, textAlign: 'right' }}>
-              <div style={{ fontWeight: 800, fontSize: 15, color: C.gold }}>מעקב הזמנה פעילה</div>
-            </div>
-            <span style={{ color: C.gold }}>←</span>
-          </button>
-        )}
-      </div>
-    </div>
-  )
 
   /* ── BRANCH SCREEN ── */
   if (screen === 'branch') return (
@@ -714,9 +692,9 @@ export default function Home() {
           </div>
         </div>
 
-        <button onClick={placeOrder} disabled={!isValidPhone(orderPhone) || cart.length === 0 || placingOrder || customerName.trim().length < 2}
+        <button onClick={placeOrder} disabled={!isOpen || !isValidPhone(orderPhone) || cart.length === 0 || placingOrder || customerName.trim().length < 2}
           style={{ width: '100%', padding: 17, background: isValidPhone(orderPhone) && cart.length > 0 ? C.gold : C.grayDim, color: '#000', border: 'none', borderRadius: 16, fontSize: 18, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', boxShadow: isValidPhone(orderPhone) ? '0 6px 32px rgba(255,215,0,0.3)' : 'none' }}>
-          {placingOrder ? '⏳ שולח הזמנה...' : `✅ שלח הזמנה • ${fmt(finalTotal)}`}
+          {!isOpen ? '🔒 המקום סגור כרגע' : placingOrder ? '⏳ שולח הזמנה...' : `✅ שלח הזמנה • ${fmt(finalTotal)}`}
         </button>
       </div>
     </div>
@@ -1033,6 +1011,32 @@ export default function Home() {
                 fontWeight: 600, color: C.gray, cursor: 'pointer', fontFamily: 'Heebo, sans-serif',
               }}>
               חזור לתפריט
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── פופאפ סגירה ── */}
+      {showClosedPopup && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 600, background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+          <div style={{ background: C.bgCard, border: `1px solid rgba(255,215,0,0.3)`, borderRadius: 24, padding: '36px 28px', maxWidth: 360, width: '100%', textAlign: 'center', direction: 'rtl' }}>
+            <div style={{ fontSize: 52, marginBottom: 12 }}>🕙</div>
+            <h2 style={{ color: C.white, fontSize: 20, fontWeight: 900, marginBottom: 8 }}>אנחנו סגורים כרגע</h2>
+            <p style={{ color: C.gray, fontSize: 14, marginBottom: 20, lineHeight: 1.7 }}>
+              שעות פעילות:<br />
+              <strong style={{ color: C.white }}>ראשון–חמישי | 10:30–20:00</strong><br />
+              <strong style={{ color: C.white }}>שישי | 10:30–14:00</strong><br />
+              שבת — סגור
+            </p>
+            {nextOpen && (
+              <div style={{ background: 'rgba(255,215,0,0.08)', border: '1px solid rgba(255,215,0,0.25)', borderRadius: 12, padding: '12px 16px', marginBottom: 20 }}>
+                <div style={{ color: C.gray, fontSize: 12, marginBottom: 4 }}>פתיחה הבאה</div>
+                <div style={{ color: C.gold, fontWeight: 800, fontSize: 16 }}>{nextOpen}</div>
+              </div>
+            )}
+            <button onClick={() => setShowClosedPopup(false)}
+              style={{ width: '100%', padding: 14, background: C.gold, color: '#000', border: 'none', borderRadius: 14, fontSize: 16, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
+              הבנתי — המשך לגלוש
             </button>
           </div>
         </div>
