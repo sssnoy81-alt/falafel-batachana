@@ -81,7 +81,7 @@ const BRANCH_INFO: Record<string, { address: string; phone: string; waze: string
 }
 
 const isValidPhone = (p: string) => /^05\d{8}$/.test(p.replace(/[-\s]/g, ''))
-const fmt = (n: number) => `₪${n.toFixed(0)}`
+const fmt = (n: number) => n % 1 === 0 ? `₪${n.toFixed(0)}` : `₪${n.toFixed(1)}`
 
 /* ─── שעות פעילות ─── */
 function getBusinessStatus(): { isOpen: boolean; nextOpen: string } {
@@ -289,7 +289,7 @@ export default function Home() {
 
   // הנחה 5% לכל תשלום שאינו סיבוס
   const hasDiscount = paymentMethod !== 'cibus'
-  const discountAmount = hasDiscount ? Math.round(cartTotal * APP_DISCOUNT) : 0
+  const discountAmount = hasDiscount ? Math.round(cartTotal * APP_DISCOUNT * 10) / 10 : 0
   const finalTotal = cartTotal - discountAmount
 
   useEffect(() => {
