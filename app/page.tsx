@@ -533,7 +533,7 @@ export default function Home() {
         }}>
           <img src={LOGO} alt="לוגו" style={{ width: 44, height: 44, objectFit: 'contain', borderRadius: 10, flexShrink: 0 }} />
           <div style={{ flex: 1 }}>
-            <div style={{ color: '#fff', fontWeight: 700, fontSize: 14 }}>הוסף לפלאפל לטלפון</div>
+            <div style={{ color: '#fff', fontWeight: 700, fontSize: 14 }}>הוסף את פלאפל בתחנה לטלפון</div>
             <div style={{ color: '#9CA3AF', fontSize: 12 }}>התקן את האפליקציה למסך הבית</div>
           </div>
           <button onClick={async () => {
