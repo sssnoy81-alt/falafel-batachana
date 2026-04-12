@@ -170,12 +170,16 @@ export default function Home() {
   const [sheetSetAddon, setSheetSetAddon] = useState<string>('')
   const [showClosedPopup, setShowClosedPopup] = useState(false)
 
+  // שעות פעילות — מחושב מיידית
+  const { isOpen, nextOpen } = getBusinessStatus()
+
   useEffect(() => {
     if (!isOpen) {
       const timer = setTimeout(() => setShowClosedPopup(true), 30000)
       return () => clearTimeout(timer)
     }
   }, [isOpen])
+
 
   useEffect(() => {
     const handler = (e: any) => {
@@ -483,8 +487,7 @@ export default function Home() {
     </div>
   )
 
-  /* ── CLOSED POPUP STATE ── */
-  const { isOpen, nextOpen } = getBusinessStatus()
+
 
   /* ── BRANCH SCREEN ── */
   if (screen === 'branch') return (
