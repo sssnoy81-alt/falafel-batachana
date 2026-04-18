@@ -393,6 +393,27 @@ export default function Home() {
     }
   }
 
+  // רישום Service Worker ו-Push Subscription
+  async function subscribeToPush(phone: string, orderId: string) {
+    try {
+      if (!('serviceWorker' in navigator) || !('PushManager' in window)) return
+      const reg = await navigator.serviceWorker.register('/sw.js')
+      await navigator.serviceWorker.ready
+      const permission = await Notification.requestPermission()
+      if (permission !== 'granted') return
+      const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: vapidKey,
+      })
+      await fetch('/api/push/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subscription: sub.toJSON(), phone, orderId }),
+      })
+    } catch (e) { console.error('Push subscribe error:', e) }
+  }
+
   async function placeOrder() {
     if (!selectedBranch || !isValidPhone(orderPhone) || cart.length === 0 || customerName.trim().length < 2) return
     setPlacingOrder(true)
@@ -448,6 +469,8 @@ export default function Home() {
     }))
     setOrderId(order.id); setOrderStatus('received'); setOrderDailyNumber(dailyNumber); setCart([])
     setPlacingOrder(false); setScreen('tracking')
+    // הירשם להתראות Push
+    subscribeToPush(orderPhone.replace(/[-\s]/g, ''), order.id)
   }
 
   useEffect(() => {

@@ -581,7 +581,20 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
     setKitchenOrder(prev => prev?.id === orderId ? null : prev)
 
     const { error } = await supabase.from('orders').update({ status: nextStatus }).eq('id', orderId)
-    if (error) { console.error('שגיאה:', error); fetchOrders() }
+    if (error) { console.error('שגיאה:', error); fetchOrders(); return }
+
+    // שלח Push ללקוח כשההזמנה מוכנה
+    if (nextStatus === 'ready') {
+      const order = orders.find(o => o.id === orderId)
+      if (order) {
+        const num = order.daily_number ? String(order.daily_number).padStart(4, '0') : order.id.slice(-4).toUpperCase()
+        fetch('/api/push/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone: order.phone, orderNumber: num }),
+        }).catch(() => {})
+      }
+    }
   }
 
   // אדמין יכול לסנן לפי סניף, סניף רגיל — קבוע
