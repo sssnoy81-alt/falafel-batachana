@@ -2,7 +2,7 @@
   "name": "פלאפל בתחנה",
   "short_name": "פלאפל בתחנה",
   "description": "הזמנות אונליין — פלאפל בתחנה",
-  "start_url": "/",
+  "start_url": "/order",
   "display": "standalone",
   "background_color": "#0D0D0D",
   "theme_color": "#0D0D0D",
