@@ -500,64 +500,49 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
   const alarmRef = useRef<any>(null)
   const alarmCtxRef = useRef<any>(null)
 
+  // פונקציה לנגינת צלצול — AudioContext חדש בכל פעם (הכי אמין)
+  function playAlarmBeep() {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext
+      if (!AudioCtx) return
+      const ctx = new AudioCtx()
+      ctx.resume().then(() => {
+        const now = ctx.currentTime
+        const beep = (freq: number, start: number, dur: number) => {
+          const osc = ctx.createOscillator()
+          const gain = ctx.createGain()
+          osc.connect(gain); gain.connect(ctx.destination)
+          osc.type = 'square'
+          osc.frequency.value = freq
+          gain.gain.setValueAtTime(0.8, now + start)
+          gain.gain.exponentialRampToValueAtTime(0.001, now + start + dur)
+          osc.start(now + start)
+          osc.stop(now + start + dur + 0.05)
+        }
+        beep(1200, 0.0,  0.15)
+        beep(1600, 0.2,  0.15)
+        beep(1200, 0.4,  0.15)
+        beep(1600, 0.6,  0.15)
+        beep(2000, 0.8,  0.2)
+        setTimeout(() => { try { ctx.close() } catch {} }, 2000)
+      })
+    } catch {}
+  }
+
   useEffect(() => {
     const hasNew = orders.some(o => o.status === 'received')
 
     if (hasNew && !alarmRef.current && audioUnlocked) {
-      try {
-        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
-        alarmCtxRef.current = ctx
-
-        // סמן כפעיל לפני ההפעלה
-        alarmRef.current = true as any
-
-        const playLoop = () => {
-          if (!alarmRef.current) return
-          // וודא שה-AudioContext פעיל
-          if (ctx.state === 'suspended') { ctx.resume(); }
-          try {
-            const now = ctx.currentTime
-
-            const beep = (freq: number, start: number, dur: number, vol: number) => {
-              const osc = ctx.createOscillator()
-              const gain = ctx.createGain()
-              const dist = ctx.createWaveShaper()
-              const curve = new Float32Array(256)
-              for (let i = 0; i < 256; i++) {
-                const x = (i * 2) / 256 - 1
-                curve[i] = (Math.PI + 200) * x / (Math.PI + 200 * Math.abs(x))
-              }
-              dist.curve = curve
-              osc.connect(dist); dist.connect(gain); gain.connect(ctx.destination)
-              osc.frequency.value = freq
-              osc.type = 'square'
-              gain.gain.setValueAtTime(0, now + start)
-              gain.gain.linearRampToValueAtTime(vol, now + start + 0.01)
-              gain.gain.setValueAtTime(vol, now + start + dur - 0.02)
-              gain.gain.linearRampToValueAtTime(0, now + start + dur)
-              osc.start(now + start); osc.stop(now + start + dur + 0.05)
-            }
-
-            beep(1400, 0,    0.18, 1.0)
-            beep(1800, 0.22, 0.18, 1.0)
-            beep(1400, 0.44, 0.18, 1.0)
-            beep(1800, 0.66, 0.18, 1.0)
-            beep(2200, 0.88, 0.25, 1.0)
-          } catch {}
-
-          // קבע timeout לסיבוב הבא
-          alarmRef.current = setTimeout(playLoop, 2000)
-        }
-
-        // התחל מיד
-        playLoop()
-      } catch {}
-
+      alarmRef.current = true as any
+      const loop = () => {
+        if (!alarmRef.current) return
+        playAlarmBeep()
+        alarmRef.current = setTimeout(loop, 2500)
+      }
+      loop()
     } else if (!hasNew && alarmRef.current) {
       clearTimeout(alarmRef.current as any)
       alarmRef.current = null
-      try { alarmCtxRef.current?.close() } catch {}
-      alarmCtxRef.current = null
     }
   }, [orders, audioUnlocked])
 
@@ -708,19 +693,23 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
                 {!audioUnlocked ? (
                   <button onClick={() => {
                     try {
-                      const ctx = new ((window as any).AudioContext || (window as any).webkitAudioContext)()
+                      const AudioCtx = (window as any).AudioContext || (window as any).webkitAudioContext
+                      const ctx = new AudioCtx()
                       ctx.resume().then(() => {
-                        // נגן צפצוף קצר לאישור
+                        // נגן צפצוף בדיקה
                         const osc = ctx.createOscillator()
                         const gain = ctx.createGain()
                         osc.connect(gain); gain.connect(ctx.destination)
-                        osc.frequency.value = 880; osc.type = 'sine'
-                        gain.gain.setValueAtTime(0.3, ctx.currentTime)
-                        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3)
-                        osc.start(); osc.stop(ctx.currentTime + 0.3)
+                        osc.frequency.value = 1000; osc.type = 'square'
+                        gain.gain.setValueAtTime(0.6, ctx.currentTime)
+                        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4)
+                        osc.start(); osc.stop(ctx.currentTime + 0.4)
                         localStorage.setItem('audio_unlocked_date', new Date().toDateString())
                         setAudioUnlocked(true)
-                        setTimeout(() => ctx.close(), 500)
+                        setTimeout(() => { try { ctx.close() } catch {} }, 800)
+                      }).catch(() => {
+                        localStorage.setItem('audio_unlocked_date', new Date().toDateString())
+                        setAudioUnlocked(true)
                       })
                     } catch { localStorage.setItem('audio_unlocked_date', new Date().toDateString()); setAudioUnlocked(true) }
                   }} style={{ background: '#FF6B6B', color: '#000', border: 'none', borderRadius: 8, padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>🔔 הפעל התראות</button>
