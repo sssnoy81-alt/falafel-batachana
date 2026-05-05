@@ -513,6 +513,8 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
 
         const playLoop = () => {
           if (!alarmRef.current) return
+          // וודא שה-AudioContext פעיל
+          if (ctx.state === 'suspended') { ctx.resume(); }
           try {
             const now = ctx.currentTime
 
@@ -707,7 +709,19 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
                   <button onClick={() => {
                     try {
                       const ctx = new ((window as any).AudioContext || (window as any).webkitAudioContext)()
-                      ctx.resume().then(() => { localStorage.setItem('audio_unlocked_date', new Date().toDateString()); setAudioUnlocked(true); ctx.close() })
+                      ctx.resume().then(() => {
+                        // נגן צפצוף קצר לאישור
+                        const osc = ctx.createOscillator()
+                        const gain = ctx.createGain()
+                        osc.connect(gain); gain.connect(ctx.destination)
+                        osc.frequency.value = 880; osc.type = 'sine'
+                        gain.gain.setValueAtTime(0.3, ctx.currentTime)
+                        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3)
+                        osc.start(); osc.stop(ctx.currentTime + 0.3)
+                        localStorage.setItem('audio_unlocked_date', new Date().toDateString())
+                        setAudioUnlocked(true)
+                        setTimeout(() => ctx.close(), 500)
+                      })
                     } catch { localStorage.setItem('audio_unlocked_date', new Date().toDateString()); setAudioUnlocked(true) }
                   }} style={{ background: '#FF6B6B', color: '#000', border: 'none', borderRadius: 8, padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>🔔 הפעל התראות</button>
                 ) : (
