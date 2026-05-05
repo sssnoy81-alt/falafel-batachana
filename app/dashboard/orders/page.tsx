@@ -502,51 +502,57 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
 
   useEffect(() => {
     const hasNew = orders.some(o => o.status === 'received')
+
     if (hasNew && !alarmRef.current && audioUnlocked) {
       try {
         const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
         alarmCtxRef.current = ctx
+
+        // סמן כפעיל לפני ההפעלה
+        alarmRef.current = true as any
+
         const playLoop = () => {
           if (!alarmRef.current) return
-          const now = ctx.currentTime
+          try {
+            const now = ctx.currentTime
 
-          // צליל מסעדה חזק — 3 שלבים חדים
-          const beep = (freq: number, start: number, dur: number, vol: number) => {
-            const osc = ctx.createOscillator()
-            const gain = ctx.createGain()
-            // distortion להגברת עוצמה
-            const dist = ctx.createWaveShaper()
-            const curve = new Float32Array(256)
-            for (let i = 0; i < 256; i++) {
-              const x = (i * 2) / 256 - 1
-              curve[i] = (Math.PI + 200) * x / (Math.PI + 200 * Math.abs(x))
+            const beep = (freq: number, start: number, dur: number, vol: number) => {
+              const osc = ctx.createOscillator()
+              const gain = ctx.createGain()
+              const dist = ctx.createWaveShaper()
+              const curve = new Float32Array(256)
+              for (let i = 0; i < 256; i++) {
+                const x = (i * 2) / 256 - 1
+                curve[i] = (Math.PI + 200) * x / (Math.PI + 200 * Math.abs(x))
+              }
+              dist.curve = curve
+              osc.connect(dist); dist.connect(gain); gain.connect(ctx.destination)
+              osc.frequency.value = freq
+              osc.type = 'square'
+              gain.gain.setValueAtTime(0, now + start)
+              gain.gain.linearRampToValueAtTime(vol, now + start + 0.01)
+              gain.gain.setValueAtTime(vol, now + start + dur - 0.02)
+              gain.gain.linearRampToValueAtTime(0, now + start + dur)
+              osc.start(now + start); osc.stop(now + start + dur + 0.05)
             }
-            dist.curve = curve
-            osc.connect(dist); dist.connect(gain); gain.connect(ctx.destination)
-            osc.frequency.value = freq
-            osc.type = 'square'
-            gain.gain.setValueAtTime(0, now + start)
-            gain.gain.linearRampToValueAtTime(vol, now + start + 0.01)
-            gain.gain.setValueAtTime(vol, now + start + dur - 0.02)
-            gain.gain.linearRampToValueAtTime(0, now + start + dur)
-            osc.start(now + start); osc.stop(now + start + dur + 0.05)
-          }
 
-          // 3 צלצולים חדים וחזקים
-          beep(1400, 0,    0.18, 1.0)
-          beep(1800, 0.22, 0.18, 1.0)
-          beep(1400, 0.44, 0.18, 1.0)
-          beep(1800, 0.66, 0.18, 1.0)
-          beep(2200, 0.88, 0.25, 1.0)
+            beep(1400, 0,    0.18, 1.0)
+            beep(1800, 0.22, 0.18, 1.0)
+            beep(1400, 0.44, 0.18, 1.0)
+            beep(1800, 0.66, 0.18, 1.0)
+            beep(2200, 0.88, 0.25, 1.0)
+          } catch {}
 
+          // קבע timeout לסיבוב הבא
           alarmRef.current = setTimeout(playLoop, 2000)
         }
 
-        alarmRef.current = setTimeout(playLoop, 0)
+        // התחל מיד
         playLoop()
       } catch {}
+
     } else if (!hasNew && alarmRef.current) {
-      clearTimeout(alarmRef.current)
+      clearTimeout(alarmRef.current as any)
       alarmRef.current = null
       try { alarmCtxRef.current?.close() } catch {}
       alarmCtxRef.current = null
