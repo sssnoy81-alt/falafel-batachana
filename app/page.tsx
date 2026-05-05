@@ -1,201 +1,250 @@
 'use client'
-import { useEffect, useState } from 'react'
 import Link from 'next/link'
 
 const LOGO = 'https://sqgnrzcmjhwgfjxocvlr.supabase.co/storage/v1/object/public/menu-images/logo-k.jpg'
-const HERO_BG = 'https://sqgnrzcmjhwgfjxocvlr.supabase.co/storage/v1/object/public/menu-images/hero-bg.jpg'
+const KID  = 'https://sqgnrzcmjhwgfjxocvlr.supabase.co/storage/v1/object/public/menu-images/kid-character.png'
+const DISH = 'https://sqgnrzcmjhwgfjxocvlr.supabase.co/storage/v1/object/public/menu-images/falafel-dish.png'
+const BG   = 'https://sqgnrzcmjhwgfjxocvlr.supabase.co/storage/v1/object/public/menu-images/hero-bg.jpg'
+
+const INSTAGRAM = 'https://www.instagram.com/falafelbatahana?igsh=MWprbTlvanRmNDBiZw'
+const FACEBOOK  = 'https://www.facebook.com/share/1HkhSQXYAo/'
+const TIKTOK    = 'https://www.tiktok.com/@falafel.batachana?_r=1&_t=ZS-95y8O4y6vjx'
 
 export default function LandingPage() {
-  const [scrolled, setScrolled] = useState(false)
-
-  useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 50)
-    window.addEventListener('scroll', onScroll)
-    return () => window.removeEventListener('scroll', onScroll)
-  }, [])
-
   return (
-    <div style={{ minHeight: '100vh', background: '#0D0D0D', fontFamily: 'Heebo, sans-serif', direction: 'rtl', color: '#fff' }}>
+    <div style={{ fontFamily: "'Heebo', sans-serif", direction: 'rtl', margin: 0, padding: 0, overflowX: 'hidden' }}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;600;700;800;900&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@400;700;800;900&family=Rubik+Dirt&display=swap');
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { background: #0D0D0D; }
-        @keyframes fadeUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes float { 0%,100% { transform: translateY(0px); } 50% { transform: translateY(-10px); } }
-        .fade-up { animation: fadeUp 0.8s ease forwards; }
-        .float { animation: float 3s ease-in-out infinite; }
-        .btn-order:hover { transform: scale(1.04); box-shadow: 0 12px 40px rgba(255,215,0,0.5) !important; }
-        .btn-menu:hover { transform: scale(1.04); border-color: #FFD700 !important; color: #FFD700 !important; }
-        .social-btn:hover { transform: scale(1.1); opacity: 1 !important; }
-        .btn-order, .btn-menu, .social-btn { transition: all 0.2s ease; }
+        body { background: #111; }
+        .hero-title {
+          font-family: 'Rubik Dirt', 'Heebo', sans-serif;
+          font-size: clamp(52px, 12vw, 96px);
+          color: #fff;
+          line-height: 1;
+          text-shadow: 3px 3px 0px rgba(0,0,0,0.5);
+          letter-spacing: -2px;
+        }
+        .hero-subtitle {
+          font-family: 'Heebo', sans-serif;
+          font-size: clamp(20px, 5vw, 34px);
+          font-weight: 800;
+          color: #fff;
+          letter-spacing: 1px;
+          margin-top: 8px;
+          text-shadow: 1px 1px 4px rgba(0,0,0,0.7);
+        }
+        .btn-order {
+          background: #F5F0E0;
+          color: #1a1a1a;
+          border: none;
+          border-radius: 50px;
+          padding: 14px 42px;
+          font-size: clamp(22px, 5vw, 28px);
+          font-weight: 900;
+          font-family: 'Heebo', sans-serif;
+          cursor: pointer;
+          box-shadow: 0 6px 0 #b8a87a, 0 8px 20px rgba(0,0,0,0.4);
+          text-decoration: none;
+          display: inline-block;
+          transition: transform 0.1s, box-shadow 0.1s;
+        }
+        .btn-order:hover { transform: translateY(2px); box-shadow: 0 4px 0 #b8a87a; }
+        .btn-menu {
+          background: #111;
+          color: #7EFFD4;
+          border: 2px solid #333;
+          border-radius: 50px;
+          padding: 14px 42px;
+          font-size: clamp(22px, 5vw, 28px);
+          font-weight: 900;
+          font-family: 'Heebo', sans-serif;
+          cursor: pointer;
+          box-shadow: 0 6px 0 #000, 0 8px 20px rgba(0,0,0,0.6);
+          text-decoration: none;
+          display: inline-block;
+          transition: transform 0.1s, box-shadow 0.1s;
+        }
+        .btn-menu:hover { transform: translateY(2px); box-shadow: 0 4px 0 #000; }
+        .section-title {
+          font-family: 'Rubik Dirt', 'Heebo', sans-serif;
+          font-size: clamp(48px, 10vw, 80px);
+          color: #F5C842;
+          line-height: 1;
+          text-shadow: 3px 3px 0px rgba(0,0,0,0.6);
+        }
+        .social-icon { transition: transform 0.2s; display: inline-block; }
+        .social-icon:hover { transform: scale(1.15); }
       `}</style>
 
-      {/* ── NAVBAR ── */}
-      <nav style={{
-        position: 'fixed', top: 0, left: 0, right: 0, zIndex: 100,
-        padding: '14px 24px',
-        background: scrolled ? 'rgba(13,13,13,0.95)' : 'transparent',
-        backdropFilter: scrolled ? 'blur(12px)' : 'none',
-        borderBottom: scrolled ? '1px solid rgba(255,215,0,0.15)' : 'none',
-        transition: 'all 0.3s',
-        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-      }}>
-        <img src={LOGO} alt="פלאפל בתחנה" style={{ width: 48, height: 48, objectFit: 'contain', borderRadius: 12 }} />
-        <div style={{ display: 'flex', gap: 12 }}>
-          <Link href="/order" style={{
-            background: '#FFD700', color: '#000', borderRadius: 12,
-            padding: '8px 20px', fontWeight: 800, fontSize: 14,
-            textDecoration: 'none', display: 'inline-block',
-          }}>להזמנות</Link>
-        </div>
-      </nav>
-
-      {/* ── HERO ── */}
+      {/* ══════════════════════════════════
+          HERO — עמוד 1
+      ══════════════════════════════════ */}
       <div style={{
+        position: 'relative',
         minHeight: '100vh',
-        background: 'linear-gradient(to bottom, rgba(13,13,13,0.3) 0%, rgba(13,13,13,0.7) 60%, #0D0D0D 100%), url(https://sqgnrzcmjhwgfjxocvlr.supabase.co/storage/v1/object/public/menu-images/hero-falafel.jpg) center/cover no-repeat',
-        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-        padding: '100px 24px 60px', textAlign: 'center',
+        background: `linear-gradient(rgba(20,10,3,0.4), rgba(5,2,0,0.72)), url(${BG}) center/cover no-repeat`,
+        backgroundColor: '#2D1A0A',
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
       }}>
-        <img
-          src={LOGO}
-          alt="פלאפל בתחנה"
-          className="float"
-          style={{ width: 160, height: 160, objectFit: 'contain', marginBottom: 24, borderRadius: 24, boxShadow: '0 0 60px rgba(255,215,0,0.3)' }}
-        />
-        <h1 className="fade-up" style={{
-          fontSize: 'clamp(42px, 10vw, 72px)', fontWeight: 900,
-          color: '#fff', marginBottom: 12, lineHeight: 1.1,
-          textShadow: '0 4px 20px rgba(0,0,0,0.5)',
-        }}>
-          פלאפל בתחנה
-        </h1>
-        <p className="fade-up" style={{
-          fontSize: 'clamp(18px, 4vw, 26px)', color: '#FFD700',
-          fontWeight: 700, marginBottom: 40,
-          animationDelay: '0.2s',
-        }}>
-          הרבה יותר מפלאפל
-        </p>
-
-        <div className="fade-up" style={{
-          display: 'flex', gap: 16, flexWrap: 'wrap', justifyContent: 'center',
-          animationDelay: '0.4s',
-        }}>
-          <Link href="/order" className="btn-order" style={{
-            background: '#FFD700', color: '#000',
-            borderRadius: 18, padding: '16px 40px',
-            fontWeight: 900, fontSize: 20,
-            textDecoration: 'none', display: 'inline-block',
-            boxShadow: '0 8px 32px rgba(255,215,0,0.35)',
-          }}>
-            🛒 להזמנות
-          </Link>
-          <Link href="/order" className="btn-menu" style={{
-            background: 'transparent', color: '#fff',
-            border: '2px solid rgba(255,255,255,0.5)',
-            borderRadius: 18, padding: '16px 40px',
-            fontWeight: 800, fontSize: 20,
-            textDecoration: 'none', display: 'inline-block',
-          }}>
-            📋 תפריט
-          </Link>
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, padding: '24px 24px 0', flexWrap: 'wrap' }}>
+          <img
+            src={LOGO}
+            alt="לוגו"
+            onError={e => { (e.target as HTMLImageElement).style.display='none' }}
+            style={{ width: 110, height: 110, objectFit: 'contain', borderRadius: '50%', border: '3px solid rgba(255,255,255,0.25)', flexShrink: 0 }}
+          />
+          <div style={{ paddingTop: 8 }}>
+            <div className="hero-title">פלאפל בתחנה</div>
+            <div className="hero-subtitle">הרבה יותר מפלאפל</div>
+          </div>
         </div>
 
-        {/* חץ גלילה */}
-        <div style={{ marginTop: 60, color: 'rgba(255,255,255,0.4)', fontSize: 28, animation: 'float 2s ease-in-out infinite' }}>↓</div>
-      </div>
+        {/* כפתורים */}
+        <div style={{ display: 'flex', gap: 16, padding: '32px 24px 0', flexWrap: 'wrap' }}>
+          <Link href="/order" className="btn-menu">תפריט</Link>
+          <Link href="/order" className="btn-order">להזמנות</Link>
+        </div>
 
-      {/* ── ABOUT ── */}
-      <div style={{ padding: '80px 24px', maxWidth: 720, margin: '0 auto', textAlign: 'center' }}>
-        <h2 style={{ fontSize: 40, fontWeight: 900, color: '#FFD700', marginBottom: 24 }}>קצת עלינו</h2>
-        <p style={{ fontSize: 18, color: '#D1D5DB', lineHeight: 1.9, marginBottom: 16 }}>
-          פלאפל בתחנה היא רשת מזון מהיר שהוקמה בשנת 2012 על ידי שני חברים עם חלום פשוט: להגיש את מנת הפלאפל המושלמת.
-        </p>
-        <p style={{ fontSize: 18, color: '#D1D5DB', lineHeight: 1.9 }}>
-          הסיפור התחיל בעגלה קטנה וצנועה בתחנת דלק, מקום שהפך במהרה לנקודת מפגש מוכרת ואהובה. עם השנים, בזכות טעם ייחודי, הקפדה על איכות וחיבור אמיתי ללקוחות, הרשת צמחה והתפתחה.
-        </p>
-      </div>
+        {/* תחתית — דמות + מנה + סושיאל */}
+        <div style={{ flex: 1, position: 'relative', minHeight: 360 }}>
 
-      {/* ── INFO CARDS ── */}
-      <div style={{ padding: '0 24px 80px', maxWidth: 720, margin: '0 auto' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
-          {[
-            { icon: '📍', title: 'מישור אדומים', sub: 'מרכז מסחרי מתחם Gamos', href: 'https://waze.com/ul/hsv9hu47xz' },
-            { icon: '📞', title: '058-5505014', sub: 'התקשרו אלינו', href: 'tel:0585505014' },
-            { icon: '🕙', title: 'שעות פתיחה', sub: 'א׳–ה׳ 10:30–20:00 | שישי 10:30–14:00', href: null },
-          ].map((card, i) => (
-            <a key={i} href={card.href || '#'} target={card.href?.startsWith('http') ? '_blank' : '_self'} rel="noreferrer"
-              style={{
-                background: '#1A1A1A', border: '1px solid #2A2A2A', borderRadius: 20,
-                padding: '24px 20px', textAlign: 'center', textDecoration: 'none',
-                display: 'block', transition: 'border-color 0.2s',
-              }}
-              onMouseEnter={e => (e.currentTarget.style.borderColor = '#FFD700')}
-              onMouseLeave={e => (e.currentTarget.style.borderColor = '#2A2A2A')}
-            >
-              <div style={{ fontSize: 36, marginBottom: 10 }}>{card.icon}</div>
-              <div style={{ color: '#FFD700', fontWeight: 800, fontSize: 16, marginBottom: 6 }}>{card.title}</div>
-              <div style={{ color: '#9CA3AF', fontSize: 13 }}>{card.sub}</div>
-            </a>
-          ))}
+          {/* מנה — ימין */}
+          <img
+            src={DISH}
+            alt="מנת פלאפל"
+            onError={e => { (e.target as HTMLImageElement).style.display='none' }}
+            style={{
+              position: 'absolute', bottom: 60, right: '4%',
+              width: 'clamp(240px, 52%, 460px)',
+              objectFit: 'contain',
+              filter: 'drop-shadow(0 20px 40px rgba(0,0,0,0.7))',
+              zIndex: 2,
+            }}
+          />
+
+          {/* דמות — שמאל */}
+          <img
+            src={KID}
+            alt="דמות"
+            onError={e => { (e.target as HTMLImageElement).style.display='none' }}
+            style={{
+              position: 'absolute', bottom: 50, left: '1%',
+              width: 'clamp(170px, 33%, 270px)',
+              objectFit: 'contain', zIndex: 3,
+            }}
+          />
+
+          {/* אייקונים + כתובת */}
+          <div style={{
+            position: 'absolute', bottom: 16, right: 16, zIndex: 10,
+            display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8,
+          }}>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <a href={TIKTOK} target="_blank" rel="noreferrer" className="social-icon">
+                <svg width="48" height="48" viewBox="0 0 48 48"><circle cx="24" cy="24" r="24" fill="#010101"/><path d="M32.8 19.3a7.5 7.5 0 01-4.4-1.4v9.8a7.1 7.1 0 11-7.1-7.1c.2 0 .4 0 .6.01v3.5a3.7 3.7 0 10-.6 7.3 3.7 3.7 0 003.7-3.7V12h3.5a7.5 7.5 0 007.5 7.1v.2z" fill="white"/></svg>
+              </a>
+              <a href={INSTAGRAM} target="_blank" rel="noreferrer" className="social-icon">
+                <svg width="48" height="48" viewBox="0 0 48 48"><defs><radialGradient id="ig1" cx="30%" cy="107%" r="150%"><stop offset="0%" stopColor="#fdf497"/><stop offset="45%" stopColor="#fd5949"/><stop offset="60%" stopColor="#d6249f"/><stop offset="90%" stopColor="#285AEB"/></radialGradient></defs><circle cx="24" cy="24" r="24" fill="url(#ig1)"/><rect x="14" y="14" width="20" height="20" rx="6" stroke="white" strokeWidth="2.5" fill="none"/><circle cx="24" cy="24" r="5" stroke="white" strokeWidth="2.5" fill="none"/><circle cx="30.5" cy="17.5" r="1.5" fill="white"/></svg>
+              </a>
+              <a href={FACEBOOK} target="_blank" rel="noreferrer" className="social-icon">
+                <svg width="48" height="48" viewBox="0 0 48 48"><circle cx="24" cy="24" r="24" fill="#1877F2"/><path d="M27.5 25.5h3l1-4H27.5v-2c0-1.1.4-2 1.5-2H32V14s-1.8-.3-3.5-.3c-3.6 0-6 2.1-6 6V21.5H19v4h3.5V36h4V25.5z" fill="white"/></svg>
+              </a>
+            </div>
+            <div style={{ color: '#fff', fontWeight: 700, fontSize: 13, textAlign: 'right', background: 'rgba(0,0,0,0.45)', borderRadius: 8, padding: '4px 10px' }}>
+              די זהב 7 (מתחם גאמוס) &nbsp;|&nbsp;
+              <a href="tel:0585505014" style={{ color: '#F5C842', textDecoration: 'none', fontWeight: 900 }}>0585505014</a>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* ── CTA ── */}
+      {/* ══════════════════════════════════
+          ABOUT — עמוד 2
+      ══════════════════════════════════ */}
       <div style={{
-        padding: '80px 24px', textAlign: 'center',
-        background: 'linear-gradient(to bottom, #0D0D0D, #1A1100, #0D0D0D)',
+        position: 'relative',
+        minHeight: '100vh',
+        background: 'radial-gradient(ellipse at 60% 0%, #1e1e1e 0%, #080808 80%)',
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
       }}>
-        <h2 style={{ fontSize: 36, fontWeight: 900, color: '#fff', marginBottom: 12 }}>
-          רעבים? 🧆
-        </h2>
-        <p style={{ color: '#9CA3AF', fontSize: 18, marginBottom: 32 }}>הזמינו עכשיו וקבלו הנחה 5% באפליקציה</p>
-        <Link href="/order" style={{
-          background: '#FFD700', color: '#000',
-          borderRadius: 18, padding: '18px 48px',
-          fontWeight: 900, fontSize: 22,
-          textDecoration: 'none', display: 'inline-block',
-          boxShadow: '0 8px 40px rgba(255,215,0,0.4)',
-          transition: 'transform 0.2s',
-        }}>
-          הזמינו עכשיו ←
-        </Link>
+        {/* grain */}
+        <div style={{
+          position: 'absolute', inset: 0, zIndex: 0, opacity: 0.035,
+          backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")`,
+          backgroundSize: '150px',
+        }} />
+
+        {/* כפתור להזמנות — שמאל למעלה */}
+        <div style={{ padding: '28px 24px', position: 'relative', zIndex: 5 }}>
+          <Link href="/order" className="btn-order" style={{ fontSize: 20, padding: '11px 34px' }}>להזמנות</Link>
+        </div>
+
+        {/* כותרת + טקסט */}
+        <div style={{ flex: 1, padding: '0 24px 20px', position: 'relative', zIndex: 5 }}>
+          <div className="section-title" style={{ textAlign: 'right', marginBottom: 28 }}>קצת עלינו</div>
+          <div style={{
+            color: '#fff', fontSize: 'clamp(17px, 4vw, 22px)',
+            fontWeight: 700, lineHeight: 1.85, textAlign: 'right',
+            maxWidth: 580, marginLeft: 'auto',
+          }}>
+            <p style={{ marginBottom: 14 }}>
+              פלאפל בתחנה היא רשת מזון מהיר שהוקמה<br/>
+              בשנת 2012 על ידי שני חברים עם חלום פשוט:<br/>
+              <strong>להגיש את מנת הפלאפל המושלמת.</strong>
+            </p>
+            <p style={{ marginBottom: 14 }}>
+              הסיפור התחיל בעגלה קטנה וצנועה<br/>
+              בתחנת דלק, מקום שהפך במהרה לנקודת<br/>
+              מפגש מוכרת ואהובה על לקוחות מכל האזור.
+            </p>
+            <p>
+              עם השנים, בזכות טעם ייחודי, הקפדה על<br/>
+              איכות וחיבור אמיתי ללקוחות, הרשת צמחה<br/>
+              והתפתחה, <strong>וכיום מונה כארבעה סניפים.</strong>
+            </p>
+          </div>
+        </div>
+
+        {/* תחתית */}
+        <div style={{ position: 'relative', minHeight: 260, zIndex: 5 }}>
+          <img
+            src={KID}
+            alt="דמות"
+            onError={e => { (e.target as HTMLImageElement).style.display='none' }}
+            style={{
+              position: 'absolute', bottom: 40, left: '1%',
+              width: 'clamp(150px, 32%, 250px)',
+              objectFit: 'contain', zIndex: 3,
+            }}
+          />
+          <div style={{
+            position: 'absolute', bottom: 16, right: 16, zIndex: 10,
+            display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8,
+          }}>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <a href={TIKTOK} target="_blank" rel="noreferrer" className="social-icon">
+                <svg width="52" height="52" viewBox="0 0 48 48"><circle cx="24" cy="24" r="24" fill="#010101"/><path d="M32.8 19.3a7.5 7.5 0 01-4.4-1.4v9.8a7.1 7.1 0 11-7.1-7.1c.2 0 .4 0 .6.01v3.5a3.7 3.7 0 10-.6 7.3 3.7 3.7 0 003.7-3.7V12h3.5a7.5 7.5 0 007.5 7.1v.2z" fill="white"/></svg>
+              </a>
+              <a href={INSTAGRAM} target="_blank" rel="noreferrer" className="social-icon">
+                <svg width="52" height="52" viewBox="0 0 48 48"><defs><radialGradient id="ig2" cx="30%" cy="107%" r="150%"><stop offset="0%" stopColor="#fdf497"/><stop offset="45%" stopColor="#fd5949"/><stop offset="60%" stopColor="#d6249f"/><stop offset="90%" stopColor="#285AEB"/></radialGradient></defs><circle cx="24" cy="24" r="24" fill="url(#ig2)"/><rect x="14" y="14" width="20" height="20" rx="6" stroke="white" strokeWidth="2.5" fill="none"/><circle cx="24" cy="24" r="5" stroke="white" strokeWidth="2.5" fill="none"/><circle cx="30.5" cy="17.5" r="1.5" fill="white"/></svg>
+              </a>
+              <a href={FACEBOOK} target="_blank" rel="noreferrer" className="social-icon">
+                <svg width="52" height="52" viewBox="0 0 48 48"><circle cx="24" cy="24" r="24" fill="#1877F2"/><path d="M27.5 25.5h3l1-4H27.5v-2c0-1.1.4-2 1.5-2H32V14s-1.8-.3-3.5-.3c-3.6 0-6 2.1-6 6V21.5H19v4h3.5V36h4V25.5z" fill="white"/></svg>
+              </a>
+            </div>
+            <div style={{ color: '#fff', fontWeight: 700, fontSize: 13, textAlign: 'right' }}>
+              די זהב 7 (מתחם גאמוס) &nbsp;|&nbsp;
+              <a href="tel:0585505014" style={{ color: '#F5C842', textDecoration: 'none', fontWeight: 900 }}>0585505014</a>
+            </div>
+          </div>
+        </div>
       </div>
-
-      {/* ── FOOTER ── */}
-      <footer style={{
-        background: '#111', borderTop: '1px solid #222',
-        padding: '40px 24px', textAlign: 'center',
-      }}>
-        <img src={LOGO} alt="פלאפל בתחנה" style={{ width: 64, height: 64, objectFit: 'contain', borderRadius: 14, marginBottom: 20 }} />
-
-        {/* סושיאל */}
-        <div style={{ display: 'flex', justifyContent: 'center', gap: 20, marginBottom: 24 }}>
-          <a href="https://www.instagram.com/falafelbatahana?igsh=MWprbTlvanRmNDBiZw" target="_blank" rel="noreferrer"
-            className="social-btn"
-            style={{ width: 52, height: 52, borderRadius: 16, background: 'linear-gradient(135deg, #f09433 0%,#e6683c 25%,#dc2743 50%,#cc2366 75%,#bc1888 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 26, opacity: 0.9, textDecoration: 'none' }}>
-            📸
-          </a>
-          <a href="https://www.facebook.com/share/1HkhSQXYAo/" target="_blank" rel="noreferrer"
-            className="social-btn"
-            style={{ width: 52, height: 52, borderRadius: 16, background: '#1877F2', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 26, opacity: 0.9, textDecoration: 'none' }}>
-            👥
-          </a>
-          <a href="https://www.tiktok.com/@falafel.batachana?_r=1&_t=ZS-95y8O4y6vjx" target="_blank" rel="noreferrer"
-            className="social-btn"
-            style={{ width: 52, height: 52, borderRadius: 16, background: '#010101', border: '1px solid #333', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 26, opacity: 0.9, textDecoration: 'none' }}>
-            🎵
-          </a>
-        </div>
-
-        <div style={{ color: '#4B5563', fontSize: 13 }}>
-          © 2025 פלאפל בתחנה | מישור אדומים
-        </div>
-        <div style={{ color: '#374151', fontSize: 11, marginTop: 6 }}>
-          Powered by SN Capital AI
-        </div>
-      </footer>
     </div>
   )
 }
