@@ -115,8 +115,14 @@ export default function Home() {
   const [sheetNoLettuce, setSheetNoLettuce] = useState(false)
   const [sheetNotes, setSheetNotes] = useState('')
   const [sheetQty, setSheetQty] = useState(1)
-  const [customerName, setCustomerName] = useState('')
-  const [orderPhone, setOrderPhone] = useState('')
+  const [customerName, setCustomerName] = useState(() => {
+    if (typeof window === 'undefined') return ''
+    return localStorage.getItem('falafel_customer_name') || ''
+  })
+  const [orderPhone, setOrderPhone] = useState(() => {
+    if (typeof window === 'undefined') return ''
+    return localStorage.getItem('falafel_customer_phone') || ''
+  })
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'credit' | 'cibus' | 'bit'>('cash')
   const [placingOrder, setPlacingOrder] = useState(false)
   const [orderId, setOrderId] = useState<string | null>(null)
@@ -364,6 +370,10 @@ export default function Home() {
       expires: Date.now() + 6 * 3600 * 1000,
       orderCart: cartSnapshot, orderFinalTotal: totalSnapshot, orderPaymentMethod: paySnapshot,
     }))
+
+    // שמור פרטי לקוח לפעם הבאה
+    localStorage.setItem('falafel_customer_name', customerName.trim())
+    localStorage.setItem('falafel_customer_phone', orderPhone.replace(/[-\s]/g, ''))
 
     setOrderCart(cartSnapshot)
     setOrderFinalTotal(totalSnapshot)
