@@ -72,27 +72,36 @@ function getBusinessStatus(): { isOpen: boolean; nextOpen: string } {
   const now = new Date()
   const day = now.getDay()
   const timeNum = now.getHours() * 60 + now.getMinutes()
-  const openTime = 8 * 60 + 0
-  const closeTime = 20 * 60
-  const isSat = day === 6, isFri = day === 5
-  const friClose = 14 * 60
-  if ((!isFri && !isSat && timeNum >= openTime && timeNum < closeTime) ||
-      (isFri && timeNum >= openTime && timeNum < friClose))
+  const openTime  = 8 * 60 + 0
+  const closeTime = 19 * 60 + 30
+  const isSat = day === 6  // שבת
+  const isFri = day === 5  // שישי — סגור
+
+  // פתוח רק א'-ה' בין 08:00 ל-19:30
+  if (!isFri && !isSat && timeNum >= openTime && timeNum < closeTime)
     return { isOpen: true, nextOpen: '' }
+
+  // חשב פתיחה הבאה
   let nextOpen = ''
   if (isSat) {
+    // שבת → ראשון
     const d = new Date(now); d.setDate(d.getDate() + 1)
     nextOpen = `ראשון ${d.toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })} בשעה 08:00`
   } else if (isFri) {
+    // שישי → ראשון
     const d = new Date(now); d.setDate(d.getDate() + 2)
     nextOpen = `ראשון ${d.toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })} בשעה 08:00`
   } else if (timeNum < openTime) {
     nextOpen = 'היום בשעה 08:00'
   } else {
+    // אחרי שעת סגירה
     if (day === 4) {
+      // יום ה' → ראשון
       const d = new Date(now); d.setDate(d.getDate() + 3)
       nextOpen = `ראשון ${d.toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })} בשעה 08:00`
-    } else { nextOpen = 'מחר בשעה 08:00' }
+    } else {
+      nextOpen = 'מחר בשעה 08:00'
+    }
   }
   return { isOpen: false, nextOpen }
 }
@@ -862,9 +871,9 @@ export default function Home() {
             <h2 style={{ color: C.white, fontSize: 20, fontWeight: 900, marginBottom: 8 }}>אנחנו סגורים כרגע</h2>
             <p style={{ color: C.gray, fontSize: 14, marginBottom: 20, lineHeight: 1.7 }}>
               שעות פעילות:<br />
-              <strong style={{ color: C.white }}>ראשון–חמישי | 08:00–20:00</strong><br />
-              <strong style={{ color: C.white }}>שישי | 10:30–14:00</strong><br />
-              שבת — סגור
+              <strong style={{ color: C.white }}>ראשון–חמישי | 08:00–19:30</strong><br />
+              
+              שישי ושבת — סגור
             </p>
             {nextOpen && (
               <div style={{ background: 'rgba(255,215,0,0.08)', border: '1px solid rgba(255,215,0,0.25)', borderRadius: 12, padding: '12px 16px', marginBottom: 20 }}>
