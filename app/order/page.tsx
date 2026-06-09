@@ -72,7 +72,7 @@ function getBusinessStatus(): { isOpen: boolean; nextOpen: string } {
   const now = new Date()
   const day = now.getDay()
   const timeNum = now.getHours() * 60 + now.getMinutes()
-  const openTime = 10 * 60 + 30
+  const openTime = 8 * 60 + 0
   const closeTime = 20 * 60
   const isSat = day === 6, isFri = day === 5
   const friClose = 14 * 60
@@ -82,17 +82,17 @@ function getBusinessStatus(): { isOpen: boolean; nextOpen: string } {
   let nextOpen = ''
   if (isSat) {
     const d = new Date(now); d.setDate(d.getDate() + 1)
-    nextOpen = `ראשון ${d.toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })} בשעה 10:30`
+    nextOpen = `ראשון ${d.toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })} בשעה 08:00`
   } else if (isFri) {
     const d = new Date(now); d.setDate(d.getDate() + 2)
-    nextOpen = `ראשון ${d.toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })} בשעה 10:30`
+    nextOpen = `ראשון ${d.toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })} בשעה 08:00`
   } else if (timeNum < openTime) {
-    nextOpen = 'היום בשעה 10:30'
+    nextOpen = 'היום בשעה 08:00'
   } else {
     if (day === 4) {
       const d = new Date(now); d.setDate(d.getDate() + 3)
-      nextOpen = `ראשון ${d.toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })} בשעה 10:30`
-    } else { nextOpen = 'מחר בשעה 10:30' }
+      nextOpen = `ראשון ${d.toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })} בשעה 08:00`
+    } else { nextOpen = 'מחר בשעה 08:00' }
   }
   return { isOpen: false, nextOpen }
 }
@@ -862,7 +862,7 @@ export default function Home() {
             <h2 style={{ color: C.white, fontSize: 20, fontWeight: 900, marginBottom: 8 }}>אנחנו סגורים כרגע</h2>
             <p style={{ color: C.gray, fontSize: 14, marginBottom: 20, lineHeight: 1.7 }}>
               שעות פעילות:<br />
-              <strong style={{ color: C.white }}>ראשון–חמישי | 10:30–20:00</strong><br />
+              <strong style={{ color: C.white }}>ראשון–חמישי | 08:00–20:00</strong><br />
               <strong style={{ color: C.white }}>שישי | 10:30–14:00</strong><br />
               שבת — סגור
             </p>
