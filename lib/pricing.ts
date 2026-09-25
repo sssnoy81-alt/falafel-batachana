@@ -53,6 +53,38 @@ export function priceLine(line: PricingLineInput): PricedLine {
   }
 }
 
+/* ─── Customer-facing DISPLAY prices ───
+ * For delivery, the customer sees qualifying items with the +₪4/unit already included
+ * ("inclusive" prices) and only the fixed fee as a separate line. This is presentation only:
+ * internally (server, DB, kitchen) the breakdown stays subtotal + mealSurcharge + deliveryFee.
+ * Invariant: displayItemsTotal + deliveryFee === computeOrderTotals(...).total
+ */
+
+/** Per-unit display add-on for a category under the given fulfillment type (₪4 or ₪0). */
+export const displayUnitSurcharge = (categoryId: string, type: OrderType): number =>
+  type === 'delivery' && isMealCategory(categoryId) ? DELIVERY_MEAL_SURCHARGE : 0
+
+/** Menu card price for a plain item (no options). */
+export const displayMenuPrice = (basePrice: number, categoryId: string, type: OrderType): number =>
+  roundMoney(basePrice + displayUnitSurcharge(categoryId, type))
+
+/** Customer-facing line total: authoritative line total + (₪4 × qty for qualifying delivery lines). */
+export function displayLineTotal(line: PricingLineInput, type: OrderType): number {
+  const priced = priceLine(line)
+  return roundMoney(priced.lineTotal + displayUnitSurcharge(line.categoryId, type) * line.quantity)
+}
+
+export interface DisplayTotals {
+  itemsTotal: number    // "מחיר המנות" — inclusive of the per-meal delivery surcharge
+  deliveryFee: number   // shown separately (₪20 for delivery, 0 for pickup)
+  total: number         // identical to the authoritative total
+}
+
+export function computeDisplayTotals(lines: PricingLineInput[], type: OrderType): DisplayTotals {
+  const t = computeOrderTotals(lines, type)
+  return { itemsTotal: roundMoney(t.subtotal + t.mealSurcharge), deliveryFee: t.deliveryFee, total: t.total }
+}
+
 /**
  * pickup:   total = subtotal
  * delivery: total = subtotal + mealQuantity × DELIVERY_MEAL_SURCHARGE + DELIVERY_FEE

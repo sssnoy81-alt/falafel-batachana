@@ -77,6 +77,70 @@ test('free deal options add nothing; money rounding is stable', () => {
   assert.equal(t.lines[0].unitPrice, 45); assert.equal(t.subtotal, 45.3)
 })
 
+console.log('Customer display pricing (fulfillment-first UX, lib/pricing.ts)')
+const P = load('pricing')
+const display = (lines, type) => P.computeDisplayTotals(lines, type)
+test('D1. pickup qualifying item: menu ₪28, line ₪28', () => {
+  assert.equal(P.displayMenuPrice(28, CAT.falafel, 'pickup'), 28)
+  assert.equal(P.displayLineTotal(line(CAT.falafel, 28, 1), 'pickup'), 28)
+})
+test('D2. delivery qualifying item: menu ₪32 (28 + 4)', () => {
+  assert.equal(P.displayMenuPrice(28, CAT.falafel, 'delivery'), 32)
+  assert.equal(P.displayLineTotal(line(CAT.falafel, 28, 1), 'delivery'), 32)
+})
+test('D3. delivery quantity 3: line ₪96 (= 3×28 + 3×4)', () => {
+  assert.equal(P.displayLineTotal(line(CAT.falafel, 28, 3), 'delivery'), 96)
+})
+test('D4. delivery drinks only: drink price unchanged, items ₪20, fee ₪20 separate, total ₪40', () => {
+  assert.equal(P.displayMenuPrice(10, CAT.drinks, 'delivery'), 10)
+  assert.deepEqual(display([line(CAT.drinks, 10, 2)], 'delivery'), { itemsTotal: 20, deliveryFee: 20, total: 40 })
+})
+test('D5. delivery mixed cart: inclusive items + ₪20 = authoritative total', () => {
+  const lines = [
+    line(CAT.falafel, 24, 2, { paidAddonPrices: [4, 3] }),
+    line(CAT.deals, 45, 1, { setDrink: 'קולה זכוכית', setAddon: 'טבעות בצל' }),
+    line(CAT.drinks, 9, 2),
+    line(CAT.sides, 16, 1),
+  ]
+  const d = display(lines, 'delivery')
+  const perLine = lines.map(l => P.displayLineTotal(l, 'delivery'))
+  assert.deepEqual(perLine, [70, 62, 18, 20]) // (31+4)×2, 58+4, 18, 16+4
+  assert.equal(d.itemsTotal, 170); assert.equal(d.itemsTotal, perLine.reduce((a, b) => a + b, 0))
+  assert.equal(d.total, computeOrderTotals(lines, 'delivery').total) // 190
+})
+test('D6. paid add-on + delivery: 28 + 3 + 4 = ₪35 (surcharge once per unit, not per add-on)', () => {
+  assert.equal(P.displayLineTotal(line(CAT.falafel, 28, 1, { paidAddonPrices: [3] }), 'pickup'), 31)
+  assert.equal(P.displayLineTotal(line(CAT.falafel, 28, 1, { paidAddonPrices: [3] }), 'delivery'), 35)
+  assert.equal(P.displayLineTotal(line(CAT.falafel, 28, 1, { paidAddonPrices: [3, 4] }), 'delivery'), 39)
+})
+test('D7/D8. switching pickup ↔ delivery recomputes from the same cart (no stale state)', () => {
+  const cart = [line(CAT.falafel, 28, 2), line(CAT.drinks, 10, 1)]
+  assert.deepEqual(display(cart, 'pickup'), { itemsTotal: 66, deliveryFee: 0, total: 66 })
+  assert.deepEqual(display(cart, 'delivery'), { itemsTotal: 74, deliveryFee: 20, total: 94 })
+  assert.deepEqual(display(cart, 'pickup'), { itemsTotal: 66, deliveryFee: 0, total: 66 })
+})
+test('D9. display total always equals the authoritative server total (both types, many carts)', () => {
+  const carts = [[line(CAT.falafel, 28, 3)], [line(CAT.drinks, 10, 2)], [line(CAT.unknown, 12, 2), line(CAT.meat, 42, 1, { paidAddonPrices: [4] })],
+    [line(CAT.deals, 45, 2, { setDrink: 'פיוז טי', setAddon: 'ציפס גדול' }), line(CAT.sides, 10, 3)]]
+  for (const c of carts) for (const type of ['pickup', 'delivery']) {
+    const a = computeOrderTotals(c, type), d = display(c, type)
+    assert.equal(d.total, a.total); assert.equal(d.itemsTotal + d.deliveryFee, a.total)
+    assert.equal(d.itemsTotal, a.subtotal + a.mealSurcharge)
+  }
+})
+test('D10. no discount: display total = sum of display lines (+ fee), discount field 0', () => {
+  const c = [line(CAT.falafel, 28, 1)]
+  assert.equal(display(c, 'pickup').total, 28); assert.equal(computeOrderTotals(c, 'pickup').discount, 0)
+})
+test('D11. payment method has no input into display or authoritative pricing', () => {
+  assert.equal(P.computeDisplayTotals.length, 2); assert.equal(computeOrderTotals.length, 2) // (lines, type) only
+})
+test('D12. delivery fee appears exactly once regardless of cart size', () => {
+  const big = Array.from({ length: 6 }, () => line(CAT.falafel, 20, 3))
+  const d = display(big, 'delivery')
+  assert.equal(d.deliveryFee, 20); assert.equal(d.total, 6 * 3 * 24 + 20)
+})
+
 console.log('Server request validation + building (lib/orderRequest.ts)')
 const DELIVERY_BRANCH = cfg.DELIVERY_BRANCH_IDS[0]
 const OTHER_BRANCH = '11111111-1111-4111-8111-111111111111'

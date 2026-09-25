@@ -8,7 +8,10 @@ import {
   normalizePhone, setAddonExtra, setDrinkExtra,
   type OrderType, type PaymentMethod,
 } from '@/lib/orderConfig'
-import { computeOrderTotals, priceLine, type PricingBreakdown, type PricingLineInput } from '@/lib/pricing'
+import {
+  computeDisplayTotals, displayLineTotal, displayMenuPrice, displayUnitSurcharge, roundMoney,
+  type PricingBreakdown, type PricingLineInput,
+} from '@/lib/pricing'
 import { getBusinessStatus } from '@/lib/hours'
 import { formatDeliveryAddress } from '@/lib/deliveryAddress'
 import type { CreateOrderRequest, CreateOrderResponse, OrderErrorCode } from '@/lib/orderRequest'
@@ -55,10 +58,9 @@ function loadSavedDeliveryForm(): DeliveryForm {
   } catch { return EMPTY_DELIVERY_FORM }
 }
 
-function loadSavedOrderType(): OrderType | null {
-  if (typeof window === 'undefined') return null
-  const v = localStorage.getItem('falafel_order_type')
-  return isOrderType(v) ? v : null
+const fulfillmentButtonStyle: React.CSSProperties = {
+  background: '#1A1A1A', borderRadius: 20, padding: '26px 12px', cursor: 'pointer', fontFamily: 'Heebo, sans-serif',
+  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, textAlign: 'center',
 }
 
 const ORDER_ERROR_MESSAGES: Partial<Record<OrderErrorCode, string>> = {
@@ -74,6 +76,7 @@ const ORDER_ERROR_MESSAGES: Partial<Record<OrderErrorCode, string>> = {
   empty_cart: 'הסל ריק',
 }
 const GENERIC_ORDER_ERROR = 'לא ניתן לשלוח את ההזמנה כרגע. נסו שוב בעוד רגע או התקשרו לסניף'
+const DELIVERY_PRICE_NOTE = `מחירי המשלוח למנות כוללים תוספת של ${DELIVERY_MEAL_SURCHARGE} ₪ למנה.`
 
 const C = {
   bg: '#0D0D0D', bgCard: '#1A1A1A', bgCardHover: '#222222',
@@ -154,8 +157,8 @@ export default function Home() {
   const [orderStatus, setOrderStatus] = useState<OrderStatus>('received')
   const [orderDailyNumber, setOrderDailyNumber] = useState<number | null>(null)
 
-  // איסוף / משלוח — בחירה מפורשת בסניף עם משלוחים; ברירת מחדל = הבחירה האחרונה
-  const [orderTypeChoice, setOrderTypeChoice] = useState<OrderType | null>(() => loadSavedOrderType())
+  // איסוף / משלוח — הצעד הראשון בהזמנה (לפני התפריט); נקבע מחדש בכל התחלת הזמנה
+  const [orderTypeChoice, setOrderTypeChoice] = useState<OrderType | null>(null)
   const [deliveryForm, setDeliveryForm] = useState<DeliveryForm>(() => loadSavedDeliveryForm())
 
   // *** חדש: שמירת פירוט ההזמנה למסך מעקב ***
@@ -214,6 +217,7 @@ export default function Home() {
         }
         if (s.branch && s.screen && s.screen !== 'tracking') {
           setSelectedBranch(s.branch)
+          setOrderTypeChoice(isOrderType(s.orderType) && (s.orderType === 'pickup' || isDeliveryBranch(s.branch.id)) ? s.orderType : null)
           if (s.cart) setCart(s.cart)
           setLoading(true); restoreBranch(s.branch, s.screen); return
         }
@@ -256,10 +260,10 @@ export default function Home() {
     setLoading(false)
   }
 
-  async function selectBranch(branch: Branch) {
+  async function selectBranch(branch: Branch, type: OrderType) {
     setSelectedBranch(branch); setLoading(true)
-    // סוג הזמנה תקף לסניף: סניף ללא משלוחים → איסוף בלבד
-    setOrderTypeChoice(isDeliveryBranch(branch.id) ? loadSavedOrderType() : 'pickup')
+    // משלוח רק מסניף משלוחים; כל סניף אחר → איסוף בלבד
+    setOrderTypeChoice(type === 'delivery' && isDeliveryBranch(branch.id) ? 'delivery' : 'pickup')
     setOrderError('')
     const [catRes, itemRes, topRes, priceRes] = await Promise.all([
       supabase.from('menu_categories').select('*').order('sort_order'),
@@ -286,14 +290,24 @@ export default function Home() {
     setDrink: c.setDrink, setAddon: c.setAddon,
     quantity: c.quantity,
   })
-  const linePrice = (c: CartItem) => priceLine(toPricingInput(c)).lineTotal
-
+  const deliveryBranch = branches.find(b => isDeliveryBranch(b.id)) ?? null
   const deliveryAvailable = isDeliveryBranch(selectedBranch?.id)
-  // סניף ללא משלוחים → תמיד איסוף. בסניף עם משלוחים — חובה לבחור.
+  // סניף ללא משלוחים → תמיד איסוף. בסניף משלוחים — לפי הבחירה בצעד הראשון.
   const effectiveOrderType: OrderType | null = deliveryAvailable ? orderTypeChoice : 'pickup'
+  // מחירים לתצוגה ללקוח: במשלוח — מחירי מנות כוללים +₪4 למנה מזכה; דמי המשלוח בנפרד.
+  const displayType: OrderType = effectiveOrderType ?? 'pickup'
+  const linePrice = (c: CartItem) => displayLineTotal(toPricingInput(c), displayType)
+  const menuPrice = (item: MenuItem) => displayMenuPrice(item.price || 0, item.category_id, displayType)
+  // Tracking: server-stored line total (base) shown in the same inclusive style for delivery orders.
+  const trackingLinePrice = (c: CartItem, i: number) => {
+    const t = orderType ?? 'pickup'
+    const stored = orderLineTotals[i]
+    if (typeof stored === 'number') return roundMoney(stored + displayUnitSurcharge(c.item.category_id, t) * c.quantity)
+    return displayLineTotal(toPricingInput(c), t) // older saved sessions without server line totals
+  }
+
   const pricingInputs = cart.map(toPricingInput)
-  const cartSubtotal = computeOrderTotals(pricingInputs, 'pickup').subtotal
-  const checkoutTotals = computeOrderTotals(pricingInputs, effectiveOrderType ?? 'pickup')
+  const cartDisplay = computeDisplayTotals(pricingInputs, displayType)   // what the customer sees
   const cartCount = cart.reduce((s, c) => s + c.quantity, 0)
 
   const deliveryFormValid = !!deliveryForm.city && DELIVERY_AREAS.includes(deliveryForm.city)
@@ -308,9 +322,9 @@ export default function Home() {
     const saved = localStorage.getItem('falafel_session')
     try { const s = saved ? JSON.parse(saved) : {}; if (s.orderId) return } catch {}
     localStorage.setItem('falafel_session', JSON.stringify({
-      branch: selectedBranch, cart, screen, expires: Date.now() + 6 * 3600 * 1000
+      branch: selectedBranch, cart, screen, orderType: orderTypeChoice, expires: Date.now() + 6 * 3600 * 1000
     }))
-  }, [cart, screen, selectedBranch])
+  }, [cart, screen, selectedBranch, orderTypeChoice])
 
   function handleCartButton() {
     const hasDrinks = cart.some(c => isDrinkCategory(c.item.category_id))
@@ -459,7 +473,6 @@ export default function Home() {
     // שמור פרטי לקוח לפעם הבאה
     localStorage.setItem('falafel_customer_name', customerName.trim())
     localStorage.setItem('falafel_customer_phone', normalizePhone(orderPhone))
-    localStorage.setItem('falafel_order_type', result.type)
     if (result.type === 'delivery') localStorage.setItem('falafel_delivery_address', JSON.stringify(deliveryForm))
 
     setOrderCart(cartSnapshot)
@@ -495,7 +508,7 @@ export default function Home() {
     if (orderStatus !== 'delivered') return
     const timer = setTimeout(() => {
       localStorage.removeItem('falafel_session')
-      setOrderId(null); setCart([]); setOrderCart([]); setScreen('branch')
+      setOrderId(null); setCart([]); setOrderCart([]); setOrderTypeChoice(null); setScreen('branch')
     }, 3000)
     return () => clearTimeout(timer)
   }, [orderStatus])
@@ -510,11 +523,11 @@ export default function Home() {
   const sheetIsSides = isSidesCategory(sheetCatId)
   const sheetIsDeal = isDealCategory(sheetCatId)
   const sheetToppingAllowed = (t: Topping) => !!selectedItem && isToppingAllowedForItem(t, selectedItem, selectedBranch?.id)
-  const sheetLineTotal = selectedItem ? priceLine({
+  const sheetLineTotal = selectedItem ? displayLineTotal({
     categoryId: selectedItem.category_id, basePrice: selectedItem.price || 0,
     paidAddonPrices: sheetPaidAddons.map(paidAddonPrice),
     setDrink: sheetSetDrink || undefined, setAddon: sheetSetAddon || undefined, quantity: sheetQty,
-  }).lineTotal : 0
+  }, displayType) : 0
 
   if (loading) return (
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: C.bg, fontFamily: 'Heebo, sans-serif' }}>
@@ -531,11 +544,37 @@ export default function Home() {
       <div style={{ padding: '56px 24px 44px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', borderBottom: `1px solid ${C.border}` }}>
         <img src={LOGO} alt="פלאפל בתחנה" style={{ width: 150, height: 150, objectFit: 'contain', marginBottom: 16 }} />
         <h1 style={{ color: C.white, fontSize: 28, fontWeight: 900, margin: '0 0 6px' }}>פלאפל בתחנה</h1>
-        <p style={{ color: C.gray, fontSize: 15, margin: 0 }}>בחר סניף להזמנה</p>
+        <p style={{ color: C.gray, fontSize: 15, margin: 0 }}>{orderTypeChoice === 'pickup' ? 'בחרו סניף לאיסוף' : 'איך תרצו לקבל את ההזמנה?'}</p>
       </div>
       <div style={{ padding: '24px 16px', maxWidth: 480, margin: '0 auto' }}>
-        {branches.map(b => (
-          <button key={b.id} onClick={() => selectBranch(b)}
+        {/* שלב 1 — איסוף עצמי / משלוח (לפני התפריט) */}
+        {orderTypeChoice !== 'pickup' && (
+          <div style={{ display: 'grid', gridTemplateColumns: deliveryBranch ? '1fr 1fr' : '1fr', gap: 12 }}>
+            <button onClick={() => setOrderTypeChoice('pickup')}
+              style={{ ...fulfillmentButtonStyle, border: `1px solid ${C.border}` }}>
+              <span style={{ fontSize: 44 }}>🏃</span>
+              <span style={{ fontWeight: 900, fontSize: 19, color: C.white }}>איסוף עצמי</span>
+              <span style={{ fontSize: 12, color: C.gray }}>מהסניף</span>
+            </button>
+            {deliveryBranch && (
+              <button onClick={() => selectBranch(deliveryBranch, 'delivery')}
+                style={{ ...fulfillmentButtonStyle, border: `1px solid ${C.gold}` }}>
+                <span style={{ fontSize: 44 }}>🛵</span>
+                <span style={{ fontWeight: 900, fontSize: 19, color: C.gold }}>משלוח</span>
+                <span style={{ fontSize: 12, color: C.gray }}>מ{deliveryBranch.name} · דמי משלוח ₪{DELIVERY_FEE}</span>
+              </button>
+            )}
+          </div>
+        )}
+        {/* שלב 2 — בחירת סניף לאיסוף */}
+        {orderTypeChoice === 'pickup' && (
+          <button onClick={() => setOrderTypeChoice(null)}
+            style={{ background: 'none', border: 'none', color: C.gold, fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', padding: '0 0 14px' }}>
+            → חזרה לבחירת איסוף / משלוח
+          </button>
+        )}
+        {orderTypeChoice === 'pickup' && branches.map(b => (
+          <button key={b.id} onClick={() => selectBranch(b, 'pickup')}
             style={{ width: '100%', background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 18, padding: '20px 22px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 16, cursor: 'pointer', textAlign: 'right', fontFamily: 'Heebo, sans-serif', transition: 'border-color 0.15s, background 0.15s' }}
             onMouseEnter={e => { e.currentTarget.style.borderColor = C.gold; e.currentTarget.style.background = C.bgCardHover }}
             onMouseLeave={e => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.background = C.bgCard }}>
@@ -634,7 +673,7 @@ export default function Home() {
                           {c.notes && <div style={{ fontSize: 12, color: C.gray, fontStyle: 'italic' }}>📝 {c.notes}</div>}
                         </div>
                         <div style={{ color: C.gold, fontWeight: 800, fontSize: 14, marginRight: 12 }}>
-                          {fmt(orderLineTotals[i] ?? linePrice(c))}
+                          {fmt(trackingLinePrice(c, i))}
                         </div>
                       </div>
                     </div>
@@ -642,9 +681,9 @@ export default function Home() {
                   {/* פירוט משלוח — מהסכומים שנשמרו בשרת */}
                   {isDeliveryOrder && orderBreakdown && (
                     <div style={{ paddingTop: 12, borderTop: `1px solid ${C.border}`, fontSize: 13, color: C.gray }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span>סכום ביניים</span><span>{fmt(orderBreakdown.subtotal)}</span></div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span>תוספת משלוח למנות ({orderBreakdown.mealQuantity} × ₪{DELIVERY_MEAL_SURCHARGE})</span><span>{fmt(orderBreakdown.mealSurcharge)}</span></div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}><span>דמי משלוח</span><span>{fmt(orderBreakdown.deliveryFee)}</span></div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span>מחיר המנות</span><span>{fmt(orderBreakdown.subtotal + orderBreakdown.mealSurcharge)}</span></div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span>דמי משלוח</span><span>{fmt(orderBreakdown.deliveryFee)}</span></div>
+                      <div style={{ fontSize: 12, marginBottom: 12 }}>{DELIVERY_PRICE_NOTE}</div>
                     </div>
                   )}
                   {/* סיכום תשלום */}
@@ -660,7 +699,7 @@ export default function Home() {
             </div>
           )}
 
-          <button onClick={() => { setCart([]); setScreen('branch') }}
+          <button onClick={() => { setCart([]); setOrderTypeChoice(null); setScreen('branch') }}
             style={{ width: '100%', padding: 15, background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 14, fontWeight: 700, fontSize: 15, color: C.gray, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
             + הזמנה חדשה
           </button>
@@ -728,16 +767,16 @@ export default function Home() {
             </div>
           ))}
           <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 12, borderTop: `1px solid ${C.border}`, fontWeight: 600, fontSize: 15 }}>
-            <span style={{ color: C.gray }}>סכום ביניים</span><span style={{ color: C.gray }}>{fmt(cartSubtotal)}</span>
+            <span style={{ color: C.gray }}>מחיר המנות</span><span style={{ color: C.gray }}>{fmt(cartDisplay.itemsTotal)}</span>
           </div>
         </div>
 
         {/* איסוף עצמי / משלוח — רק בסניף עם משלוחים */}
         {deliveryAvailable && (
           <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${effectiveOrderType ? C.border : C.gold}` }}>
-            <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>🚦 איך תרצו לקבל את ההזמנה?</div>
+            <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>🚦 אופן קבלת ההזמנה</div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              {([['pickup', '🏃', 'איסוף עצמי', ''], ['delivery', '🛵', 'משלוח', `+₪${DELIVERY_FEE} ועוד ₪${DELIVERY_MEAL_SURCHARGE} למנה`]] as const).map(([v, icon, label, sub]) => (
+              {([['pickup', '🏃', 'איסוף עצמי', ''], ['delivery', '🛵', 'משלוח', `דמי משלוח ₪${DELIVERY_FEE}`]] as const).map(([v, icon, label, sub]) => (
                 <button key={v} onClick={() => { setOrderTypeChoice(v); setOrderError('') }}
                   style={{ padding: '16px 10px', border: `2px solid ${effectiveOrderType === v ? C.gold : C.border}`, borderRadius: 14, background: effectiveOrderType === v ? 'rgba(255,215,0,0.1)' : C.bg, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
                   <span style={{ fontSize: 28 }}>{icon}</span>
@@ -812,22 +851,20 @@ export default function Home() {
 
         {/* סיכום לתשלום */}
         <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 24, border: `1px solid ${C.border}` }}>
+          {/* מחירים לתצוגה: במשלוח "מחיר המנות" כבר כולל +₪4 למנה מזכה; רק דמי המשלוח מוצגים בנפרד */}
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 6 }}>
-            <span style={{ color: C.gray }}>סכום ביניים</span><span style={{ color: C.gray }}>{fmt(checkoutTotals.subtotal)}</span>
+            <span style={{ color: C.gray }}>מחיר המנות</span><span style={{ color: C.gray }}>{fmt(cartDisplay.itemsTotal)}</span>
           </div>
           {effectiveOrderType === 'delivery' && (
             <>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 6 }}>
-                <span style={{ color: C.gray }}>תוספת משלוח למנות ({checkoutTotals.mealQuantity} × ₪{DELIVERY_MEAL_SURCHARGE})</span>
-                <span style={{ color: C.gray }}>{fmt(checkoutTotals.mealSurcharge)}</span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 6 }}>
+                <span style={{ color: C.gray }}>דמי משלוח</span><span style={{ color: C.gray }}>{fmt(cartDisplay.deliveryFee)}</span>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 6 }}>
-                <span style={{ color: C.gray }}>דמי משלוח</span><span style={{ color: C.gray }}>{fmt(checkoutTotals.deliveryFee)}</span>
-              </div>
+              <div style={{ color: C.gray, fontSize: 12, marginBottom: 6 }}>{DELIVERY_PRICE_NOTE}</div>
             </>
           )}
           <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 10, marginTop: 4, borderTop: `1px solid ${C.border}`, fontWeight: 900, fontSize: 20 }}>
-            <span style={{ color: C.white }}>לתשלום</span><span style={{ color: C.gold }}>{fmt(checkoutTotals.total)}</span>
+            <span style={{ color: C.white }}>לתשלום</span><span style={{ color: C.gold }}>{fmt(cartDisplay.total)}</span>
           </div>
         </div>
 
@@ -842,7 +879,7 @@ export default function Home() {
             : placingOrder ? '⏳ שולח הזמנה...'
             : !effectiveOrderType ? '👆 בחרו איסוף עצמי או משלוח'
             : effectiveOrderType === 'delivery' && !deliveryFormValid ? '📍 נא להשלים כתובת למשלוח'
-            : `✅ שלח הזמנה • ${fmt(checkoutTotals.total)}`}
+            : `✅ שלח הזמנה • ${fmt(cartDisplay.total)}`}
         </button>
       </div>
     </div>
@@ -857,7 +894,7 @@ export default function Home() {
       <div style={{ background: C.bgCard, borderBottom: `1px solid ${C.border}`, position: 'sticky', top: 0, zIndex: 200 }}>
         <div style={{ maxWidth: 640, margin: '0 auto' }}>
           <div style={{ padding: '12px 16px 10px', display: 'flex', alignItems: 'center', gap: 12 }}>
-            <button onClick={() => { localStorage.removeItem('falafel_session'); setScreen('branch'); setCart([]) }}
+            <button onClick={() => { localStorage.removeItem('falafel_session'); setOrderTypeChoice(null); setScreen('branch'); setCart([]) }}
               style={{ background: C.border, border: 'none', borderRadius: 10, padding: '8px 10px', cursor: 'pointer', fontSize: 18, lineHeight: 1, color: C.white }}>→</button>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1 }}>
               <img src={LOGO} alt="" style={{ width: 48, height: 48, objectFit: 'contain', borderRadius: 10 }} />
@@ -866,6 +903,19 @@ export default function Home() {
                 <div style={{ fontSize: 12, color: C.gray }}>{selectedBranch?.name}</div>
               </div>
             </div>
+            {/* מצב הזמנה — מחליף מיד את המחירים בתפריט/סל (רק בסניף משלוחים; סל נשמר) */}
+            {deliveryAvailable ? (
+              <div style={{ display: 'flex', background: C.bg, border: `1px solid ${C.border}`, borderRadius: 12, padding: 3, flexShrink: 0 }}>
+                {(['pickup', 'delivery'] as const).map(v => (
+                  <button key={v} onClick={() => { setOrderTypeChoice(v); setOrderError('') }}
+                    style={{ padding: '6px 8px', borderRadius: 9, border: 'none', cursor: 'pointer', fontFamily: 'Heebo, sans-serif', fontWeight: 800, fontSize: 12, whiteSpace: 'nowrap', background: displayType === v ? C.gold : 'transparent', color: displayType === v ? '#000' : C.gray }}>
+                    {v === 'pickup' ? '🏃 איסוף' : '🛵 משלוח'}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.gray, flexShrink: 0 }}>🏃 איסוף עצמי</div>
+            )}
             {selectedBranch && BRANCH_INFO[selectedBranch.id] && (
               <a href={`tel:${BRANCH_INFO[selectedBranch.id].phone.replace(/-/g,'')}`}
                 style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 44, height: 44, background: C.gold, border: 'none', borderRadius: 12, textDecoration: 'none', fontSize: 22, flexShrink: 0, boxShadow: '0 4px 16px rgba(255,215,0,0.4)' }}>
@@ -907,7 +957,7 @@ export default function Home() {
                     </div>
                     <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 3 }}>{item.name_he}</div>
                     {item.description_he && <div style={{ fontSize: 13, color: C.gray, marginBottom: 6, lineHeight: 1.4 }}>{item.description_he}</div>}
-                    {item.price ? <div style={{ fontWeight: 900, fontSize: 17, color: C.gold }}>{fmt(item.price)}</div> : null}
+                    {item.price ? <div style={{ fontWeight: 900, fontSize: 17, color: C.gold }}>{fmt(menuPrice(item))}</div> : null}
                   </div>
                   <div style={{ width: 90, height: 90, flexShrink: 0, borderRadius: 14, overflow: 'hidden', border: `1px solid ${C.border}`, background: C.bgCard, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     {item.image_url ? <img src={item.image_url} alt={item.name_he} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 32 }}>🧆</span>}
@@ -928,7 +978,7 @@ export default function Home() {
           </button>
           <button onClick={handleCartButton}
             style={{ flex: 1, padding: '15px 20px', background: C.gold, color: '#000', border: 'none', borderRadius: 16, fontSize: 16, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 8px 32px rgba(255,215,0,0.35)' }}>
-            <span /><span>לתשלום</span><span>{fmt(cartSubtotal)}</span>
+            <span /><span>לתשלום</span><span>{fmt(cartDisplay.itemsTotal)}</span>
           </button>
         </div>
       )}
@@ -971,10 +1021,10 @@ export default function Home() {
                   </div>
                 ))}
                 <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 14, borderTop: `1px solid ${C.border}`, fontWeight: 800, fontSize: 18, marginBottom: 18 }}>
-                  <span style={{ color: C.gray }}>סכום ביניים</span><span style={{ color: C.gold }}>{fmt(cartSubtotal)}</span>
+                  <span style={{ color: C.gray }}>מחיר המנות</span><span style={{ color: C.gold }}>{fmt(cartDisplay.itemsTotal)}</span>
                 </div>
                 <button onClick={() => { setShowCart(false); handleCartButton() }} style={{ width: '100%', padding: 16, background: C.gold, color: '#000', border: 'none', borderRadius: 14, fontSize: 17, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', boxShadow: '0 4px 20px rgba(255,215,0,0.3)' }}>
-                  לתשלום • {fmt(cartSubtotal)}
+                  לתשלום • {fmt(cartDisplay.itemsTotal)}
                 </button>
                 <button onClick={() => setShowCart(false)} style={{ width: '100%', marginTop: 10, padding: 12, background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 14, fontSize: 14, fontWeight: 600, color: C.gray, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
                   המשך בקנייה
@@ -1009,7 +1059,7 @@ export default function Home() {
                         </div>
                         <div style={{ flex: 1 }}>
                           <div style={{ color: C.white, fontWeight: 700, fontSize: 15 }}>{drink.name_he}</div>
-                          {drink.price && <div style={{ color: C.gold, fontSize: 13, marginTop: 2 }}>{fmt(drink.price)}</div>}
+                          {drink.price && <div style={{ color: C.gold, fontSize: 13, marginTop: 2 }}>{fmt(menuPrice(drink))}</div>}
                         </div>
                         <button onClick={(e) => { e.stopPropagation(); setCart(prev => [...prev, { item: drink, quantity: 1, sauces: [], salads: [], paidAddons: [], noLettuce: false, notes: '' }]) }}
                           style={{ background: C.gold, color: '#000', border: 'none', borderRadius: 10, padding: '8px 18px', fontWeight: 800, fontSize: 14, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', flexShrink: 0 }}>+ הוסף</button>
@@ -1034,7 +1084,7 @@ export default function Home() {
                       </div>
                       <div style={{ flex: 1 }}>
                         <div style={{ color: C.white, fontWeight: 700, fontSize: 15 }}>{a.name_he}</div>
-                        {a.price && <div style={{ color: C.gold, fontSize: 13, marginTop: 2 }}>{fmt(a.price)}</div>}
+                        {a.price && <div style={{ color: C.gold, fontSize: 13, marginTop: 2 }}>{fmt(menuPrice(a))}</div>}
                       </div>
                       <button onClick={(e) => { e.stopPropagation(); setCart(prev => [...prev, { item: a, quantity: 1, sauces: [], salads: [], paidAddons: [], noLettuce: false, notes: '' }]) }}
                         style={{ background: C.gold, color: '#000', border: 'none', borderRadius: 10, padding: '8px 18px', fontWeight: 800, fontSize: 14, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', flexShrink: 0 }}>+ הוסף</button>
@@ -1046,7 +1096,7 @@ export default function Home() {
             })()}
             <button onClick={() => { setShowUpsell(false); setScreen('order') }}
               style={{ width: '100%', padding: 15, background: C.gold, color: '#000', border: 'none', borderRadius: 14, fontSize: 16, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', marginBottom: 10 }}>
-              המשך לתשלום ← {fmt(cartSubtotal)}
+              המשך לתשלום ← {fmt(cartDisplay.itemsTotal)}
             </button>
             <button onClick={() => setShowUpsell(false)}
               style={{ width: '100%', padding: 12, background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 14, fontSize: 14, fontWeight: 600, color: C.gray, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
@@ -1097,7 +1147,7 @@ export default function Home() {
             <div style={{ padding: '18px 20px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
                 <h2 style={{ fontWeight: 900, fontSize: 22, color: C.white, margin: 0 }}>{selectedItem.name_he}</h2>
-                {selectedItem.price ? <div style={{ fontWeight: 900, fontSize: 22, color: C.gold }}>{fmt(selectedItem.price)}</div> : null}
+                {selectedItem.price ? <div style={{ fontWeight: 900, fontSize: 22, color: C.gold }}>{fmt(menuPrice(selectedItem))}</div> : null}
               </div>
               {selectedItem.description_he && <p style={{ color: C.gray, fontSize: 14, margin: '4px 0 12px', lineHeight: 1.5 }}>{selectedItem.description_he}</p>}
               <div style={{ display: 'flex', gap: 6, marginBottom: 20 }}>
