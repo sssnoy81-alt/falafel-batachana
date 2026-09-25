@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createClient } from '@supabase/supabase-js'
+import { DELIVERY_MEAL_SURCHARGE, ORDER_TYPE_LABELS, PAYMENT_METHOD_LABELS, isPaymentMethod, paymentMethodText } from '@/lib/orderConfig'
 
 const supabase = createClient(
   'https://sqgnrzcmjhwgfjxocvlr.supabase.co',
@@ -125,11 +126,77 @@ interface OrderItem {
   notes: string | null; menu_items: { name_he: string } | null
 }
 
+// public.deliveries row (1:1 with orders). Structured fields + meal_* exist only after the approved
+// deliveries migration; until then they are simply absent from the embedded row.
+interface DeliveryRow {
+  address: string
+  notes?: string | null
+  delivery_fee?: number | null
+  meal_surcharge?: number | null
+  meal_quantity?: number | null
+  city?: string | null
+  street?: string | null
+  house_number?: string | null
+  apartment?: string | null
+  floor?: string | null
+  entrance?: string | null
+}
+
 interface Order {
   id: string; branch_id: string; phone: string
   customer_name?: string; daily_number?: number
   status: OrderStatus; total_price: number; payment_method: string
+  type?: 'pickup' | 'delivery' | null   // legacy orders: NULL → shown as pickup
+  deliveries?: DeliveryRow | DeliveryRow[] | null
   created_at: string; order_items: OrderItem[]; branches: { name: string } | null
+}
+
+// PostgREST returns a one-to-one embed as an object (or array on older relationship detection).
+function getDelivery(order: Order): DeliveryRow | null {
+  const d = order.deliveries
+  if (!d) return null
+  return Array.isArray(d) ? (d[0] ?? null) : d
+}
+const isDeliveryOrder = (order: Order) => order.type === 'delivery'
+const paymentLabel = (v: string) => isPaymentMethod(v) ? PAYMENT_METHOD_LABELS[v] : (v || '—')
+
+function DeliveryDetails({ order, large }: { order: Order; large?: boolean }) {
+  const d = getDelivery(order)
+  const fs = large ? 20 : 12
+  const surcharge = Number(d?.meal_surcharge ?? 0)
+  const fee = Number(d?.delivery_fee ?? 0)
+  return (
+    <div style={{ background: 'rgba(96,165,250,0.08)', border: `${large ? 2 : 1}px solid rgba(96,165,250,0.5)`, borderRadius: large ? 16 : 8, padding: large ? '16px 20px' : '6px 8px', marginBottom: large ? 16 : 6 }}>
+      <div style={{ color: '#60A5FA', fontWeight: 900, fontSize: large ? 24 : 13, marginBottom: 4 }}>🛵 משלוח</div>
+      {d ? (
+        <>
+          <div style={{ color: '#fff', fontWeight: 700, fontSize: fs }}>📍 {d.address}</div>
+          {d.notes && <div style={{ color: '#FED7AA', fontSize: fs - 1, marginTop: 3 }}>📝 לשליח: {d.notes}</div>}
+          {(surcharge > 0 || fee > 0) && (
+            <div style={{ color: '#9CA3AF', fontSize: large ? 15 : 11, marginTop: 4 }}>
+              {d.meal_quantity ? `תוספת מנות ${d.meal_quantity} × ₪${DELIVERY_MEAL_SURCHARGE} = ₪${surcharge}` : ''}
+              {d.meal_quantity && fee ? ' · ' : ''}
+              {fee ? `דמי משלוח ₪${fee}` : ''}
+            </div>
+          )}
+        </>
+      ) : (
+        <div style={{ color: '#9CA3AF', fontSize: fs }}>פרטי כתובת לא זמינים</div>
+      )}
+    </div>
+  )
+}
+
+function csvDeliveryFields(o: Order) {
+  const d = isDeliveryOrder(o) ? getDelivery(o) : null
+  return {
+    'סוג הזמנה': ORDER_TYPE_LABELS[isDeliveryOrder(o) ? 'delivery' : 'pickup'],
+    'כתובת': d?.address ?? '',
+    'הערות לשליח': d?.notes ?? '',
+    'כמות מנות לחיוב משלוח': d ? Number(d.meal_quantity ?? 0) : 0,
+    'תוספת משלוח למנות': d ? Number(d.meal_surcharge ?? 0) : 0,
+    'דמי משלוח': d ? Number(d.delivery_fee ?? 0) : 0,
+  }
 }
 
 const STATUS_CONFIG: Record<OrderStatus, {
@@ -198,6 +265,7 @@ function KitchenModal({ order, onClose, onDone }: {
           </div>
           <button onClick={onClose} style={{ background: '#1A1A1A', border: '1px solid #333', color: '#9CA3AF', borderRadius: 50, width: 48, height: 48, fontSize: 22, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
         </div>
+        {isDeliveryOrder(order) && <DeliveryDetails order={order} large />}
         {(() => {
           const mains  = order.order_items.filter(oi => getItemType(oi.menu_items?.name_he ?? '') === 'main')
           const addons = order.order_items.filter(oi => getItemType(oi.menu_items?.name_he ?? '') === 'addon')
@@ -303,6 +371,7 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
           <div style={{ color: '#D1D5DB', fontSize: 13, direction: 'ltr' }}>📞 {order.phone}</div>
         </div>
       </div>
+      {isDeliveryOrder(order) && <DeliveryDetails order={order} />}
       <div style={{ marginBottom: 10 }}>
         {(() => {
           const mains  = order.order_items.filter(oi => getItemType(oi.menu_items?.name_he ?? '') === 'main')
@@ -367,8 +436,9 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <span style={{ color: '#FFD700', fontWeight: 700, fontSize: 15 }}>₪{order.total_price}</span>
+          {isDeliveryOrder(order) && <span style={{ background: 'rgba(96,165,250,0.2)', color: '#60A5FA', borderRadius: 6, padding: '2px 8px', fontSize: 11, fontWeight: 800 }}>🛵 משלוח</span>}
           <span style={{ background: 'rgba(255,255,255,0.07)', borderRadius: 6, padding: '2px 8px', color: '#9CA3AF', fontSize: 11 }}>
-            {order.payment_method === 'cash' ? '💵 מזומן' : order.payment_method === 'cibus' ? '🍽️ סיבוס' : order.payment_method === 'bit' ? '💙 ביט' : '💳 אשראי'}
+            {paymentLabel(order.payment_method)}
           </span>
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
@@ -480,19 +550,26 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
 
   const fetchOrders = useCallback(async () => {
     const today = new Date(); today.setHours(0, 0, 0, 0)
-    let query = supabase
-      .from('orders')
-      .select(`*, branches(name), order_items(id, item_id, quantity, unit_price, notes, menu_items(name_he))`)
-      .gte('created_at', today.toISOString())
-      .order('created_at', { ascending: false })
-
-    // סניף ספציפי — הגבלה ברמת DB
-    if (user.branchId) {
-      query = query.eq('branch_id', user.branchId)
+    const baseSelect = `*, branches(name), order_items(id, item_id, quantity, unit_price, notes, menu_items(name_he))`
+    const buildQuery = (select: string) => {
+      let query = supabase
+        .from('orders')
+        .select(select)
+        .gte('created_at', today.toISOString())
+        .order('created_at', { ascending: false })
+      // סניף ספציפי — הגבלה ברמת DB
+      if (user.branchId) query = query.eq('branch_id', user.branchId)
+      return query
     }
 
-    const { data, error } = await query
-    if (!error && data) setOrders(data as Order[])
+    // פרטי משלוח (deliveries 1:1). deliveries(*) עובד גם לפני וגם אחרי הרחבת הטבלה.
+    // אם ה-embed נכשל — חוזרים לשאילתה הקודמת כדי שהלוח לא יתרוקן.
+    let { data, error } = await buildQuery(`${baseSelect}, deliveries(*)`)
+    if (error) {
+      console.error('deliveries embed failed — falling back', error.code)
+      ;({ data, error } = await buildQuery(baseSelect))
+    }
+    if (!error && data) setOrders(data as unknown as Order[])
     setLastRefresh(new Date())
     setLoading(false)
   }, [user.branchId])
@@ -576,17 +653,13 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
     const { error } = await supabase.from('orders').update({ status: nextStatus }).eq('id', orderId)
     if (error) { console.error('שגיאה:', error); fetchOrders(); return }
 
-    // שלח Push ללקוח כשההזמנה מוכנה
+    // שלח Push ללקוח כשההזמנה מוכנה — השרת בודק את הסטטוס ב-DB ובונה את הנוסח לפי סוג ההזמנה
     if (nextStatus === 'ready') {
-      const order = orders.find(o => o.id === orderId)
-      if (order) {
-        const num = order.daily_number ? String(order.daily_number).padStart(4, '0') : order.id.slice(-4).toUpperCase()
-        fetch('/api/push/send', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phone: order.phone, orderNumber: num }),
-        }).catch(() => {})
-      }
+      fetch('/api/push/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId }),
+      }).catch(() => {})
     }
   }
 
@@ -667,8 +740,9 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
                     'מספר': o.daily_number ? String(o.daily_number).padStart(4,'0') : o.id.slice(-4),
                     'שם לקוח': o.customer_name || '', 'טלפון': o.phone,
                     'פריטים': o.order_items.map(i => (i.menu_items?.name_he || '') + ' x' + i.quantity).join(', '),
-                    'סכום': o.total_price,
-                    'תשלום': o.payment_method === 'cash' ? 'מזומן' : o.payment_method === 'cibus' ? 'סיבוס' : o.payment_method === 'bit' ? 'ביט' : 'אשראי',
+                    ...csvDeliveryFields(o),
+                    'סכום סופי': o.total_price,
+                    'תשלום': paymentMethodText(o.payment_method),
                     'שעה': formatTime(o.created_at), 'סניף': o.branches?.name || '',
                   }))
                   const byPhone: Record<string,any[]> = {}

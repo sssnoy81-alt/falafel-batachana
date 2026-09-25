@@ -35,8 +35,10 @@ A Hebrew-first (RTL) online ordering system for a falafel business with multiple
   - **menu** by category, per-branch prices, item images from Supabase Storage
   - item sheet: sauces, salads, paid add-ons, "no lettuce", notes, meal-deal (עסקית) drink/add-on choice
   - **cart** with edit/remove and upsell prompt
-  - **checkout**: name, phone, payment-method choice, 5% app discount (not applied to Cibus)
-  - **order tracking** screen with status, order number, order details; name/phone remembered for next order
+  - **checkout**: pickup / delivery (delivery only from מישור אדומים, approved localities only), delivery address,
+    name, phone, payment-method choice (labels only). **No discount** (the old 5% app discount was removed).
+  - **delivery pricing**: +₪4 per qualifying meal unit (category allowlist) + ₪20 fixed fee per delivery order
+  - **order tracking** screen with status, order number, order details; name/phone/address remembered for next order
   - business-hours gating (closed popup, order button disabled when closed)
 
 **Operations**
@@ -64,8 +66,15 @@ A Hebrew-first (RTL) online ordering system for a falafel business with multiple
 | `/order` | `app/order/page.tsx` | Customer ordering application (~1,000 lines, single client component). |
 | `/dashboard` | `app/dashboard/page.tsx` | **Legacy** order board. Old, unprotected, uses a privileged credential client-side. Considered unsafe; do not extend. |
 | `/dashboard/orders` | `app/dashboard/orders/page.tsx` | **Main kitchen / staff application** (~780 lines). |
-| `/api/push/subscribe` | `app/api/push/subscribe/route.ts` | Stores a customer push subscription (keyed by phone). |
-| `/api/push/send` | `app/api/push/send/route.ts` | Sends the "order ready" push. Currently unauthenticated. |
+| `POST /api/orders` | `app/api/orders/route.ts` | **Only customer order-creation path.** Validates intent, prices server-side, calls `create_order` RPC. |
+| `GET /api/orders/[id]/status` | `app/api/orders/[id]/status/route.ts` | Minimal tracking: `{ id, dailyNumber, status, type }` only, `no-store`. |
+| `/api/push/subscribe` | `app/api/push/subscribe/route.ts` | Stores a push subscription by `order_id` after verifying order + phone + recency. Server client only. |
+| `/api/push/send` | `app/api/push/send/route.ts` | `{ orderId }` only; sends only if DB status is `ready`; wording by order type. Not yet staff-authenticated. |
+
+**Shared order modules (`lib/`)**: `orderConfig.ts` (IDs, delivery areas, fees, labels, menu rules),
+`pricing.ts` (pure pricing used by UI + server), `orderRequest.ts` (pure request validation + order building),
+`hours.ts` (Asia/Jerusalem opening hours), `deliveryAddress.ts`, `supabaseServer.ts` (server-only client, no anon
+fallback), `createOrder.ts` (atomic RPC adapter). Local checks: `node scripts/verify-pricing.mjs`.
 
 Layouts: `app/layout.tsx` (root, RTL, PWA meta, "Powered by SN Capital AI" footer), `app/dashboard/layout.tsx` (kitchen manifest + Vercel Analytics).
 
@@ -113,7 +122,8 @@ Inferred **only from application code**:
 | `menu_items` | Products (name_he/en, description, image_url, dietary_type, is_active, is_popular, flags like has_lettuce). |
 | `toppings` | Sauces (`spread`), salads (`filling`), paid add-ons (`paid_addon`, with price). |
 | `branch_prices` | Per-branch item price and `is_available`. Items without a price are hidden. |
-| `orders` | branch_id, phone, customer_name, payment_method, status, total_price, daily_number, created_at. |
+| `orders` | branch_id, phone, customer_name, payment_method, status, total_price, daily_number (per Israel day), order_number (global sequence — NOT the ticket number), `type` ('pickup'/'delivery', NULL on legacy rows; new orders always set it), created_at. |
+| `deliveries` | 1:1 extension of `orders` for delivery orders (FK + UNIQUE order_id, ON DELETE NO ACTION): address, notes, delivery_fee; structured address + meal_surcharge/meal_quantity pending migration. Must be server-only (RLS). |
 | `order_items` | order_id, item_id, quantity, unit_price, notes (selected options are serialized into notes text). |
 | `push_subscriptions` | phone, order_id, subscription JSON. |
 
@@ -128,19 +138,20 @@ Not used: RPCs, views, Realtime, Supabase Auth.
 ## 6. Current Order Flow
 
 ```
-customer → branch → menu → item options → cart → checkout (name, phone, payment label)
-  → order creation (browser inserts orders + order_items directly via Supabase)
-  → customer tracking screen (polls order status)
-  → kitchen queue (polls today's orders)
+customer → branch → menu → item options → cart → checkout (pickup/delivery, address, name, phone, payment label)
+  → POST /api/orders (server validates + prices → create_order RPC: orders + order_items + deliveries atomically)
+  → customer tracking screen (polls GET /api/orders/[id]/status)
+  → kitchen queue (polls today's orders, incl. deliveries embed)
   → received → confirmed → preparing → ready (push sent to customer) → delivered
   (cancel available from the kitchen board)
 ```
 
-- **Prices are calculated in the browser** (item price + add-ons + deal extras − discount) and written as `total_price` / `unit_price`.
-- `daily_number` = count of today's orders (all branches) + 1, computed in the browser.
-- **Customer tracking polls Supabase** directly; session persists in `localStorage` for 6 hours and resets after `delivered`.
-- **Kitchen polls** for today's orders; status changes are written directly from the browser.
-- **Cash / credit / Cibus / Bit do not represent real payment processing.** All methods follow the identical flow.
+- **Prices are authoritative on the server** (`lib/pricing.ts`); the browser only displays the same calculation.
+  `order_items.unit_price` = base + paid add-ons + deal extras. Delivery charges live in `deliveries`.
+- `daily_number` is assigned inside the `create_order` DB function (advisory lock per Israel day).
+- **Cash / credit / Cibus / Bit do not represent real payment processing.** Payment method never affects price.
+- ⚠️ **DB dependency (feature/delivery-sec1):** `/api/orders` returns 503 until the approved `create_order` RPC exists;
+  delivery also needs the approved `deliveries` migration + RLS lock-down. Do not deploy before those DB steps.
 
 ---
 
@@ -152,9 +163,10 @@ These issues are **known and documented**. Never paste actual keys, JWTs, passwo
 - The Supabase URL and public anon key are hardcoded in `app/order/page.tsx` instead of read from env.
 - **Legacy staff login is client-side only** (`app/dashboard/orders/page.tsx`); staff passwords are in browser code and must eventually be removed. Session is a `localStorage` entry.
 - **`/dashboard` is legacy and unprotected.**
-- **Push endpoints require stronger authentication** (anyone can call send/subscribe; subscriptions keyed by phone). Push routes fall back from the service key to the anon key if the env var is missing.
-- **Customer prices are trusted from the browser.**
-- **Current RLS state still needs verification.**
+- **Push send is not staff-authenticated** (it only acts on orders whose DB status is `ready`). Push routes no longer fall back to the anon key.
+- **Anon can still read `orders` / `order_items` / `push_subscriptions` and insert orders directly** (existing debt → SEC-2).
+  The customer app no longer depends on those anon reads/inserts.
+- **RLS does not protect against the historically exposed service_role key**; real delivery addresses in production need an explicit rotation / risk decision.
 - The GitHub repository is public and historical commits contain credentials.
 
 **Key rotation is intentionally DEFERRED for now by project decision.**

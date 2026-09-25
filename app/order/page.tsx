@@ -1,6 +1,17 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
 import { createClient } from '@supabase/supabase-js'
+import {
+  DELIVERY_AREAS, DELIVERY_FEE, DELIVERY_FIELD_LIMITS, DELIVERY_MEAL_SURCHARGE, MAX_CUSTOMER_NAME, MAX_ITEM_NOTES, MAX_LINE_QUANTITY, PAYMENT_METHODS, PAYMENT_METHOD_LABELS, PHONE_REGEX,
+  SET_ADDON_FREE, SET_ADDONS_PAID, SET_DRINK_EXTRA, SET_DRINKS_FREE, SET_DRINKS_PAID,
+  isDealCategory, isDeliveryBranch, isDrinkCategory, isOrderType, isPaymentMethod, isSidesCategory, isToppingAllowedForItem,
+  normalizePhone, setAddonExtra, setDrinkExtra,
+  type OrderType, type PaymentMethod,
+} from '@/lib/orderConfig'
+import { computeOrderTotals, priceLine, type PricingBreakdown, type PricingLineInput } from '@/lib/pricing'
+import { getBusinessStatus } from '@/lib/hours'
+import { formatDeliveryAddress } from '@/lib/deliveryAddress'
+import type { CreateOrderRequest, CreateOrderResponse, OrderErrorCode } from '@/lib/orderRequest'
 
 const supabase = createClient(
   'https://sqgnrzcmjhwgfjxocvlr.supabase.co',
@@ -24,17 +35,45 @@ type CartItem = {
   setAddon?: string; setAddonExtra?: number
 }
 
-const SET_DRINKS_FREE = ['פחית קולה', 'פחית זירו', 'פחית ענבים', 'מים', 'סודה']
-const SET_DRINKS_PAID = ['קולה זכוכית', 'זירו זכוכית', 'פיוז טי']
-const SET_DRINK_EXTRA = 3
-const SET_ADDON_FREE  = 'ציפס אישי'
-const SET_ADDONS_PAID = [
-  { name: 'ציפס גדול', price: 7 },
-  { name: 'טבעות בצל', price: 10 },
-]
-const APP_DISCOUNT = 0.05
-type OrderStatus = 'received' | 'confirmed' | 'preparing' | 'ready' | 'delivered'
+type OrderStatus = 'received' | 'confirmed' | 'preparing' | 'ready' | 'delivered' | 'cancelled'
 type Screen = 'branch' | 'menu' | 'order' | 'tracking'
+type DeliveryForm = { city: string; street: string; houseNumber: string; apartment: string; floor: string; entrance: string; courierNotes: string }
+
+const EMPTY_DELIVERY_FORM: DeliveryForm = { city: '', street: '', houseNumber: '', apartment: '', floor: '', entrance: '', courierNotes: '' }
+
+function loadSavedDeliveryForm(): DeliveryForm {
+  if (typeof window === 'undefined') return EMPTY_DELIVERY_FORM
+  try {
+    const s = JSON.parse(localStorage.getItem('falafel_delivery_address') || 'null')
+    if (!s || typeof s !== 'object') return EMPTY_DELIVERY_FORM
+    const str = (v: unknown) => (typeof v === 'string' ? v : '')
+    return {
+      city: DELIVERY_AREAS.includes(str(s.city)) ? str(s.city) : '',
+      street: str(s.street), houseNumber: str(s.houseNumber), apartment: str(s.apartment),
+      floor: str(s.floor), entrance: str(s.entrance), courierNotes: str(s.courierNotes),
+    }
+  } catch { return EMPTY_DELIVERY_FORM }
+}
+
+function loadSavedOrderType(): OrderType | null {
+  if (typeof window === 'undefined') return null
+  const v = localStorage.getItem('falafel_order_type')
+  return isOrderType(v) ? v : null
+}
+
+const ORDER_ERROR_MESSAGES: Partial<Record<OrderErrorCode, string>> = {
+  closed: 'המקום סגור כרגע — לא ניתן לשלוח הזמנה',
+  item_unavailable: 'אחד הפריטים בסל אינו זמין כרגע. נא לעדכן את הסל',
+  invalid_option: 'אחת הבחירות בסל אינה זמינה. נא לעדכן את המנה',
+  invalid_quantity: 'כמות לא תקינה באחת המנות',
+  delivery_not_available: 'משלוחים זמינים רק מסניף מישור אדומים',
+  invalid_delivery_area: 'נא לבחור יישוב מהרשימה',
+  invalid_address: 'נא למלא רחוב ומספר בית',
+  invalid_phone: 'מספר טלפון לא תקין',
+  invalid_name: 'נא להזין שם מלא',
+  empty_cart: 'הסל ריק',
+}
+const GENERIC_ORDER_ERROR = 'לא ניתן לשלוח את ההזמנה כרגע. נסו שוב בעוד רגע או התקשרו לסניף'
 
 const C = {
   bg: '#0D0D0D', bgCard: '#1A1A1A', bgCardHover: '#222222',
@@ -48,11 +87,19 @@ const LOGO = 'https://sqgnrzcmjhwgfjxocvlr.supabase.co/storage/v1/object/public/
 
 const STATUS_LABELS: Record<OrderStatus, string> = {
   received: 'ממתינה לאישור', confirmed: 'אושרה',
-  preparing: 'בהכנה', ready: 'מוכנה לאיסוף', delivered: 'הוגשה',
+  preparing: 'בהכנה', ready: 'מוכנה לאיסוף', delivered: 'הוגשה', cancelled: 'ההזמנה בוטלה',
 }
+// Delivery wording overrides (pickup and legacy NULL-type orders use STATUS_LABELS)
+const DELIVERY_STATUS_LABELS: Partial<Record<OrderStatus, string>> = {
+  ready: 'מוכנה ויוצאת למשלוח', delivered: 'נמסרה',
+}
+const statusLabel = (status: OrderStatus, type: OrderType | null) =>
+  (type === 'delivery' && DELIVERY_STATUS_LABELS[status]) || STATUS_LABELS[status] || ''
 const STATUS_ICONS: Record<OrderStatus, string> = {
-  received: '⏳', confirmed: '✅', preparing: '👨‍🍳', ready: '🔔', delivered: '🎉',
+  received: '⏳', confirmed: '✅', preparing: '👨‍🍳', ready: '🔔', delivered: '🎉', cancelled: '❌',
 }
+const isOrderStatus = (v: unknown): v is OrderStatus =>
+  typeof v === 'string' && Object.prototype.hasOwnProperty.call(STATUS_LABELS, v)
 
 const BRANCH_INFO: Record<string, { address: string; phone: string; waze: string }> = {
   '8fed141d-0e7c-46c1-803b-88d3d811c1f8': {
@@ -65,46 +112,14 @@ const BRANCH_INFO: Record<string, { address: string; phone: string; waze: string
   },
 }
 
-const isValidPhone = (p: string) => /^05\d{8}$/.test(p.replace(/[-\s]/g, ''))
+const isValidPhone = (p: string) => PHONE_REGEX.test(normalizePhone(p))
 const fmt = (n: number) => n % 1 === 0 ? `₪${n.toFixed(0)}` : `₪${n.toFixed(1)}`
 
-function getBusinessStatus(): { isOpen: boolean; nextOpen: string } {
-  const now = new Date()
-  const day = now.getDay()
-  const timeNum = now.getHours() * 60 + now.getMinutes()
-  const openTime  = 8 * 60 + 0
-  const closeTime = 19 * 60 + 30
-  const isSat = day === 6  // שבת
-  const isFri = day === 5  // שישי — סגור
-
-  // פתוח רק א'-ה' בין 08:00 ל-19:30
-  if (!isFri && !isSat && timeNum >= openTime && timeNum < closeTime)
-    return { isOpen: true, nextOpen: '' }
-
-  // חשב פתיחה הבאה
-  let nextOpen = ''
-  if (isSat) {
-    // שבת → ראשון
-    const d = new Date(now); d.setDate(d.getDate() + 1)
-    nextOpen = `ראשון ${d.toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })} בשעה 08:00`
-  } else if (isFri) {
-    // שישי → ראשון
-    const d = new Date(now); d.setDate(d.getDate() + 2)
-    nextOpen = `ראשון ${d.toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })} בשעה 08:00`
-  } else if (timeNum < openTime) {
-    nextOpen = 'היום בשעה 08:00'
-  } else {
-    // אחרי שעת סגירה
-    if (day === 4) {
-      // יום ה' → ראשון
-      const d = new Date(now); d.setDate(d.getDate() + 3)
-      nextOpen = `ראשון ${d.toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })} בשעה 08:00`
-    } else {
-      nextOpen = 'מחר בשעה 08:00'
-    }
-  }
-  return { isOpen: false, nextOpen }
-}
+const labelStyle: React.CSSProperties = { display: 'block', color: C.gray, fontSize: 13, fontWeight: 600, marginBottom: 6 }
+const inputStyle = (ok: boolean): React.CSSProperties => ({
+  width: '100%', padding: 12, border: `1px solid ${ok ? C.green : C.border}`, borderRadius: 12, fontSize: 16,
+  fontFamily: 'Heebo, sans-serif', outline: 'none', boxSizing: 'border-box', background: C.bg, color: C.white,
+})
 
 export default function Home() {
   const [screen, setScreen] = useState<Screen>('branch')
@@ -132,16 +147,25 @@ export default function Home() {
     if (typeof window === 'undefined') return ''
     return localStorage.getItem('falafel_customer_phone') || ''
   })
-  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'credit' | 'cibus' | 'bit'>('cash')
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash')
   const [placingOrder, setPlacingOrder] = useState(false)
+  const [orderError, setOrderError] = useState<string>('')
   const [orderId, setOrderId] = useState<string | null>(null)
   const [orderStatus, setOrderStatus] = useState<OrderStatus>('received')
   const [orderDailyNumber, setOrderDailyNumber] = useState<number | null>(null)
+
+  // איסוף / משלוח — בחירה מפורשת בסניף עם משלוחים; ברירת מחדל = הבחירה האחרונה
+  const [orderTypeChoice, setOrderTypeChoice] = useState<OrderType | null>(() => loadSavedOrderType())
+  const [deliveryForm, setDeliveryForm] = useState<DeliveryForm>(() => loadSavedDeliveryForm())
 
   // *** חדש: שמירת פירוט ההזמנה למסך מעקב ***
   const [orderCart, setOrderCart] = useState<CartItem[]>([])
   const [orderFinalTotal, setOrderFinalTotal] = useState<number>(0)
   const [orderPaymentMethod, setOrderPaymentMethod] = useState<string>('')
+  const [orderType, setOrderType] = useState<OrderType | null>(null)
+  const [orderBreakdown, setOrderBreakdown] = useState<PricingBreakdown | null>(null)
+  const [orderLineTotals, setOrderLineTotals] = useState<number[]>([])
+  const [orderAddress, setOrderAddress] = useState<string>('')
   const [showOrderDetails, setShowOrderDetails] = useState(false)
 
   const categoryRefs = useRef<Record<string, HTMLDivElement | null>>({})
@@ -181,6 +205,11 @@ export default function Home() {
           if (s.orderCart) setOrderCart(s.orderCart)
           if (s.orderFinalTotal) setOrderFinalTotal(s.orderFinalTotal)
           if (s.orderPaymentMethod) setOrderPaymentMethod(s.orderPaymentMethod)
+          if (isOrderType(s.orderType)) setOrderType(s.orderType)
+          if (s.orderBreakdown) setOrderBreakdown(s.orderBreakdown)
+          if (Array.isArray(s.orderLineTotals)) setOrderLineTotals(s.orderLineTotals)
+          if (typeof s.orderAddress === 'string') setOrderAddress(s.orderAddress)
+          if (typeof s.orderDailyNumber === 'number') setOrderDailyNumber(s.orderDailyNumber)
           fetchBranchesAndRestore(s.branchId); return
         }
         if (s.branch && s.screen && s.screen !== 'tracking') {
@@ -229,6 +258,9 @@ export default function Home() {
 
   async function selectBranch(branch: Branch) {
     setSelectedBranch(branch); setLoading(true)
+    // סוג הזמנה תקף לסניף: סניף ללא משלוחים → איסוף בלבד
+    setOrderTypeChoice(isDeliveryBranch(branch.id) ? loadSavedOrderType() : 'pickup')
+    setOrderError('')
     const [catRes, itemRes, topRes, priceRes] = await Promise.all([
       supabase.from('menu_categories').select('*').order('sort_order'),
       supabase.from('menu_items').select('*').eq('is_active', true).order('sort_order'),
@@ -244,16 +276,31 @@ export default function Home() {
     setLoading(false); setScreen('menu')
   }
 
-  const cartTotal = cart.reduce((sum, c) => {
-    const addonsTotal = c.paidAddons.reduce((s, name) => {
-      const t = toppings.find(t => t.name_he === name); return s + (t?.price ?? 4)
-    }, 0)
-    return sum + ((c.item.price || 0) + addonsTotal + (c.setDrinkExtra || 0) + (c.setAddonExtra || 0)) * c.quantity
-  }, 0)
+  // ── תמחור (תצוגה בלבד — הסכום הקובע מחושב בשרת) ──
+  const paidAddonPrice = (name: string) =>
+    toppings.find(t => t.type === 'paid_addon' && t.name_he === name)?.price ?? 0
+  const toPricingInput = (c: Pick<CartItem, 'item' | 'paidAddons' | 'setDrink' | 'setAddon' | 'quantity'>): PricingLineInput => ({
+    categoryId: c.item.category_id,
+    basePrice: c.item.price || 0,
+    paidAddonPrices: c.paidAddons.map(paidAddonPrice),
+    setDrink: c.setDrink, setAddon: c.setAddon,
+    quantity: c.quantity,
+  })
+  const linePrice = (c: CartItem) => priceLine(toPricingInput(c)).lineTotal
+
+  const deliveryAvailable = isDeliveryBranch(selectedBranch?.id)
+  // סניף ללא משלוחים → תמיד איסוף. בסניף עם משלוחים — חובה לבחור.
+  const effectiveOrderType: OrderType | null = deliveryAvailable ? orderTypeChoice : 'pickup'
+  const pricingInputs = cart.map(toPricingInput)
+  const cartSubtotal = computeOrderTotals(pricingInputs, 'pickup').subtotal
+  const checkoutTotals = computeOrderTotals(pricingInputs, effectiveOrderType ?? 'pickup')
   const cartCount = cart.reduce((s, c) => s + c.quantity, 0)
-  const hasDiscount = paymentMethod !== 'cibus'
-  const discountAmount = hasDiscount ? Math.round(cartTotal * APP_DISCOUNT * 10) / 10 : 0
-  const finalTotal = cartTotal - discountAmount
+
+  const deliveryFormValid = !!deliveryForm.city && DELIVERY_AREAS.includes(deliveryForm.city)
+    && deliveryForm.street.trim().length > 0 && deliveryForm.houseNumber.trim().length > 0
+  const orderTypeReady = effectiveOrderType === 'pickup' || (effectiveOrderType === 'delivery' && deliveryFormValid)
+  const canPlaceOrder = isOpen && isValidPhone(orderPhone) && cart.length > 0 && customerName.trim().length >= 2
+    && orderTypeReady && !placingOrder
 
   useEffect(() => {
     if (screen === 'branch' || screen === 'tracking') return
@@ -266,10 +313,7 @@ export default function Home() {
   }, [cart, screen, selectedBranch])
 
   function handleCartButton() {
-    const hasDrinks = cart.some(c => {
-      const cat = categories.find(cat => cat.id === c.item.category_id)
-      return cat && (cat.name_he.includes('שתי') || cat.name_he.includes('שתיה') || cat.name_he.includes('שתייה') || cat.name_he.includes('משקה'))
-    })
+    const hasDrinks = cart.some(c => isDrinkCategory(c.item.category_id))
     const hasPaidAddons = cart.some(c => c.paidAddons.length > 0)
     if (!hasDrinks || !hasPaidAddons) setShowUpsell(true)
     else setScreen('order')
@@ -292,9 +336,8 @@ export default function Home() {
 
   function addToCart() {
     if (!selectedItem) return
-    const drinkExtra = SET_DRINKS_PAID.includes(sheetSetDrink) ? SET_DRINK_EXTRA : 0
-    const addonPaid = SET_ADDONS_PAID.find(a => a.name === sheetSetAddon)
-    const addonExtra = addonPaid ? addonPaid.price : 0
+    const drinkExtra = setDrinkExtra(sheetSetDrink)
+    const addonExtra = setAddonExtra(sheetSetAddon)
     const newItem: CartItem = {
       item: selectedItem, quantity: sheetQty, sauces: sheetSauces, salads: sheetSalads,
       paidAddons: sheetPaidAddons, noLettuce: sheetNoLettuce, notes: sheetNotes,
@@ -307,12 +350,12 @@ export default function Home() {
     } else {
       setCart(prev => [...prev, newItem]); setShowBottomSheet(false)
       setTimeout(() => {
-        const isAddon = categories.find(c => c.name_he.includes('תוספ'))
-        const isDrink = categories.find(c => c.name_he.includes('שתי'))
-        const addedCat = categories.find(c => c.id === newItem.item.category_id)
-        if (!addedCat?.name_he.includes('שתי') && !addedCat?.name_he.includes('תוספ')) {
+        const isAddon = categories.find(c => isSidesCategory(c.id))
+        const isDrink = categories.find(c => isDrinkCategory(c.id))
+        const addedCatId = newItem.item.category_id
+        if (!isDrinkCategory(addedCatId) && !isSidesCategory(addedCatId)) {
           if (isAddon) { setActiveCategory(isAddon.id); categoryRefs.current[isAddon.id]?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }
-        } else if (addedCat?.name_he.includes('תוספ')) {
+        } else if (isSidesCategory(addedCatId)) {
           if (isDrink) { setActiveCategory(isDrink.id); categoryRefs.current[isDrink.id]?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }
         }
       }, 300)
@@ -335,68 +378,113 @@ export default function Home() {
     } catch (e) { console.error('Push subscribe error:', e) }
   }
 
+  // Converts the cart (which stores option names) into the server contract (option IDs, no prices).
+  function buildOrderRequest(branchId: string, type: OrderType): CreateOrderRequest | null {
+    const idsOf = (names: string[], type: 'spread' | 'filling' | 'paid_addon') => {
+      const ids: string[] = []
+      for (const name of names) {
+        const t = toppings.find(t => t.type === type && t.name_he === name)
+        if (!t) return null
+        ids.push(t.id)
+      }
+      return ids
+    }
+    const items: CreateOrderRequest['items'] = []
+    for (const c of cart) {
+      const sauceIds = idsOf(c.sauces, 'spread')
+      const saladIds = idsOf(c.salads, 'filling')
+      const paidAddonIds = idsOf(c.paidAddons, 'paid_addon')
+      if (!sauceIds || !saladIds || !paidAddonIds) return null
+      items.push({
+        itemId: c.item.id, quantity: c.quantity, sauceIds, saladIds, paidAddonIds,
+        setDrink: c.setDrink || undefined, setAddon: c.setAddon || undefined, notes: c.notes || undefined,
+      })
+    }
+    return {
+      branchId, type,
+      customerName: customerName.trim(),
+      phone: normalizePhone(orderPhone),
+      paymentMethod,
+      items,
+      delivery: type === 'delivery' ? {
+        city: deliveryForm.city,
+        street: deliveryForm.street.trim(),
+        houseNumber: deliveryForm.houseNumber.trim(),
+        apartment: deliveryForm.apartment.trim() || undefined,
+        floor: deliveryForm.floor.trim() || undefined,
+        entrance: deliveryForm.entrance.trim() || undefined,
+        courierNotes: deliveryForm.courierNotes.trim() || undefined,
+      } : undefined,
+    }
+  }
+
   async function placeOrder() {
-    if (!selectedBranch || !isValidPhone(orderPhone) || cart.length === 0 || customerName.trim().length < 2) return
+    if (!selectedBranch || !effectiveOrderType || !canPlaceOrder) return
+    setOrderError('')
+    const request = buildOrderRequest(selectedBranch.id, effectiveOrderType)
+    if (!request) { setOrderError(ORDER_ERROR_MESSAGES.invalid_option!); return }
+
     setPlacingOrder(true)
-    const today = new Date(); today.setHours(0, 0, 0, 0)
-    const { count } = await supabase.from('orders').select('*', { count: 'exact', head: true }).gte('created_at', today.toISOString())
-    const dailyNumber = (count || 0) + 1
-    const { data: order, error } = await supabase.from('orders').insert([{
-      branch_id: selectedBranch.id,
-      phone: orderPhone.replace(/[-\s]/g, ''),
-      customer_name: customerName.trim(),
-      payment_method: paymentMethod, status: 'received',
-      total_price: finalTotal, daily_number: dailyNumber,
-    }]).select().single()
-    if (error || !order) {
-      alert('שגיאה: ' + JSON.stringify(error?.message))
+    let result: CreateOrderResponse
+    try {
+      const res = await fetch('/api/orders', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      })
+      const json = await res.json().catch(() => null)
+      if (!res.ok || !json || typeof json.id !== 'string') {
+        const code = json?.error as OrderErrorCode | undefined
+        setOrderError((code && ORDER_ERROR_MESSAGES[code]) || GENERIC_ORDER_ERROR)
+        setPlacingOrder(false); return
+      }
+      result = json as CreateOrderResponse
+    } catch {
+      setOrderError(GENERIC_ORDER_ERROR)
       setPlacingOrder(false); return
     }
-    await supabase.from('order_items').insert(
-      cart.map(c => ({
-        order_id: order.id, item_id: c.item.id, quantity: c.quantity,
-        unit_price: (c.item.price || 0) + c.paidAddons.reduce((s, name) => {
-          const t = toppings.find(t => t.name_he === name); return s + (t?.price ?? 4)
-        }, 0),
-        notes: [
-          c.sauces.length > 0 ? `רטבים: ${c.sauces.join(', ')}` : '',
-          c.salads.length > 0 ? `סלטים: ${c.salads.join(', ')}` : '',
-          c.paidAddons.length > 0 ? `תוספות: ${c.paidAddons.join(', ')}` : '',
-          c.setDrink ? `שתייה: ${c.setDrink}${c.setDrinkExtra ? ` (+₪${c.setDrinkExtra})` : ''}` : '',
-          c.setAddon ? `תוספת עסקית: ${c.setAddon}${c.setAddonExtra ? ` (+₪${c.setAddonExtra})` : ' (כלול)'}` : '',
-          c.notes || '',
-        ].filter(Boolean).join(' | '),
-      }))
-    )
 
-    // *** שמור פירוט הזמנה לפני ניקוי הסל ***
+    // *** שמור פירוט הזמנה לפני ניקוי הסל — הסכומים מהשרת הם הקובעים ***
     const cartSnapshot = [...cart]
-    const totalSnapshot = finalTotal
-    const paySnapshot = paymentMethod
+    const address = result.type === 'delivery' && request.delivery ? formatDeliveryAddress(request.delivery) : ''
+    const lineTotals = result.lines.map(l => l.lineTotal)
 
     localStorage.setItem('falafel_session', JSON.stringify({
-      orderId: order.id, branchId: selectedBranch.id,
+      orderId: result.id, branchId: selectedBranch.id,
       expires: Date.now() + 6 * 3600 * 1000,
-      orderCart: cartSnapshot, orderFinalTotal: totalSnapshot, orderPaymentMethod: paySnapshot,
+      orderCart: cartSnapshot, orderFinalTotal: result.total, orderPaymentMethod: paymentMethod,
+      orderType: result.type, orderBreakdown: result.breakdown, orderLineTotals: lineTotals,
+      orderAddress: address, orderDailyNumber: result.dailyNumber,
     }))
 
     // שמור פרטי לקוח לפעם הבאה
     localStorage.setItem('falafel_customer_name', customerName.trim())
-    localStorage.setItem('falafel_customer_phone', orderPhone.replace(/[-\s]/g, ''))
+    localStorage.setItem('falafel_customer_phone', normalizePhone(orderPhone))
+    localStorage.setItem('falafel_order_type', result.type)
+    if (result.type === 'delivery') localStorage.setItem('falafel_delivery_address', JSON.stringify(deliveryForm))
 
     setOrderCart(cartSnapshot)
-    setOrderFinalTotal(totalSnapshot)
-    setOrderPaymentMethod(paySnapshot)
-    setOrderId(order.id); setOrderStatus('received'); setOrderDailyNumber(dailyNumber)
+    setOrderFinalTotal(result.total)
+    setOrderPaymentMethod(paymentMethod)
+    setOrderType(result.type)
+    setOrderBreakdown(result.breakdown)
+    setOrderLineTotals(lineTotals)
+    setOrderAddress(address)
+    setOrderId(result.id); setOrderStatus('received'); setOrderDailyNumber(result.dailyNumber)
     setCart([]); setPlacingOrder(false); setScreen('tracking')
-    subscribeToPush(orderPhone.replace(/[-\s]/g, ''), order.id)
+    subscribeToPush(normalizePhone(orderPhone), result.id)
   }
 
   useEffect(() => {
     if (screen !== 'tracking' || !orderId) return
     const poll = async () => {
-      const { data } = await supabase.from('orders').select('status').eq('id', orderId).single()
-      if (data) setOrderStatus(data.status as OrderStatus)
+      try {
+        const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}/status`, { cache: 'no-store' })
+        if (!res.ok) return
+        const data = await res.json()
+        if (isOrderStatus(data?.status)) setOrderStatus(data.status)
+        if (isOrderType(data?.type)) setOrderType(data.type)
+        if (typeof data?.dailyNumber === 'number') setOrderDailyNumber(data.dailyNumber)
+      } catch {}
     }
     poll()
     const id = setInterval(poll, 10000)
@@ -415,6 +503,18 @@ export default function Home() {
   const sauces = toppings.filter(t => t.type === 'spread')
   const saladsOpts = toppings.filter(t => t.type === 'filling')
   const paidAddonsOpts = toppings.filter(t => t.type === 'paid_addon')
+
+  // Bottom-sheet rules by category ID (no Hebrew name matching) + shared topping availability rules
+  const sheetCatId = selectedItem?.category_id
+  const sheetIsDrink = isDrinkCategory(sheetCatId)
+  const sheetIsSides = isSidesCategory(sheetCatId)
+  const sheetIsDeal = isDealCategory(sheetCatId)
+  const sheetToppingAllowed = (t: Topping) => !!selectedItem && isToppingAllowedForItem(t, selectedItem, selectedBranch?.id)
+  const sheetLineTotal = selectedItem ? priceLine({
+    categoryId: selectedItem.category_id, basePrice: selectedItem.price || 0,
+    paidAddonPrices: sheetPaidAddons.map(paidAddonPrice),
+    setDrink: sheetSetDrink || undefined, setAddon: sheetSetAddon || undefined, quantity: sheetQty,
+  }).lineTotal : 0
 
   if (loading) return (
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: C.bg, fontFamily: 'Heebo, sans-serif' }}>
@@ -478,7 +578,8 @@ export default function Home() {
   if (screen === 'tracking') {
     const steps: OrderStatus[] = ['received', 'confirmed', 'preparing', 'ready', 'delivered']
     const currentStep = steps.indexOf(orderStatus)
-    const payLabel = orderPaymentMethod === 'cash' ? '💵 מזומן' : orderPaymentMethod === 'credit' ? '💳 אשראי' : orderPaymentMethod === 'cibus' ? '🍽️ סיבוס' : '💙 ביט'
+    const payLabel = isPaymentMethod(orderPaymentMethod) ? PAYMENT_METHOD_LABELS[orderPaymentMethod] : orderPaymentMethod
+    const isDeliveryOrder = orderType === 'delivery'
 
     return (
       <div style={{ minHeight: '100vh', background: C.bg, fontFamily: 'Heebo, sans-serif', direction: 'rtl' }}>
@@ -493,7 +594,8 @@ export default function Home() {
           <div style={{ background: C.bgCard, borderRadius: 20, padding: 28, marginBottom: 16, border: `1px solid ${C.border}` }}>
             <div style={{ textAlign: 'center', marginBottom: 28 }}>
               <div style={{ fontSize: 56 }}>{STATUS_ICONS[orderStatus]}</div>
-              <div style={{ fontWeight: 800, fontSize: 22, color: C.white, marginTop: 10 }}>{STATUS_LABELS[orderStatus]}</div>
+              <div style={{ fontWeight: 800, fontSize: 22, color: C.white, marginTop: 10 }}>{statusLabel(orderStatus, orderType)}</div>
+              {isDeliveryOrder && <div style={{ color: C.gray, fontSize: 13, marginTop: 6 }}>🛵 משלוח</div>}
             </div>
             <div style={{ display: 'flex', gap: 6 }}>
               {steps.slice(0, 4).map((step, i) => (
@@ -532,11 +634,19 @@ export default function Home() {
                           {c.notes && <div style={{ fontSize: 12, color: C.gray, fontStyle: 'italic' }}>📝 {c.notes}</div>}
                         </div>
                         <div style={{ color: C.gold, fontWeight: 800, fontSize: 14, marginRight: 12 }}>
-                          {fmt(((c.item.price || 0) + (c.setDrinkExtra || 0) + (c.setAddonExtra || 0)) * c.quantity)}
+                          {fmt(orderLineTotals[i] ?? linePrice(c))}
                         </div>
                       </div>
                     </div>
                   ))}
+                  {/* פירוט משלוח — מהסכומים שנשמרו בשרת */}
+                  {isDeliveryOrder && orderBreakdown && (
+                    <div style={{ paddingTop: 12, borderTop: `1px solid ${C.border}`, fontSize: 13, color: C.gray }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span>סכום ביניים</span><span>{fmt(orderBreakdown.subtotal)}</span></div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span>תוספת משלוח למנות ({orderBreakdown.mealQuantity} × ₪{DELIVERY_MEAL_SURCHARGE})</span><span>{fmt(orderBreakdown.mealSurcharge)}</span></div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}><span>דמי משלוח</span><span>{fmt(orderBreakdown.deliveryFee)}</span></div>
+                    </div>
+                  )}
                   {/* סיכום תשלום */}
                   <div style={{ paddingTop: 14, borderTop: `1px solid ${C.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
@@ -555,18 +665,27 @@ export default function Home() {
             + הזמנה חדשה
           </button>
 
+          {isDeliveryOrder && orderAddress && (
+            <div style={{ background: C.bgCard, borderRadius: 16, padding: '18px 20px', border: `1px solid ${C.border}`, marginTop: 12 }}>
+              <div style={{ fontWeight: 800, fontSize: 15, color: C.white, marginBottom: 8 }}>🛵 משלוח לכתובת</div>
+              <div style={{ color: C.gray, fontSize: 14 }}>{orderAddress}</div>
+            </div>
+          )}
+
           {selectedBranch && BRANCH_INFO[selectedBranch.id] && (
             <div style={{ background: C.bgCard, borderRadius: 16, padding: '18px 20px', border: `1px solid ${C.border}`, marginTop: 12 }}>
               <div style={{ fontWeight: 800, fontSize: 15, color: C.white, marginBottom: 12 }}>📍 {selectedBranch.name}</div>
               <div style={{ color: C.gray, fontSize: 13, marginBottom: 8 }}>{BRANCH_INFO[selectedBranch.id].address}</div>
               <a href={`tel:${BRANCH_INFO[selectedBranch.id].phone.replace(/-/g,'')}`}
-                style={{ display: 'flex', alignItems: 'center', gap: 8, color: C.gold, fontSize: 14, fontWeight: 700, textDecoration: 'none', marginBottom: 10 }}>
+                style={{ display: 'flex', alignItems: 'center', gap: 8, color: C.gold, fontSize: 14, fontWeight: 700, textDecoration: 'none', marginBottom: isDeliveryOrder ? 0 : 10 }}>
                 📞 {BRANCH_INFO[selectedBranch.id].phone}
               </a>
-              <a href={BRANCH_INFO[selectedBranch.id].waze} target="_blank" rel="noreferrer"
-                style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(100,210,80,0.1)', border: '1px solid rgba(100,210,80,0.3)', borderRadius: 10, padding: '10px 14px', textDecoration: 'none', color: C.green, fontWeight: 700, fontSize: 14 }}>
-                🗺️ נווט עם Waze
-              </a>
+              {!isDeliveryOrder && (
+                <a href={BRANCH_INFO[selectedBranch.id].waze} target="_blank" rel="noreferrer"
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(100,210,80,0.1)', border: '1px solid rgba(100,210,80,0.3)', borderRadius: 10, padding: '10px 14px', textDecoration: 'none', color: C.green, fontWeight: 700, fontSize: 14 }}>
+                  🗺️ נווט עם Waze
+                </a>
+              )}
             </div>
           )}
         </div>
@@ -599,31 +718,77 @@ export default function Home() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: C.border, borderRadius: 10, padding: '5px 10px' }}>
                   <button onClick={() => setCart(prev => prev.map((x, ii) => ii === i ? { ...x, quantity: Math.max(1, x.quantity - 1) } : x))} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.gold, fontWeight: 700, lineHeight: 1 }}>−</button>
                   <span style={{ fontWeight: 800, minWidth: 16, textAlign: 'center', color: C.white }}>{c.quantity}</span>
-                  <button onClick={() => setCart(prev => prev.map((x, ii) => ii === i ? { ...x, quantity: x.quantity + 1 } : x))} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.gold, fontWeight: 700, lineHeight: 1 }}>+</button>
+                  <button onClick={() => setCart(prev => prev.map((x, ii) => ii === i ? { ...x, quantity: Math.min(MAX_LINE_QUANTITY, x.quantity + 1) } : x))} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.gold, fontWeight: 700, lineHeight: 1 }}>+</button>
                 </div>
                 <span style={{ fontWeight: 800, color: C.gold, minWidth: 44, textAlign: 'left' }}>
-                  {fmt(((c.item.price || 0) + (c.setDrinkExtra || 0) + (c.setAddonExtra || 0) + c.paidAddons.reduce((s, name) => { const t = toppings.find(t => t.name_he === name); return s + (t?.price ?? 4) }, 0)) * c.quantity)}
+                  {fmt(linePrice(c))}
                 </span>
                 <button onClick={() => setCart(prev => prev.filter((_, ii) => ii !== i))} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.red, lineHeight: 1, padding: '4px' }}>🗑️</button>
               </div>
             </div>
           ))}
-          <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 12, borderTop: `1px solid ${C.border}`, fontWeight: 600, fontSize: 15, marginBottom: 6 }}>
-            <span style={{ color: C.gray }}>סכום לפני הנחה</span><span style={{ color: C.gray }}>{fmt(cartTotal)}</span>
-          </div>
-          {hasDiscount && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-              <span style={{ color: C.green, fontWeight: 700, fontSize: 14 }}>🎉 הנחת אפליקציה 5%</span>
-              <span style={{ color: C.green, fontWeight: 700, fontSize: 14 }}>−{fmt(discountAmount)}</span>
-            </div>
-          )}
-          <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 8, borderTop: `1px solid ${C.border}`, fontWeight: 900, fontSize: 20 }}>
-            <span style={{ color: C.white }}>לתשלום</span><span style={{ color: C.gold }}>{fmt(finalTotal)}</span>
+          <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 12, borderTop: `1px solid ${C.border}`, fontWeight: 600, fontSize: 15 }}>
+            <span style={{ color: C.gray }}>סכום ביניים</span><span style={{ color: C.gray }}>{fmt(cartSubtotal)}</span>
           </div>
         </div>
+
+        {/* איסוף עצמי / משלוח — רק בסניף עם משלוחים */}
+        {deliveryAvailable && (
+          <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${effectiveOrderType ? C.border : C.gold}` }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>🚦 איך תרצו לקבל את ההזמנה?</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              {([['pickup', '🏃', 'איסוף עצמי', ''], ['delivery', '🛵', 'משלוח', `+₪${DELIVERY_FEE} ועוד ₪${DELIVERY_MEAL_SURCHARGE} למנה`]] as const).map(([v, icon, label, sub]) => (
+                <button key={v} onClick={() => { setOrderTypeChoice(v); setOrderError('') }}
+                  style={{ padding: '16px 10px', border: `2px solid ${effectiveOrderType === v ? C.gold : C.border}`, borderRadius: 14, background: effectiveOrderType === v ? 'rgba(255,215,0,0.1)' : C.bg, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                  <span style={{ fontSize: 28 }}>{icon}</span>
+                  <span style={{ fontWeight: 800, fontSize: 16, color: effectiveOrderType === v ? C.gold : C.white }}>{label}</span>
+                  {sub && <span style={{ fontSize: 11, color: C.gray }}>{sub}</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* כתובת למשלוח */}
+        {effectiveOrderType === 'delivery' && (
+          <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${C.border}` }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>📍 כתובת למשלוח</div>
+            <label style={labelStyle}>יישוב *</label>
+            <select value={deliveryForm.city} onChange={e => setDeliveryForm(f => ({ ...f, city: e.target.value }))}
+              style={{ ...inputStyle(!!deliveryForm.city), appearance: 'auto', marginBottom: 12 }}>
+              <option value="">בחרו יישוב</option>
+              {DELIVERY_AREAS.map(a => <option key={a} value={a}>{a}</option>)}
+            </select>
+            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10, marginBottom: 12 }}>
+              <div>
+                <label style={labelStyle}>רחוב *</label>
+                <input type="text" value={deliveryForm.street} maxLength={DELIVERY_FIELD_LIMITS.street} dir="rtl"
+                  onChange={e => setDeliveryForm(f => ({ ...f, street: e.target.value }))} style={inputStyle(deliveryForm.street.trim().length > 0)} />
+              </div>
+              <div>
+                <label style={labelStyle}>מספר בית *</label>
+                <input type="text" value={deliveryForm.houseNumber} maxLength={DELIVERY_FIELD_LIMITS.houseNumber} dir="rtl"
+                  onChange={e => setDeliveryForm(f => ({ ...f, houseNumber: e.target.value }))} style={inputStyle(deliveryForm.houseNumber.trim().length > 0)} />
+              </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 12 }}>
+              {([['entrance', 'כניסה'], ['floor', 'קומה'], ['apartment', 'דירה']] as const).map(([k, label]) => (
+                <div key={k}>
+                  <label style={labelStyle}>{label}</label>
+                  <input type="text" value={deliveryForm[k]} maxLength={DELIVERY_FIELD_LIMITS[k]} dir="rtl"
+                    onChange={e => setDeliveryForm(f => ({ ...f, [k]: e.target.value }))} style={inputStyle(false)} />
+                </div>
+              ))}
+            </div>
+            <label style={labelStyle}>הערות לשליח</label>
+            <textarea value={deliveryForm.courierNotes} maxLength={DELIVERY_FIELD_LIMITS.courierNotes} dir="rtl"
+              onChange={e => setDeliveryForm(f => ({ ...f, courierNotes: e.target.value }))} placeholder="קוד לשער, להתקשר כשמגיעים..."
+              style={{ ...inputStyle(false), resize: 'none', height: 70, fontSize: 15 }} />
+          </div>
+        )}
         <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${C.border}` }}>
           <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>👤 שם מלא</div>
-          <input type="text" value={customerName} onChange={e => setCustomerName(e.target.value)} placeholder="שם ושם משפחה" dir="rtl"
+          <input type="text" value={customerName} maxLength={MAX_CUSTOMER_NAME} onChange={e => setCustomerName(e.target.value)} placeholder="שם ושם משפחה" dir="rtl"
             style={{ width: '100%', padding: 14, border: `1px solid ${customerName.trim().length >= 2 ? C.green : C.border}`, borderRadius: 12, fontSize: 17, fontFamily: 'Heebo, sans-serif', outline: 'none', boxSizing: 'border-box', background: C.bg, color: C.white }} />
           {customerName.length > 0 && customerName.trim().length < 2 && <div style={{ color: C.red, fontSize: 12, marginTop: 6 }}>נא להזין שם מלא</div>}
         </div>
@@ -633,23 +798,51 @@ export default function Home() {
             style={{ width: '100%', padding: 14, border: `1px solid ${orderPhone && isValidPhone(orderPhone) ? C.green : C.border}`, borderRadius: 12, fontSize: 17, fontFamily: 'Heebo, sans-serif', outline: 'none', boxSizing: 'border-box', background: C.bg, color: C.white }} />
           {orderPhone && !isValidPhone(orderPhone) && <div style={{ color: C.red, fontSize: 12, marginTop: 6 }}>מספר לא תקין — חייב להתחיל ב-05 ולהכיל 10 ספרות</div>}
         </div>
-        <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 24, border: `1px solid ${C.border}` }}>
-          <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 6 }}>💳 אמצעי תשלום</div>
-          <div style={{ color: C.green, fontSize: 12, fontWeight: 600, marginBottom: 12, background: 'rgba(74,222,128,0.08)', borderRadius: 8, padding: '6px 10px' }}>
-            🎉 הנחה 5% על תשלום במזומן, אשראי או ביט — לא חל על סיבוס
-          </div>
+        <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${C.border}` }}>
+          <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>💳 אמצעי תשלום</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            {(['cash', 'credit', 'cibus', 'bit'] as const).map(v => (
+            {PAYMENT_METHODS.map(v => (
               <button key={v} onClick={() => setPaymentMethod(v)}
                 style={{ padding: 14, border: `1px solid ${paymentMethod === v ? C.gold : C.border}`, borderRadius: 12, background: paymentMethod === v ? 'rgba(255,215,0,0.1)' : C.bg, fontWeight: 700, fontSize: 14, color: paymentMethod === v ? C.gold : C.gray, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
-                {v === 'cash' ? '💵 מזומן' : v === 'credit' ? '💳 אשראי' : v === 'cibus' ? '🍽️ סיבוס' : '💙 ביט'}
+                {PAYMENT_METHOD_LABELS[v]}
               </button>
             ))}
           </div>
         </div>
-        <button onClick={placeOrder} disabled={!isOpen || !isValidPhone(orderPhone) || cart.length === 0 || placingOrder || customerName.trim().length < 2}
-          style={{ width: '100%', padding: 17, background: isValidPhone(orderPhone) && cart.length > 0 ? C.gold : C.grayDim, color: '#000', border: 'none', borderRadius: 16, fontSize: 18, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', boxShadow: isValidPhone(orderPhone) ? '0 6px 32px rgba(255,215,0,0.3)' : 'none' }}>
-          {!isOpen ? '🔒 המקום סגור כרגע' : placingOrder ? '⏳ שולח הזמנה...' : `✅ שלח הזמנה • ${fmt(finalTotal)}`}
+
+        {/* סיכום לתשלום */}
+        <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 24, border: `1px solid ${C.border}` }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 6 }}>
+            <span style={{ color: C.gray }}>סכום ביניים</span><span style={{ color: C.gray }}>{fmt(checkoutTotals.subtotal)}</span>
+          </div>
+          {effectiveOrderType === 'delivery' && (
+            <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 6 }}>
+                <span style={{ color: C.gray }}>תוספת משלוח למנות ({checkoutTotals.mealQuantity} × ₪{DELIVERY_MEAL_SURCHARGE})</span>
+                <span style={{ color: C.gray }}>{fmt(checkoutTotals.mealSurcharge)}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 6 }}>
+                <span style={{ color: C.gray }}>דמי משלוח</span><span style={{ color: C.gray }}>{fmt(checkoutTotals.deliveryFee)}</span>
+              </div>
+            </>
+          )}
+          <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 10, marginTop: 4, borderTop: `1px solid ${C.border}`, fontWeight: 900, fontSize: 20 }}>
+            <span style={{ color: C.white }}>לתשלום</span><span style={{ color: C.gold }}>{fmt(checkoutTotals.total)}</span>
+          </div>
+        </div>
+
+        {orderError && (
+          <div style={{ color: C.red, background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 12, padding: '10px 14px', fontSize: 14, fontWeight: 700, marginBottom: 12, textAlign: 'center' }}>
+            {orderError}
+          </div>
+        )}
+        <button onClick={placeOrder} disabled={!canPlaceOrder}
+          style={{ width: '100%', padding: 17, background: canPlaceOrder ? C.gold : C.grayDim, color: '#000', border: 'none', borderRadius: 16, fontSize: 18, fontWeight: 900, cursor: canPlaceOrder ? 'pointer' : 'not-allowed', fontFamily: 'Heebo, sans-serif', boxShadow: canPlaceOrder ? '0 6px 32px rgba(255,215,0,0.3)' : 'none' }}>
+          {!isOpen ? '🔒 המקום סגור כרגע'
+            : placingOrder ? '⏳ שולח הזמנה...'
+            : !effectiveOrderType ? '👆 בחרו איסוף עצמי או משלוח'
+            : effectiveOrderType === 'delivery' && !deliveryFormValid ? '📍 נא להשלים כתובת למשלוח'
+            : `✅ שלח הזמנה • ${fmt(checkoutTotals.total)}`}
         </button>
       </div>
     </div>
@@ -735,7 +928,7 @@ export default function Home() {
           </button>
           <button onClick={handleCartButton}
             style={{ flex: 1, padding: '15px 20px', background: C.gold, color: '#000', border: 'none', borderRadius: 16, fontSize: 16, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 8px 32px rgba(255,215,0,0.35)' }}>
-            <span /><span>לתשלום</span><span>{fmt(finalTotal)}</span>
+            <span /><span>לתשלום</span><span>{fmt(cartSubtotal)}</span>
           </button>
         </div>
       )}
@@ -767,10 +960,10 @@ export default function Home() {
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: C.border, borderRadius: 10, padding: '5px 10px' }}>
                         <button onClick={() => setCart(prev => prev.map((x, ii) => ii === i ? { ...x, quantity: Math.max(1, x.quantity - 1) } : x))} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.gold, fontWeight: 700, lineHeight: 1 }}>−</button>
                         <span style={{ fontWeight: 800, minWidth: 16, textAlign: 'center', color: C.white }}>{c.quantity}</span>
-                        <button onClick={() => setCart(prev => prev.map((x, ii) => ii === i ? { ...x, quantity: x.quantity + 1 } : x))} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.gold, fontWeight: 700, lineHeight: 1 }}>+</button>
+                        <button onClick={() => setCart(prev => prev.map((x, ii) => ii === i ? { ...x, quantity: Math.min(MAX_LINE_QUANTITY, x.quantity + 1) } : x))} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.gold, fontWeight: 700, lineHeight: 1 }}>+</button>
                       </div>
                       <span style={{ fontWeight: 800, color: C.gold, minWidth: 44, textAlign: 'left', fontSize: 14 }}>
-                        {fmt(((c.item.price || 0) + (c.setDrinkExtra || 0) + (c.setAddonExtra || 0) + c.paidAddons.reduce((s, name) => { const t = toppings.find(t => t.name_he === name); return s + (t?.price ?? 4) }, 0)) * c.quantity)}
+                        {fmt(linePrice(c))}
                       </span>
                       <button onClick={() => openEditItem(i)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.gold, lineHeight: 1, padding: '4px' }}>✏️</button>
                       <button onClick={() => setCart(prev => prev.filter((_, ii) => ii !== i))} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.red, lineHeight: 1, padding: '4px' }}>🗑️</button>
@@ -778,10 +971,10 @@ export default function Home() {
                   </div>
                 ))}
                 <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 14, borderTop: `1px solid ${C.border}`, fontWeight: 800, fontSize: 18, marginBottom: 18 }}>
-                  <span style={{ color: C.gray }}>סה"כ</span><span style={{ color: C.gold }}>{fmt(cartTotal)}</span>
+                  <span style={{ color: C.gray }}>סכום ביניים</span><span style={{ color: C.gold }}>{fmt(cartSubtotal)}</span>
                 </div>
                 <button onClick={() => { setShowCart(false); handleCartButton() }} style={{ width: '100%', padding: 16, background: C.gold, color: '#000', border: 'none', borderRadius: 14, fontSize: 17, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', boxShadow: '0 4px 20px rgba(255,215,0,0.3)' }}>
-                  לתשלום • {fmt(finalTotal)}
+                  לתשלום • {fmt(cartSubtotal)}
                 </button>
                 <button onClick={() => setShowCart(false)} style={{ width: '100%', marginTop: 10, padding: 12, background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 14, fontSize: 14, fontWeight: 600, color: C.gray, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
                   המשך בקנייה
@@ -802,7 +995,7 @@ export default function Home() {
             <h2 style={{ color: C.white, fontSize: 20, fontWeight: 900, textAlign: 'center', marginBottom: 6 }}>שכחת משהו?</h2>
             <p style={{ color: C.gray, fontSize: 14, textAlign: 'center', marginBottom: 24 }}>הזמנה שלמה יותר עם שתייה ותוספות</p>
             {(() => {
-              const drinkCat = categories.find(cat => cat.name_he.includes('שתי') || cat.name_he.includes('שתיה') || cat.name_he.includes('שתייה') || cat.name_he.includes('משקה'))
+              const drinkCat = categories.find(cat => isDrinkCategory(cat.id))
               const hasDrinks = cart.some(c => c.item.category_id === drinkCat?.id)
               if (drinkCat && !hasDrinks) {
                 const drinks = menuItems.filter(m => m.category_id === drinkCat.id && m.price)
@@ -828,7 +1021,7 @@ export default function Home() {
               return null
             })()}
             {(() => {
-              const addonCat = categories.find(cat => cat.name_he.includes('תוספ') || cat.name_he.includes('ציפס') || cat.name_he.includes('טבעות'))
+              const addonCat = categories.find(cat => isSidesCategory(cat.id))
               const addonItems = addonCat ? menuItems.filter(m => m.category_id === addonCat.id && m.is_active) : []
               const hasAddons = cart.some(c => addonCat && c.item.category_id === addonCat.id)
               if (!hasAddons && addonItems.length > 0) return (
@@ -853,7 +1046,7 @@ export default function Home() {
             })()}
             <button onClick={() => { setShowUpsell(false); setScreen('order') }}
               style={{ width: '100%', padding: 15, background: C.gold, color: '#000', border: 'none', borderRadius: 14, fontSize: 16, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', marginBottom: 10 }}>
-              המשך לתשלום ← {fmt(finalTotal)}
+              המשך לתשלום ← {fmt(cartSubtotal)}
             </button>
             <button onClick={() => setShowUpsell(false)}
               style={{ width: '100%', padding: 12, background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 14, fontSize: 14, fontWeight: 600, color: C.gray, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
@@ -912,17 +1105,17 @@ export default function Home() {
                 {selectedItem.dietary_type === 'parve' && <span style={{ background: C.greenBg, color: C.green, fontSize: 12, fontWeight: 700, padding: '3px 10px', borderRadius: 20 }}>🌿 פרווה</span>}
                 {selectedItem.dietary_type === 'meat' && <span style={{ background: C.redBg, color: C.red, fontSize: 12, fontWeight: 700, padding: '3px 10px', borderRadius: 20 }}>🥩 בשרי</span>}
               </div>
-              {saladsOpts.length > 0 && !categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('שתי') && !categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('תוספ') && (
+              {saladsOpts.length > 0 && !sheetIsDrink && !sheetIsSides && (
                 <div style={{ marginBottom: 22 }}>
                   <div style={{ fontWeight: 700, fontSize: 15, color: C.white, marginBottom: 10 }}>🥗 סלטים</div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    {saladsOpts.filter(s => s.name_he !== 'חסה' || selectedItem?.has_lettuce).filter(s => !(s.name_he === 'לימון כבוש' && selectedBranch?.id === '3ab15ad1-e835-492b-bae5-11b202ee2314')).map(s => (
+                    {saladsOpts.filter(sheetToppingAllowed).map(s => (
                       <DarkChip key={s.id} label={s.name_he} selected={sheetSalads.includes(s.name_he)} onToggle={() => setSheetSalads(prev => prev.includes(s.name_he) ? prev.filter(x => x !== s.name_he) : [...prev, s.name_he])} />
                     ))}
                   </div>
                 </div>
               )}
-              {sauces.length > 0 && !categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('שתי') && (
+              {sauces.length > 0 && !sheetIsDrink && (
                 <div style={{ marginBottom: 22 }}>
                   <div style={{ fontWeight: 700, fontSize: 15, color: C.white, marginBottom: 10 }}>🧄 רטבים</div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
@@ -930,21 +1123,21 @@ export default function Home() {
                   </div>
                 </div>
               )}
-              {paidAddonsOpts.length > 0 && !categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('שתי') && !categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('תוספ') && (
+              {paidAddonsOpts.length > 0 && !sheetIsDrink && !sheetIsSides && (
                 <div style={{ marginBottom: 22 }}>
                   <div style={{ fontWeight: 700, fontSize: 15, color: C.white, marginBottom: 10 }}>➕ תוספות בתשלום</div>
-                  {paidAddonsOpts.filter(a => (a.name_he !== 'פיתה' || selectedItem?.has_pita) && (a.name_he !== 'ביצה קשה' || selectedItem?.has_egg !== false)).map(a => (
+                  {paidAddonsOpts.filter(sheetToppingAllowed).map(a => (
                     <label key={a.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '11px 0', borderBottom: `1px solid ${C.border}`, cursor: 'pointer' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                         <input type="checkbox" checked={sheetPaidAddons.includes(a.name_he)} onChange={() => setSheetPaidAddons(prev => prev.includes(a.name_he) ? prev.filter(x => x !== a.name_he) : [...prev, a.name_he])} style={{ width: 20, height: 20, accentColor: C.gold, cursor: 'pointer' }} />
                         <span style={{ fontWeight: 600, fontSize: 15, color: C.white }}>{a.name_he}</span>
                       </div>
-                      <span style={{ fontWeight: 700, color: C.gold }}>+₪{a.price ?? 4}</span>
+                      <span style={{ fontWeight: 700, color: C.gold }}>{a.price != null ? `+₪${a.price}` : ''}</span>
                     </label>
                   ))}
                 </div>
               )}
-              {categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('עסקי') && (
+              {sheetIsDeal && (
                 <div style={{ marginBottom: 22 }}>
                   <div style={{ fontWeight: 700, fontSize: 15, color: C.white, marginBottom: 6 }}>🥤 בחר שתייה לעסקית</div>
                   <div style={{ color: C.gray, fontSize: 12, marginBottom: 10 }}>פחיות, מים וסודה — כלולים במחיר</div>
@@ -957,7 +1150,7 @@ export default function Home() {
                   </div>
                 </div>
               )}
-              {categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('עסקי') && (
+              {sheetIsDeal && (
                 <div style={{ marginBottom: 22 }}>
                   <div style={{ fontWeight: 700, fontSize: 15, color: C.white, marginBottom: 6 }}>🍟 בחר תוספת לעסקית</div>
                   <div style={{ color: C.gray, fontSize: 12, marginBottom: 10 }}>ציפס אישי — כלול במחיר</div>
@@ -970,20 +1163,20 @@ export default function Home() {
                   </div>
                 </div>
               )}
-              {!categories.find(c => c.id === selectedItem?.category_id)?.name_he.includes('שתי') && (
+              {!sheetIsDrink && (
                 <div style={{ marginBottom: 22 }}>
                   <div style={{ fontWeight: 700, fontSize: 15, color: C.white, marginBottom: 10 }}>📝 הערות</div>
-                  <textarea value={sheetNotes} onChange={e => setSheetNotes(e.target.value)} placeholder="הערות מיוחדות..." style={{ width: '100%', padding: 12, border: `1px solid ${C.border}`, borderRadius: 12, fontSize: 14, fontFamily: 'Heebo, sans-serif', resize: 'none', height: 80, boxSizing: 'border-box', outline: 'none', background: C.bg, color: C.white }} />
+                  <textarea value={sheetNotes} maxLength={MAX_ITEM_NOTES} onChange={e => setSheetNotes(e.target.value)} placeholder="הערות מיוחדות..." style={{ width: '100%', padding: 12, border: `1px solid ${C.border}`, borderRadius: 12, fontSize: 14, fontFamily: 'Heebo, sans-serif', resize: 'none', height: 80, boxSizing: 'border-box', outline: 'none', background: C.bg, color: C.white }} />
                 </div>
               )}
               <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, background: C.bg, borderRadius: 12, padding: '11px 16px', border: `1px solid ${C.border}` }}>
                   <button onClick={() => setSheetQty(q => Math.max(1, q - 1))} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 24, color: C.gold, fontWeight: 700, lineHeight: 1 }}>−</button>
                   <span style={{ fontWeight: 900, fontSize: 18, minWidth: 24, textAlign: 'center', color: C.white }}>{sheetQty}</span>
-                  <button onClick={() => setSheetQty(q => q + 1)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 24, color: C.gold, fontWeight: 700, lineHeight: 1 }}>+</button>
+                  <button onClick={() => setSheetQty(q => Math.min(MAX_LINE_QUANTITY, q + 1))} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 24, color: C.gold, fontWeight: 700, lineHeight: 1 }}>+</button>
                 </div>
                 <button onClick={addToCart} style={{ flex: 1, padding: 15, background: C.gold, color: '#000', border: 'none', borderRadius: 14, fontSize: 16, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', boxShadow: '0 4px 20px rgba(255,215,0,0.3)' }}>
-                  {editCartIndex !== null ? '✅ עדכן מנה' : 'הוסף לסל'} • {fmt(((selectedItem.price || 0) + (SET_DRINKS_PAID.includes(sheetSetDrink) ? SET_DRINK_EXTRA : 0) + (SET_ADDONS_PAID.find(a => a.name === sheetSetAddon)?.price || 0) + sheetPaidAddons.reduce((s, name) => { const t = toppings.find(t => t.name_he === name); return s + (t?.price ?? 4) }, 0)) * sheetQty)}
+                  {editCartIndex !== null ? '✅ עדכן מנה' : 'הוסף לסל'} • {fmt(sheetLineTotal)}
                 </button>
               </div>
             </div>
