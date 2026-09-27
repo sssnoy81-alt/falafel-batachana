@@ -182,7 +182,7 @@ test('valid pickup → total from catalog (3 × 20 = 60), no p_delivery, no ₪4
   assert.equal(r.value.rpcArgs.p_order.phone, '0501234567'); assert.equal(r.value.rpcArgs.p_items[0].notes, 'רטבים: טחינה')
 })
 test('valid delivery → 60 + 12 + 20 = 92 and a full deliveries payload', () => {
-  const r = build(baseReq({ type: 'delivery', delivery: address }))
+  const r = build(baseReq({ type: 'delivery', paymentMethod: 'credit', delivery: address }))
   assert.ok(r.ok, JSON.stringify(r)); const d = r.value.rpcArgs.p_delivery
   assert.equal(r.value.rpcArgs.p_order.total_price, 92)
   assert.equal(d.meal_quantity, 3); assert.equal(d.meal_surcharge, 12); assert.equal(d.delivery_fee, 20)
@@ -196,24 +196,25 @@ test('deal line: unit_price includes deal extras; kitchen note format kept', () 
   assert.ok(r.ok, JSON.stringify(r)); assert.equal(r.value.rpcArgs.p_items[0].unit_price, 55)
   assert.equal(r.value.rpcArgs.p_items[0].notes, 'שתייה: פיוז טי (+₪3) | תוספת עסקית: ציפס גדול (+₪7)')
 })
-test('G. payment method never changes the price (cash / credit / cibus / bit)', () => {
-  const totals = cfg.PAYMENT_METHODS.map(pm => build(baseReq({ type: 'delivery', delivery: address, paymentMethod: pm })).value.rpcArgs.p_order.total_price)
-  assert.deepEqual(totals, [92, 92, 92, 92])
+test('G. payment method never changes the price (pickup: cash / credit / cibus / bit; delivery: credit-only)', () => {
+  const totals = cfg.PAYMENT_METHODS.map(pm => build(baseReq({ paymentMethod: pm })).value.rpcArgs.p_order.total_price)
+  assert.deepEqual(totals, [60, 60, 60, 60])
+  assert.equal(build(baseReq({ type: 'delivery', delivery: address, paymentMethod: 'credit' })).value.rpcArgs.p_order.total_price, 92)
 })
 test('H. invalid locality rejected', () => {
-  assert.equal(build(baseReq({ type: 'delivery', delivery: { ...address, city: 'ירושלים' } })).code, 'invalid_delivery_area')
+  assert.equal(build(baseReq({ type: 'delivery', paymentMethod: 'credit', delivery: { ...address, city: 'ירושלים' } })).code, 'invalid_delivery_area')
 })
 test('H2. missing street / house number rejected', () => {
-  assert.equal(build(baseReq({ type: 'delivery', delivery: { ...address, street: '  ' } })).code, 'invalid_address')
-  assert.equal(build(baseReq({ type: 'delivery', delivery: { ...address, houseNumber: '' } })).code, 'invalid_address')
+  assert.equal(build(baseReq({ type: 'delivery', paymentMethod: 'credit', delivery: { ...address, street: '  ' } })).code, 'invalid_address')
+  assert.equal(build(baseReq({ type: 'delivery', paymentMethod: 'credit', delivery: { ...address, houseNumber: '' } })).code, 'invalid_address')
 })
 test('I. delivery from a non-delivery branch rejected; hidden branch rejected', () => {
-  assert.equal(build(baseReq({ branchId: OTHER_BRANCH, type: 'delivery', delivery: address })).code, 'delivery_not_available')
+  assert.equal(build(baseReq({ branchId: OTHER_BRANCH, type: 'delivery', paymentMethod: 'credit', delivery: address })).code, 'delivery_not_available')
   assert.equal(build(baseReq({ branchId: HIDDEN_BRANCH })).code, 'invalid_branch')
 })
 test('J. client price tampering rejected (order-level and item-level money fields)', () => {
   assert.equal(build(baseReq({ total: 1 })).code, 'client_prices_not_accepted')
-  assert.equal(build(baseReq({ deliveryFee: 0, type: 'delivery', delivery: address })).code, 'client_prices_not_accepted')
+  assert.equal(build(baseReq({ deliveryFee: 0, type: 'delivery', paymentMethod: 'credit', delivery: address })).code, 'client_prices_not_accepted')
   assert.equal(build(baseReq({ items: [{ itemId: ITEM.falafel, quantity: 3, unitPrice: 1 }] })).code, 'client_prices_not_accepted')
 })
 test('pickup carrying delivery info rejected', () => {

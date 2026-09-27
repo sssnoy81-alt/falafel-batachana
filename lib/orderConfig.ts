@@ -87,6 +87,21 @@ export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
 }
 export const isPaymentMethod = (v: unknown): v is PaymentMethod =>
   typeof v === 'string' && (PAYMENT_METHODS as readonly string[]).includes(v)
+
+// Temporary business rule (until HYP): delivery orders can only be paid by credit card.
+// Pickup keeps every method. Payment method never affects price.
+export const DELIVERY_PAYMENT_METHODS: readonly PaymentMethod[] = ['credit']
+
+export const allowedPaymentMethods = (type: OrderType): readonly PaymentMethod[] =>
+  type === 'delivery' ? DELIVERY_PAYMENT_METHODS : PAYMENT_METHODS
+
+export const isPaymentMethodAllowed = (type: OrderType, method: unknown): method is PaymentMethod =>
+  isPaymentMethod(method) && allowedPaymentMethods(type).includes(method)
+
+/** The method actually used for an order type: the customer's choice if allowed, else the first allowed one. */
+export const resolvePaymentMethod = (type: OrderType, chosen: PaymentMethod): PaymentMethod =>
+  isPaymentMethodAllowed(type, chosen) ? chosen : allowedPaymentMethods(type)[0]
+
 // Plain-text label (no emoji) for exports; unknown/legacy values are shown as-is.
 export function paymentMethodText(v: string | null | undefined): string {
   switch (v) {

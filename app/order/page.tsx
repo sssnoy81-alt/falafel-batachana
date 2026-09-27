@@ -2,10 +2,10 @@
 import { useState, useEffect, useRef } from 'react'
 import { getBrowserSupabase } from '@/lib/supabaseBrowser'
 import {
-  DELIVERY_AREAS, DELIVERY_FEE, DELIVERY_FIELD_LIMITS, DELIVERY_MEAL_SURCHARGE, MAX_CUSTOMER_NAME, MAX_ITEM_NOTES, MAX_LINE_QUANTITY, PAYMENT_METHODS, PAYMENT_METHOD_LABELS, PHONE_REGEX,
+  DELIVERY_AREAS, DELIVERY_FEE, DELIVERY_FIELD_LIMITS, DELIVERY_MEAL_SURCHARGE, MAX_CUSTOMER_NAME, MAX_ITEM_NOTES, MAX_LINE_QUANTITY, PAYMENT_METHOD_LABELS, PHONE_REGEX,
   SET_ADDON_FREE, SET_ADDONS_PAID, SET_DRINK_EXTRA, SET_DRINKS_FREE, SET_DRINKS_PAID,
   isDealCategory, isDeliveryBranch, isDrinkCategory, isOrderType, isPaymentMethod, isSidesCategory, isToppingAllowedForItem,
-  normalizePhone, setAddonExtra, setDrinkExtra,
+  allowedPaymentMethods, normalizePhone, resolvePaymentMethod, setAddonExtra, setDrinkExtra,
   type OrderType, type PaymentMethod,
 } from '@/lib/orderConfig'
 import {
@@ -70,6 +70,7 @@ const ORDER_ERROR_MESSAGES: Partial<Record<OrderErrorCode, string>> = {
   invalid_phone: 'מספר טלפון לא תקין',
   invalid_name: 'נא להזין שם מלא',
   empty_cart: 'הסל ריק',
+  payment_method_not_allowed: 'במשלוח ניתן לשלם באשראי בלבד',
 }
 const GENERIC_ORDER_ERROR = 'לא ניתן לשלוח את ההזמנה כרגע. נסו שוב בעוד רגע או התקשרו לסניף'
 const DELIVERY_PRICE_NOTE = `מחירי המשלוח למנות כוללים תוספת של ${DELIVERY_MEAL_SURCHARGE} ₪ למנה.`
@@ -292,6 +293,10 @@ export default function Home() {
   const effectiveOrderType: OrderType | null = deliveryAvailable ? orderTypeChoice : 'pickup'
   // מחירים לתצוגה ללקוח: במשלוח — מחירי מנות כוללים +₪4 למנה מזכה; דמי המשלוח בנפרד.
   const displayType: OrderType = effectiveOrderType ?? 'pickup'
+  // Payment: delivery is credit-only (temporary until HYP). Derived, so switching modes never leaves a stale
+  // method: delivery always resolves to credit; back to pickup restores the full list and the earlier choice.
+  const paymentOptions = allowedPaymentMethods(displayType)
+  const effectivePaymentMethod = resolvePaymentMethod(displayType, paymentMethod)
   const linePrice = (c: CartItem) => displayLineTotal(toPricingInput(c), displayType)
   const menuPrice = (item: MenuItem) => displayMenuPrice(item.price || 0, item.category_id, displayType)
   // Tracking: server-stored line total (base) shown in the same inclusive style for delivery orders.
@@ -414,7 +419,7 @@ export default function Home() {
       branchId, type,
       customerName: customerName.trim(),
       phone: normalizePhone(orderPhone),
-      paymentMethod,
+      paymentMethod: resolvePaymentMethod(type, paymentMethod),
       items,
       delivery: type === 'delivery' ? {
         city: deliveryForm.city,
@@ -461,7 +466,7 @@ export default function Home() {
     localStorage.setItem('falafel_session', JSON.stringify({
       orderId: result.id, branchId: selectedBranch.id,
       expires: Date.now() + 6 * 3600 * 1000,
-      orderCart: cartSnapshot, orderFinalTotal: result.total, orderPaymentMethod: paymentMethod,
+      orderCart: cartSnapshot, orderFinalTotal: result.total, orderPaymentMethod: request.paymentMethod,
       orderType: result.type, orderBreakdown: result.breakdown, orderLineTotals: lineTotals,
       orderAddress: address, orderDailyNumber: result.dailyNumber,
     }))
@@ -473,7 +478,7 @@ export default function Home() {
 
     setOrderCart(cartSnapshot)
     setOrderFinalTotal(result.total)
-    setOrderPaymentMethod(paymentMethod)
+    setOrderPaymentMethod(request.paymentMethod)
     setOrderType(result.type)
     setOrderBreakdown(result.breakdown)
     setOrderLineTotals(lineTotals)
@@ -835,10 +840,10 @@ export default function Home() {
         </div>
         <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${C.border}` }}>
           <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>💳 אמצעי תשלום</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            {PAYMENT_METHODS.map(v => (
+          <div style={{ display: 'grid', gridTemplateColumns: paymentOptions.length > 1 ? '1fr 1fr' : '1fr', gap: 10 }}>
+            {paymentOptions.map(v => (
               <button key={v} onClick={() => setPaymentMethod(v)}
-                style={{ padding: 14, border: `1px solid ${paymentMethod === v ? C.gold : C.border}`, borderRadius: 12, background: paymentMethod === v ? 'rgba(255,215,0,0.1)' : C.bg, fontWeight: 700, fontSize: 14, color: paymentMethod === v ? C.gold : C.gray, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
+                style={{ padding: 14, border: `1px solid ${effectivePaymentMethod === v ? C.gold : C.border}`, borderRadius: 12, background: effectivePaymentMethod === v ? 'rgba(255,215,0,0.1)' : C.bg, fontWeight: 700, fontSize: 14, color: effectivePaymentMethod === v ? C.gold : C.gray, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
                 {PAYMENT_METHOD_LABELS[v]}
               </button>
             ))}

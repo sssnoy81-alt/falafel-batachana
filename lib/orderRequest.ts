@@ -14,6 +14,7 @@ import {
   isDeliveryBranch,
   isOrderType,
   isPaymentMethod,
+  isPaymentMethodAllowed,
   isToppingAllowedForItem,
   isValidSetAddon,
   isValidSetDrink,
@@ -70,6 +71,7 @@ export type OrderErrorCode =
   | 'invalid_name'
   | 'invalid_phone'
   | 'invalid_payment_method'
+  | 'payment_method_not_allowed'
   | 'empty_cart'
   | 'invalid_quantity'
   | 'item_unavailable'
@@ -131,6 +133,8 @@ export function parseCreateOrderRequest(body: unknown): Result<CreateOrderReques
   if (!PHONE_REGEX.test(normalizedPhone)) return fail('invalid_phone')
 
   if (!isPaymentMethod(paymentMethod)) return fail('invalid_payment_method')
+  // Delivery is credit-only (temporary rule until HYP). Rejected before any catalog/DB access.
+  if (!isPaymentMethodAllowed(type, paymentMethod)) return fail('payment_method_not_allowed')
 
   if (!Array.isArray(items) || items.length === 0) return fail('empty_cart')
   if (items.length > MAX_CART_LINES) return fail('invalid_request', 'too_many_lines')
@@ -265,6 +269,9 @@ function buildItemNotes(
 }
 
 export function buildOrderFromCatalog(req: CreateOrderRequest, catalog: OrderCatalog): Result<BuiltOrder> {
+  // Defensive invariant (the authoritative check is in parseCreateOrderRequest).
+  if (!isPaymentMethodAllowed(req.type, req.paymentMethod)) return fail('payment_method_not_allowed')
+
   const pricingInputs: PricingLineInput[] = []
   const itemRows: { item_id: string; quantity: number; notes: string | null }[] = []
 
