@@ -1,59 +1,52 @@
-﻿import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
-import webpush from 'web-push'
+import { NextRequest, NextResponse } from 'next/server'
+import { checkSameOriginJson, getKitchenSession } from '@/lib/kitchenAuth'
+import { isBranchInScope, isUuid } from '@/lib/kitchenMutations'
+import { sendReadyPush } from '@/lib/push'
+import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY ||
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-)
+// POST /api/push/send — { orderId } only. Protected compatibility route (FALAFEL-SN-06D):
+// requires a kitchen session + same-origin JSON, and the order must be in the caller's branch scope.
+// The kitchen status route sends the ready push itself; this route stays for manual re-sends.
+// Status and wording always come from the DB (lib/push.ts): only 'ready' orders are ever notified.
 
-function configureWebPush() {
-  const vapidSubject =
-    process.env.VAPID_EMAIL ||
-    process.env.VAPID_SUBJECT ||
-    'mailto:falafel.b001@gmail.com'
-
-  const publicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY
-  const privateKey = process.env.VAPID_PRIVATE_KEY
-
-  if (!publicKey || !privateKey) {
-    throw new Error('Missing VAPID keys. Set NEXT_PUBLIC_VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY.')
-  }
-
-  webpush.setVapidDetails(vapidSubject, publicKey, privateKey)
-}
+const NO_STORE = { 'Cache-Control': 'no-store' }
+const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: NO_STORE })
 
 export async function POST(req: NextRequest) {
+  if (!checkSameOriginJson(req)) return json({ error: 'invalid_request' }, 400)
+  const auth = getKitchenSession(req)
+  if (!auth.ok) return json({ error: auth.error }, auth.status)
+
+  let body: unknown
   try {
-    configureWebPush()
+    body = await req.json()
+  } catch {
+    return json({ error: 'invalid_request' }, 400)
+  }
+  const orderId = typeof body === 'object' && body !== null ? (body as Record<string, unknown>).orderId : undefined
+  if (!isUuid(orderId) || Object.keys(body as object).length !== 1) return json({ error: 'invalid_request' }, 400)
 
-    const { phone, orderNumber } = await req.json()
-    if (!phone) {
-      return NextResponse.json({ error: 'Missing phone' }, { status: 400 })
+  try {
+    const { data: order, error } = await getServerSupabase().from('orders').select('branch_id').eq('id', orderId).maybeSingle()
+    if (error) {
+      console.error('push send: order lookup failed', error.code)
+      return json({ error: 'server_error' }, 500)
     }
+    if (!order || !isBranchInScope(auth.session, order.branch_id as string | null)) return json({ error: 'not_found' }, 404)
 
-    const { data, error } = await supabase
-      .from('push_subscriptions')
-      .select('subscription')
-      .eq('phone', phone)
-      .single()
-
-    if (error || !data) {
-      return NextResponse.json({ error: 'No subscription found' }, { status: 404 })
+    const result = await sendReadyPush(orderId)
+    switch (result.outcome) {
+      case 'not_found': return json({ error: 'not_found' }, 404)
+      case 'not_ready': return json({ error: 'order_not_ready' }, 409)
+      case 'no_subscription': return json({ error: 'no_subscription' }, 404)
+      default: return json({ success: result.sent > 0, sent: result.sent })
     }
-
-    const payload = JSON.stringify({
-      title: '🔔 ההזמנה שלך מוכנה!',
-      body: `הזמנה #${orderNumber} מוכנה לאיסוף — פלאפל בתחנה 🧆`,
-    })
-
-    await webpush.sendNotification(data.subscription, payload)
-
-    return NextResponse.json({ success: true })
-  } catch (e: any) {
-    console.error('Push error:', e)
-    return NextResponse.json({ error: e.message }, { status: 500 })
+  } catch (e) {
+    if (e instanceof ServerConfigError) {
+      console.error('push send: server config error')
+      return json({ error: 'server_config' }, 500)
+    }
+    console.error('push send: unexpected error')
+    return json({ error: 'server_error' }, 500)
   }
 }

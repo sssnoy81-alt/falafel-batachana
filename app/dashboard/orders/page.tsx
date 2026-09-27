@@ -1,38 +1,53 @@
 'use client'
 
+// Kitchen / staff board. SECURITY (FALAFEL-SN-06E): this page holds NO Supabase client, NO keys and NO
+// passwords. Authentication is a server-verified HttpOnly session cookie; every read and write goes through
+// the same-origin /api/kitchen/* routes, which enforce the session's branch scope.
+
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { createClient } from '@supabase/supabase-js'
+import { DELIVERY_MEAL_SURCHARGE, ORDER_TYPE_LABELS, PAYMENT_METHOD_LABELS, isPaymentMethod, paymentMethodText } from '@/lib/orderConfig'
+import type { KitchenBranch, KitchenOrder, KitchenOrderItem, KitchenPublicUser, KitchenSessionResponse } from '@/lib/kitchenTypes'
 
-const supabase = createClient(
-  'https://sqgnrzcmjhwgfjxocvlr.supabase.co',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNxZ25yemNtamh3Z2ZqeG9jdmxyIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MjM2NzEwMSwiZXhwIjoyMDg3OTQzMTAxfQ.fAnUMR8cXgQ38VWz66UibT83u_JquuXeZRtpiYmbTzM'
-)
+/* ─── API helpers (same-origin; the session cookie is sent automatically) ─── */
+class UnauthorizedError extends Error {}
 
-/* ─── AUTH ─── */
-type UserRole = 'admin' | 'adumim' | 'mikhmas'
-
-const USERS: Record<string, { password: string; role: UserRole; label: string; branchId: string | null }> = {
-  'admin':   { password: 'Falafel2025!', role: 'admin',   label: 'אדמין — כל הסניפים',    branchId: null },
-  'adumim':  { password: 'Adumim123',   role: 'adumim',  label: 'מישור אדומים',           branchId: '8fed141d-0e7c-46c1-803b-88d3d811c1f8' },
-  'mikhmas': { password: 'Mikhmas123',  role: 'mikhmas', label: 'מעבר מכמש',              branchId: '3ab15ad1-e835-492b-bae5-11b202ee2314' },
+async function kitchenFetch<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
+  const res = await fetch(path, {
+    method: init?.method ?? 'GET',
+    headers: init?.body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+    body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
+    cache: 'no-store',
+    credentials: 'same-origin',
+  })
+  if (res.status === 401) throw new UnauthorizedError()
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw Object.assign(new Error(json?.error ?? 'request_failed'), { status: res.status, code: json?.error })
+  return json as T
 }
 
-interface AuthUser { username: string; role: UserRole; label: string; branchId: string | null }
+/* ─── AUTH ─── */
+type AuthUser = KitchenPublicUser
 
-function LoginScreen({ onLogin }: { onLogin: (user: AuthUser) => void }) {
+function LoginScreen({ onLogin }: { onLogin: (session: KitchenSessionResponse) => void }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [showPass, setShowPass] = useState(false)
+  const [busy, setBusy] = useState(false)
 
-  function handleLogin() {
-    const u = USERS[username.trim().toLowerCase()]
-    if (!u || u.password !== password) {
-      setError('שם משתמש או סיסמה שגויים')
-      return
+  async function handleLogin() {
+    if (busy || !username.trim() || !password) return
+    setBusy(true); setError('')
+    try {
+      await kitchenFetch('/api/kitchen/login', { method: 'POST', body: { username: username.trim(), password } })
+      const session = await kitchenFetch<KitchenSessionResponse>('/api/kitchen/session')
+      setPassword('')
+      onLogin(session)
+    } catch (e) {
+      setError(e instanceof UnauthorizedError ? 'שם משתמש או סיסמה שגויים' : 'לא ניתן להתחבר כרגע. נסו שוב')
+    } finally {
+      setBusy(false)
     }
-    setError('')
-    onLogin({ username: username.trim().toLowerCase(), role: u.role, label: u.label, branchId: u.branchId })
   }
 
   return (
@@ -58,7 +73,8 @@ function LoginScreen({ onLogin }: { onLogin: (user: AuthUser) => void }) {
             value={username}
             onChange={e => setUsername(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && handleLogin()}
-            placeholder="admin / adumim / mikhmas"
+            autoComplete="username"
+            autoCapitalize="none"
             dir="ltr"
             style={{
               width: '100%', padding: '12px 14px', borderRadius: 12,
@@ -78,6 +94,7 @@ function LoginScreen({ onLogin }: { onLogin: (user: AuthUser) => void }) {
               onChange={e => setPassword(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleLogin()}
               placeholder="הזן סיסמה"
+              autoComplete="current-password"
               dir="ltr"
               style={{
                 width: '100%', padding: '12px 44px 12px 14px', borderRadius: 12,
@@ -104,32 +121,63 @@ function LoginScreen({ onLogin }: { onLogin: (user: AuthUser) => void }) {
 
         <button
           onClick={handleLogin}
+          disabled={busy}
           style={{
             width: '100%', padding: 14, background: '#FFD700', color: '#000',
             border: 'none', borderRadius: 14, fontSize: 17, fontWeight: 900,
-            cursor: 'pointer', fontFamily: 'Heebo, sans-serif',
+            cursor: busy ? 'wait' : 'pointer', fontFamily: 'Heebo, sans-serif', opacity: busy ? 0.7 : 1,
           }}
         >
-          כניסה →
+          {busy ? 'מתחבר…' : 'כניסה →'}
         </button>
       </div>
     </div>
   )
 }
 
-/* ─── TYPES ─── */
+/* ─── TYPES (server contract: lib/kitchenTypes.ts) ─── */
 type OrderStatus = 'received' | 'confirmed' | 'preparing' | 'ready' | 'delivered' | 'cancelled'
+type OrderItem = KitchenOrderItem
+type Order = Omit<KitchenOrder, 'status'> & { status: OrderStatus }
 
-interface OrderItem {
-  id: string; item_id: string; quantity: number; unit_price: number
-  notes: string | null; menu_items: { name_he: string } | null
+const isDeliveryOrder = (order: Order) => order.type === 'delivery'
+const paymentLabel = (v: string) => isPaymentMethod(v) ? PAYMENT_METHOD_LABELS[v] : (v || '—')
+
+function DeliveryDetails({ order, large }: { order: Order; large?: boolean }) {
+  const d = order.delivery
+  const fs = large ? 20 : 12
+  return (
+    <div style={{ background: 'rgba(96,165,250,0.08)', border: `${large ? 2 : 1}px solid rgba(96,165,250,0.5)`, borderRadius: large ? 16 : 8, padding: large ? '16px 20px' : '6px 8px', marginBottom: large ? 16 : 6 }}>
+      <div style={{ color: '#60A5FA', fontWeight: 900, fontSize: large ? 24 : 13, marginBottom: 4 }}>🛵 משלוח</div>
+      {d ? (
+        <>
+          <div style={{ color: '#fff', fontWeight: 700, fontSize: fs }}>📍 {d.address}</div>
+          {d.courierNotes && <div style={{ color: '#FED7AA', fontSize: fs - 1, marginTop: 3 }}>📝 לשליח: {d.courierNotes}</div>}
+          {(d.mealSurcharge > 0 || d.deliveryFee > 0) && (
+            <div style={{ color: '#9CA3AF', fontSize: large ? 15 : 11, marginTop: 4 }}>
+              {d.mealQuantity ? `תוספת מנות ${d.mealQuantity} × ₪${DELIVERY_MEAL_SURCHARGE} = ₪${d.mealSurcharge}` : ''}
+              {d.mealQuantity && d.deliveryFee ? ' · ' : ''}
+              {d.deliveryFee ? `דמי משלוח ₪${d.deliveryFee}` : ''}
+            </div>
+          )}
+        </>
+      ) : (
+        <div style={{ color: '#9CA3AF', fontSize: fs }}>פרטי כתובת לא זמינים</div>
+      )}
+    </div>
+  )
 }
 
-interface Order {
-  id: string; branch_id: string; phone: string
-  customer_name?: string; daily_number?: number
-  status: OrderStatus; total_price: number; payment_method: string
-  created_at: string; order_items: OrderItem[]; branches: { name: string } | null
+function csvDeliveryFields(o: Order) {
+  const d = isDeliveryOrder(o) ? o.delivery : null
+  return {
+    'סוג הזמנה': ORDER_TYPE_LABELS[isDeliveryOrder(o) ? 'delivery' : 'pickup'],
+    'כתובת': d?.address ?? '',
+    'הערות לשליח': d?.courierNotes ?? '',
+    'כמות מנות לחיוב משלוח': d ? d.mealQuantity : 0,
+    'תוספת משלוח למנות': d ? d.mealSurcharge : 0,
+    'דמי משלוח': d ? d.deliveryFee : 0,
+  }
 }
 
 const STATUS_CONFIG: Record<OrderStatus, {
@@ -184,7 +232,7 @@ function getItemType(name: string): 'addon' | 'drink' | 'main' {
 function KitchenModal({ order, onClose, onDone }: {
   order: Order; onClose: () => void; onDone: (id: string) => void
 }) {
-  const num = order.daily_number ? String(order.daily_number).padStart(4, '0') : order.id.slice(-4).toUpperCase()
+  const num = order.dailyNumber ? String(order.dailyNumber).padStart(4, '0') : order.id.slice(-4).toUpperCase()
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.93)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
       <div onClick={e => e.stopPropagation()} style={{ background: '#0F0F0F', border: '3px solid #F97316', borderRadius: 28, padding: '36px 40px', maxWidth: 700, width: '100%', direction: 'rtl', boxShadow: '0 0 80px rgba(249,115,22,0.25)', maxHeight: '90vh', overflowY: 'auto' }}>
@@ -193,15 +241,16 @@ function KitchenModal({ order, onClose, onDone }: {
             <div style={{ background: 'rgba(249,115,22,0.2)', border: '2px solid #F97316', borderRadius: 16, width: 64, height: 64, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 32 }}>🍳</div>
             <div>
               <div style={{ color: '#F97316', fontSize: 40, fontWeight: 900, lineHeight: 1 }}>#{num}</div>
-              <div style={{ color: '#9CA3AF', fontSize: 16, marginTop: 6 }}>{formatTime(order.created_at)} &nbsp;·&nbsp; {timeSince(order.created_at)}</div>
+              <div style={{ color: '#9CA3AF', fontSize: 16, marginTop: 6 }}>{formatTime(order.createdAt)} &nbsp;·&nbsp; {timeSince(order.createdAt)}</div>
             </div>
           </div>
           <button onClick={onClose} style={{ background: '#1A1A1A', border: '1px solid #333', color: '#9CA3AF', borderRadius: 50, width: 48, height: 48, fontSize: 22, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
         </div>
+        {isDeliveryOrder(order) && <DeliveryDetails order={order} large />}
         {(() => {
-          const mains  = order.order_items.filter(oi => getItemType(oi.menu_items?.name_he ?? '') === 'main')
-          const addons = order.order_items.filter(oi => getItemType(oi.menu_items?.name_he ?? '') === 'addon')
-          const drinks = order.order_items.filter(oi => getItemType(oi.menu_items?.name_he ?? '') === 'drink')
+          const mains  = order.items.filter(oi => getItemType(oi.name) === 'main')
+          const addons = order.items.filter(oi => getItemType(oi.name) === 'addon')
+          const drinks = order.items.filter(oi => getItemType(oi.name) === 'drink')
 
           const renderMain = (oi: OrderItem) => {
             const parts = (oi.notes || '').split(' | ').filter(Boolean)
@@ -212,7 +261,7 @@ function KitchenModal({ order, onClose, onDone }: {
               <div key={oi.id} style={{ background: '#1A1A1A', border: '2px solid #2A2A2A', borderRadius: 18, padding: '20px 24px', marginBottom: 10 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: sauces || salads || note ? 10 : 0 }}>
                   <div style={{ background: '#F97316', color: '#000', borderRadius: 14, minWidth: 56, height: 56, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, fontWeight: 900, flexShrink: 0 }}>{oi.quantity}</div>
-                  <div style={{ color: '#fff', fontSize: 28, fontWeight: 800, lineHeight: 1.2 }}>{oi.menu_items?.name_he ?? 'פריט'}</div>
+                  <div style={{ color: '#fff', fontSize: 28, fontWeight: 800, lineHeight: 1.2 }}>{oi.name}</div>
                 </div>
                 {sauces && <div style={{ color: '#9CA3AF', fontSize: 16, marginBottom: 4 }}>🧄 {sauces.replace('רטבים: ', '')}</div>}
                 {salads && <div style={{ color: '#9CA3AF', fontSize: 16, marginBottom: 4 }}>🥗 {salads.replace('סלטים: ', '')}</div>}
@@ -236,7 +285,7 @@ function KitchenModal({ order, onClose, onDone }: {
                 <div style={{ background: 'rgba(255,215,0,0.06)', border: '1.5px solid rgba(255,215,0,0.25)', borderRadius: 16, padding: '16px 20px', marginBottom: 10 }}>
                   <div style={{ color: '#FFD700', fontSize: 13, fontWeight: 700, marginBottom: 10 }}>🍟 תוספות</div>
                   {Object.entries(addons.reduce((acc, oi) => {
-                    const n = oi.menu_items?.name_he ?? 'תוספת'
+                    const n = oi.name
                     acc[n] = (acc[n] || 0) + oi.quantity
                     return acc
                   }, {} as Record<string,number>)).map(([name, qty]) => (
@@ -253,7 +302,7 @@ function KitchenModal({ order, onClose, onDone }: {
                 <div style={{ background: 'rgba(96,165,250,0.06)', border: '1.5px solid rgba(96,165,250,0.25)', borderRadius: 16, padding: '16px 20px', marginBottom: 10 }}>
                   <div style={{ color: '#60A5FA', fontSize: 13, fontWeight: 700, marginBottom: 10 }}>🥤 שתייה</div>
                   {Object.entries(drinks.reduce((acc, oi) => {
-                    const n = oi.menu_items?.name_he ?? 'שתייה'
+                    const n = oi.name
                     acc[n] = (acc[n] || 0) + oi.quantity
                     return acc
                   }, {} as Record<string,number>)).map(([name, qty]) => (
@@ -282,7 +331,7 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
   const cfg = STATUS_CONFIG[order.status]
   const isNew = order.status === 'received'
   const isPreparing = order.status === 'preparing'
-  const num = order.daily_number ? String(order.daily_number).padStart(4, '0') : order.id.slice(-4).toUpperCase()
+  const num = order.dailyNumber ? String(order.dailyNumber).padStart(4, '0') : order.id.slice(-4).toUpperCase()
 
   return (
     <div
@@ -295,19 +344,20 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ color: cfg.color, fontWeight: 700, fontSize: 15 }}>#{num}</span>
-          <span style={{ color: '#9CA3AF', fontSize: 13 }}>{formatTime(order.created_at)}</span>
-          <span style={{ color: '#6B7280', fontSize: 12 }}>{timeSince(order.created_at)}</span>
+          <span style={{ color: '#9CA3AF', fontSize: 13 }}>{formatTime(order.createdAt)}</span>
+          <span style={{ color: '#6B7280', fontSize: 12 }}>{timeSince(order.createdAt)}</span>
         </div>
         <div style={{ textAlign: 'left' }}>
-          {order.customer_name && <div style={{ color: '#fff', fontSize: 13, fontWeight: 700 }}>👤 {order.customer_name}</div>}
+          {order.customerName && <div style={{ color: '#fff', fontSize: 13, fontWeight: 700 }}>👤 {order.customerName}</div>}
           <div style={{ color: '#D1D5DB', fontSize: 13, direction: 'ltr' }}>📞 {order.phone}</div>
         </div>
       </div>
+      {isDeliveryOrder(order) && <DeliveryDetails order={order} />}
       <div style={{ marginBottom: 10 }}>
         {(() => {
-          const mains  = order.order_items.filter(oi => getItemType(oi.menu_items?.name_he ?? '') === 'main')
-          const addons = order.order_items.filter(oi => getItemType(oi.menu_items?.name_he ?? '') === 'addon')
-          const drinks = order.order_items.filter(oi => getItemType(oi.menu_items?.name_he ?? '') === 'drink')
+          const mains  = order.items.filter(oi => getItemType(oi.name) === 'main')
+          const addons = order.items.filter(oi => getItemType(oi.name) === 'addon')
+          const drinks = order.items.filter(oi => getItemType(oi.name) === 'drink')
           return (
             <>
               {/* מנות ראשיות */}
@@ -319,7 +369,7 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
                 return (
                   <div key={oi.id} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 10, padding: '8px 10px', marginBottom: 5 }}>
                     <div style={{ color: '#fff', fontSize: 14, fontWeight: 800, marginBottom: sauces || salads || note ? 5 : 0 }}>
-                      <span style={{ color: cfg.color, fontWeight: 900 }}>{oi.quantity}×</span>{' '}{oi.menu_items?.name_he ?? 'פריט'}
+                      <span style={{ color: cfg.color, fontWeight: 900 }}>{oi.quantity}×</span>{' '}{oi.name}
                     </div>
                     {sauces && <div style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 2 }}>🧄 {sauces.replace('רטבים: ', '')}</div>}
                     {salads && <div style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 2 }}>🥗 {salads.replace('סלטים: ', '')}</div>}
@@ -336,7 +386,7 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
               {addons.length > 0 && (
                 <div style={{ background: 'rgba(255,215,0,0.05)', border: '1px solid rgba(255,215,0,0.2)', borderRadius: 8, padding: '5px 8px', marginBottom: 5 }}>
                   {Object.entries(addons.reduce((acc, oi) => {
-                    const n = oi.menu_items?.name_he ?? 'תוספת'
+                    const n = oi.name
                     acc[n] = (acc[n] || 0) + oi.quantity
                     return acc
                   }, {} as Record<string,number>)).map(([name, qty]) => (
@@ -350,7 +400,7 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
               {drinks.length > 0 && (
                 <div style={{ background: 'rgba(96,165,250,0.05)', border: '1px solid rgba(96,165,250,0.2)', borderRadius: 8, padding: '5px 8px' }}>
                   {Object.entries(drinks.reduce((acc, oi) => {
-                    const n = oi.menu_items?.name_he ?? 'שתייה'
+                    const n = oi.name
                     acc[n] = (acc[n] || 0) + oi.quantity
                     return acc
                   }, {} as Record<string,number>)).map(([name, qty]) => (
@@ -366,9 +416,10 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span style={{ color: '#FFD700', fontWeight: 700, fontSize: 15 }}>₪{order.total_price}</span>
+          <span style={{ color: '#FFD700', fontWeight: 700, fontSize: 15 }}>₪{order.totalPrice}</span>
+          {isDeliveryOrder(order) && <span style={{ background: 'rgba(96,165,250,0.2)', color: '#60A5FA', borderRadius: 6, padding: '2px 8px', fontSize: 11, fontWeight: 800 }}>🛵 משלוח</span>}
           <span style={{ background: 'rgba(255,255,255,0.07)', borderRadius: 6, padding: '2px 8px', color: '#9CA3AF', fontSize: 11 }}>
-            {order.payment_method === 'cash' ? '💵 מזומן' : order.payment_method === 'cibus' ? '🍽️ סיבוס' : order.payment_method === 'bit' ? '💙 ביט' : '💳 אשראי'}
+            {paymentLabel(order.paymentMethod)}
           </span>
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
@@ -391,7 +442,7 @@ function CustomerTab({ orders }: { orders: Order[] }) {
   const byPhone: Record<string, Order[]> = {}
   orders.forEach(o => { if (!byPhone[o.phone]) byPhone[o.phone] = []; byPhone[o.phone].push(o) })
   const customers = Object.entries(byPhone)
-    .map(([phone, ords]) => ({ phone, orders: ords.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()), total: ords.reduce((s, o) => s + o.total_price, 0) }))
+    .map(([phone, ords]) => ({ phone, orders: ords.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()), total: ords.reduce((s, o) => s + o.totalPrice, 0) }))
     .sort((a, b) => b.total - a.total)
 
   return (
@@ -406,11 +457,11 @@ function CustomerTab({ orders }: { orders: Order[] }) {
               <span style={{ color: '#FFD700', fontWeight: 700 }}>₪{c.total}</span>
             </div>
           </div>
-          {c.orders[0]?.customer_name && <div style={{ color: '#9CA3AF', fontSize: 12, marginBottom: 6 }}>👤 {c.orders[0].customer_name}</div>}
+          {c.orders[0]?.customerName && <div style={{ color: '#9CA3AF', fontSize: 12, marginBottom: 6 }}>👤 {c.orders[0].customerName}</div>}
           {c.orders.slice(0, 3).map(o => (
             <div key={o.id} style={{ fontSize: 12, color: '#6B7280', borderTop: '1px solid #2A2A2A', paddingTop: 6, marginTop: 6 }}>
               <span style={{ color: STATUS_CONFIG[o.status].color }}>●</span>{' '}
-              {formatDate(o.created_at)} {formatTime(o.created_at)} — ₪{o.total_price} ({o.order_items.length} פריטים)
+              {formatDate(o.createdAt)} {formatTime(o.createdAt)} — ₪{o.totalPrice} ({o.items.length} פריטים)
             </div>
           ))}
           {c.orders.length > 3 && <div style={{ color: '#4B5563', fontSize: 11, marginTop: 4 }}>+ עוד {c.orders.length - 3} הזמנות</div>}
@@ -424,49 +475,53 @@ function CustomerTab({ orders }: { orders: Order[] }) {
    MAIN PAGE
 ══════════════════════════════════════════════════ */
 export default function OrdersPage() {
-  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null)
+  // The server session (HttpOnly cookie) is authoritative; this is only its client-side mirror.
+  const [session, setSession] = useState<KitchenSessionResponse | null>(null)
   const [authChecked, setAuthChecked] = useState(false)
 
-  // בדוק session קיים
   useEffect(() => {
-    const saved = localStorage.getItem('dashboard_user')
-    if (saved) {
-      try {
-        const u = JSON.parse(saved) as AuthUser
-        // ודא שהמשתמש עדיין תקין
-        if (USERS[u.username]) setCurrentUser(u)
-      } catch {}
-    }
-    setAuthChecked(true)
+    let cancelled = false
+    try { localStorage.removeItem('dashboard_user') } catch {} // remove the old client-side "login" if present
+    kitchenFetch<KitchenSessionResponse>('/api/kitchen/session')
+      .then(s => { if (!cancelled) setSession(s) })
+      .catch(() => { if (!cancelled) setSession(null) }) // 401 / error → login screen
+      .finally(() => { if (!cancelled) setAuthChecked(true) })
+    return () => { cancelled = true }
   }, [])
 
-  function handleLogin(user: AuthUser) {
-    localStorage.setItem('dashboard_user', JSON.stringify(user))
-    setCurrentUser(user)
+  const handleUnauthorized = useCallback(() => setSession(null), [])
+
+  async function handleLogout() {
+    try { await kitchenFetch('/api/kitchen/logout', { method: 'POST', body: {} }) } catch {}
+    setSession(null)
   }
 
-  function handleLogout() {
-    localStorage.removeItem('dashboard_user')
-    setCurrentUser(null)
-  }
+  if (!authChecked) return (
+    <div style={{ minHeight: '100vh', background: '#0D0D0D', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6B7280', fontFamily: 'Heebo, sans-serif', direction: 'rtl' }}>
+      בודק התחברות…
+    </div>
+  )
 
-  if (!authChecked) return null
+  if (!session) return <LoginScreen onLogin={setSession} />
 
-  if (!currentUser) return <LoginScreen onLogin={handleLogin} />
-
-  return <Dashboard user={currentUser} onLogout={handleLogout} />
+  return <Dashboard key={session.user.username} user={session.user} branches={session.branches}
+    onLogout={handleLogout} onUnauthorized={handleUnauthorized} />
 }
 
 /* ══════════════════════════════════════════════════
    DASHBOARD
 ══════════════════════════════════════════════════ */
-function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
+function Dashboard({ user, branches, onLogout, onUnauthorized }: {
+  user: AuthUser; branches: KitchenBranch[]; onLogout: () => void; onUnauthorized: () => void
+}) {
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
+  const [actionError, setActionError] = useState('')
   const [activeTab, setActiveTab] = useState<'kanban' | 'customers'>('kanban')
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date())
-  const [filterBranch, setFilterBranch] = useState<string>(user.branchId ?? 'all')
-  const [branches, setBranches] = useState<{ id: string; name: string }[]>([])
+  // Admin only: 'all' or a branch id. The API enforces the real scope for every role.
+  const [filterBranch, setFilterBranch] = useState<string>('all')
   const [kitchenOrder, setKitchenOrder] = useState<Order | null>(null)
   const [editOrder, setEditOrder] = useState<Order | null>(null)
   const [editNotes, setEditNotes] = useState<Record<string, string>>({})
@@ -478,24 +533,21 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
     return localStorage.getItem('audio_unlocked_date') === new Date().toDateString()
   })
 
+  // Today's orders (Israel day) for the session's scope — from the secure kitchen API.
   const fetchOrders = useCallback(async () => {
-    const today = new Date(); today.setHours(0, 0, 0, 0)
-    let query = supabase
-      .from('orders')
-      .select(`*, branches(name), order_items(id, item_id, quantity, unit_price, notes, menu_items(name_he))`)
-      .gte('created_at', today.toISOString())
-      .order('created_at', { ascending: false })
-
-    // סניף ספציפי — הגבלה ברמת DB
-    if (user.branchId) {
-      query = query.eq('branch_id', user.branchId)
+    const qs = user.role === 'admin' ? `?branch=${encodeURIComponent(filterBranch)}` : ''
+    try {
+      const res = await kitchenFetch<{ orders: Order[] }>(`/api/kitchen/orders${qs}`)
+      setOrders(res.orders)
+      setLoadError(false)
+      setLastRefresh(new Date())
+    } catch (e) {
+      if (e instanceof UnauthorizedError) { onUnauthorized(); return }
+      setLoadError(true) // keep the last good list; the next poll retries
+    } finally {
+      setLoading(false)
     }
-
-    const { data, error } = await query
-    if (!error && data) setOrders(data as Order[])
-    setLastRefresh(new Date())
-    setLoading(false)
-  }, [user.branchId])
+  }, [user.role, filterBranch, onUnauthorized])
 
   const alarmRef = useRef<any>(null)
   const alarmCtxRef = useRef<any>(null)
@@ -551,16 +603,17 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
     prevNewCount.current = newCount
   }, [orders])
 
-  const fetchBranches = useCallback(async () => {
-    const { data } = await supabase.from('branches').select('id, name').order('sort_order')
-    if (data) setBranches(data)
-  }, [])
-
   useEffect(() => {
-    fetchOrders(); fetchBranches()
+    fetchOrders()
     const interval = setInterval(fetchOrders, 20000)
     return () => clearInterval(interval)
-  }, [fetchOrders, fetchBranches])
+  }, [fetchOrders])
+
+  // Stop the new-order alarm when the board unmounts (logout / session expiry).
+  useEffect(() => () => {
+    if (alarmRef.current) clearTimeout(alarmRef.current)
+    alarmRef.current = null
+  }, [])
 
   useEffect(() => {
     const handler = (e: any) => { e.preventDefault(); setInstallPrompt(e); setShowInstallBanner(true) }
@@ -569,34 +622,45 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
     return () => window.removeEventListener('beforeinstallprompt', handler)
   }, [])
 
+  // Status change through the secure API. The server validates the transition, updates conditionally
+  // (conflict-safe across tablets) and sends the "ready" push itself — no separate push call here.
   const handleAdvance = async (orderId: string, nextStatus: OrderStatus) => {
-    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: nextStatus } : o))
+    setActionError('')
     setKitchenOrder(prev => prev?.id === orderId ? null : prev)
-
-    const { error } = await supabase.from('orders').update({ status: nextStatus }).eq('id', orderId)
-    if (error) { console.error('שגיאה:', error); fetchOrders(); return }
-
-    // שלח Push ללקוח כשההזמנה מוכנה
-    if (nextStatus === 'ready') {
-      const order = orders.find(o => o.id === orderId)
-      if (order) {
-        const num = order.daily_number ? String(order.daily_number).padStart(4, '0') : order.id.slice(-4).toUpperCase()
-        fetch('/api/push/send', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phone: order.phone, orderNumber: num }),
-        }).catch(() => {})
-      }
+    try {
+      await kitchenFetch(`/api/kitchen/orders/${encodeURIComponent(orderId)}/status`, { method: 'PATCH', body: { status: nextStatus } })
+      setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: nextStatus } : o)) // only after server success
+    } catch (e) {
+      if (e instanceof UnauthorizedError) { onUnauthorized(); return }
+      const code = (e as { code?: string }).code
+      setActionError(code === 'conflict' || code === 'invalid_transition' || code === 'not_found'
+        ? 'ההזמנה עודכנה במכשיר אחר — הרשימה רועננה'
+        : 'הפעולה נכשלה. נסו שוב')
+      fetchOrders()
     }
   }
 
-  // אדמין יכול לסנן לפי סניף, סניף רגיל — קבוע
-  const filteredOrders = user.role === 'admin'
-    ? (filterBranch === 'all' ? orders : orders.filter(o => o.branch_id === filterBranch))
-    : orders  // כבר מסונן ברמת DB
+  async function saveNotes() {
+    setActionError('')
+    try {
+      for (const [itemId, notes] of Object.entries(editNotes)) {
+        await kitchenFetch(`/api/kitchen/order-items/${encodeURIComponent(itemId)}/notes`, { method: 'PATCH', body: { notes } })
+      }
+      setEditOrder(null); setEditNotes({})
+    } catch (e) {
+      if (e instanceof UnauthorizedError) { onUnauthorized(); return }
+      const code = (e as { code?: string }).code
+      setActionError(code === 'invalid_state' ? 'לא ניתן לערוך הערות בשלב זה של ההזמנה' : 'שמירת ההערות נכשלה. נסו שוב')
+    } finally {
+      fetchOrders()
+    }
+  }
+
+  // Scope is enforced by the API (admin: ?branch=; branch users: own branch only).
+  const filteredOrders = orders
 
   const byStatus = STATUSES.reduce((acc, s) => { acc[s] = filteredOrders.filter(o => o.status === s); return acc }, {} as Record<OrderStatus, Order[]>)
-  const todayTotal = filteredOrders.filter(o => o.status !== 'received' && o.status !== 'cancelled').reduce((s, o) => s + o.total_price, 0)
+  const todayTotal = filteredOrders.filter(o => o.status !== 'received' && o.status !== 'cancelled').reduce((s, o) => s + o.totalPrice, 0)
   const newCount = byStatus.received.length
 
   return (
@@ -614,27 +678,26 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
           <div onClick={e => e.stopPropagation()} style={{ background: '#111', border: '2px solid #FFD700', borderRadius: 24, padding: 28, maxWidth: 500, width: '100%', direction: 'rtl', maxHeight: '90vh', overflowY: 'auto' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
               <div style={{ color: '#FFD700', fontSize: 22, fontWeight: 900 }}>
-                ✏️ עריכת הזמנה #{editOrder.daily_number ? String(editOrder.daily_number).padStart(4,'0') : editOrder.id.slice(-4).toUpperCase()}
+                ✏️ עריכת הזמנה #{editOrder.dailyNumber ? String(editOrder.dailyNumber).padStart(4,'0') : editOrder.id.slice(-4).toUpperCase()}
               </div>
               <button onClick={() => setEditOrder(null)} style={{ background: '#333', border: 'none', color: '#fff', borderRadius: 50, width: 36, height: 36, cursor: 'pointer', fontSize: 18, fontFamily: 'Heebo, sans-serif' }}>✕</button>
             </div>
-            {editOrder.order_items.map(oi => (
+            {editOrder.items.map(oi => (
               <div key={oi.id} style={{ background: '#1A1A1A', borderRadius: 12, padding: 16, marginBottom: 12 }}>
-                <div style={{ color: '#fff', fontWeight: 700, fontSize: 16, marginBottom: 8 }}>{oi.quantity}× {oi.menu_items?.name_he}</div>
+                <div style={{ color: '#fff', fontWeight: 700, fontSize: 16, marginBottom: 8 }}>{oi.quantity}× {oi.name}</div>
                 <textarea
                   value={editNotes[oi.id] ?? (oi.notes || '')}
+                  maxLength={500}
                   onChange={e => setEditNotes(prev => ({ ...prev, [oi.id]: e.target.value }))}
                   placeholder="הערות למנה..."
                   style={{ width: '100%', padding: 10, borderRadius: 8, border: '1px solid #333', background: '#0D0D0D', color: '#fff', fontSize: 14, fontFamily: 'Heebo, sans-serif', resize: 'none', height: 70, boxSizing: 'border-box' }}
                 />
               </div>
             ))}
-            <button onClick={async () => {
-              for (const [itemId, notes] of Object.entries(editNotes)) {
-                await supabase.from('order_items').update({ notes }).eq('id', itemId)
-              }
-              fetchOrders(); setEditOrder(null); setEditNotes({})
-            }} style={{ width: '100%', padding: 14, background: '#FFD700', color: '#000', border: 'none', borderRadius: 12, fontSize: 16, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>✅ שמור שינויים</button>
+            {actionError && (
+              <div style={{ color: '#FF6B6B', background: 'rgba(255,107,107,0.1)', borderRadius: 8, padding: '8px 12px', fontSize: 13, marginBottom: 10, textAlign: 'center' }}>❌ {actionError}</div>
+            )}
+            <button onClick={saveNotes} style={{ width: '100%', padding: 14, background: '#FFD700', color: '#000', border: 'none', borderRadius: 12, fontSize: 16, fontWeight: 900, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>✅ שמור שינויים</button>
           </div>
         </div>
       )}
@@ -647,7 +710,6 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
         <div style={{ background: '#111', borderBottom: '1px solid #222', padding: '12px 16px', position: 'sticky', top: 0, zIndex: 50 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              {user.role === 'admin' && <a href="/dashboard" style={{ color: '#6B7280', textDecoration: 'none', fontSize: 13 }}>← דשבורד</a>}
               <span style={{ color: '#FFD700', fontSize: 18, fontWeight: 800 }}>🧆 הזמנות היום</span>
               {newCount > 0 && <span style={{ background: '#FFD700', color: '#000', borderRadius: 20, padding: '2px 10px', fontSize: 12, fontWeight: 700, animation: 'pulse 1.5s infinite' }}>{newCount} חדשות!</span>}
               {/* תג הסניף הנוכחי */}
@@ -664,18 +726,19 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
                   if (delivered.length === 0) { alert('אין הזמנות שנמסרו היום'); return }
                   const date = new Date().toLocaleDateString('he-IL')
                   const ordersData = delivered.map(o => ({
-                    'מספר': o.daily_number ? String(o.daily_number).padStart(4,'0') : o.id.slice(-4),
-                    'שם לקוח': o.customer_name || '', 'טלפון': o.phone,
-                    'פריטים': o.order_items.map(i => (i.menu_items?.name_he || '') + ' x' + i.quantity).join(', '),
-                    'סכום': o.total_price,
-                    'תשלום': o.payment_method === 'cash' ? 'מזומן' : o.payment_method === 'cibus' ? 'סיבוס' : o.payment_method === 'bit' ? 'ביט' : 'אשראי',
-                    'שעה': formatTime(o.created_at), 'סניף': o.branches?.name || '',
+                    'מספר': o.dailyNumber ? String(o.dailyNumber).padStart(4,'0') : o.id.slice(-4),
+                    'שם לקוח': o.customerName || '', 'טלפון': o.phone,
+                    'פריטים': o.items.map(i => (i.name) + ' x' + i.quantity).join(', '),
+                    ...csvDeliveryFields(o),
+                    'סכום סופי': o.totalPrice,
+                    'תשלום': paymentMethodText(o.paymentMethod),
+                    'שעה': formatTime(o.createdAt), 'סניף': o.branchName || '',
                   }))
                   const byPhone: Record<string,any[]> = {}
                   delivered.forEach(o => { if(!byPhone[o.phone]) byPhone[o.phone]=[]; byPhone[o.phone].push(o) })
                   const customersData = Object.entries(byPhone).map(([phone, ords]: any) => ({
-                    'שם': ords[0]?.customer_name || '', 'טלפון': phone,
-                    'מספר הזמנות': ords.length, 'סה"כ': ords.reduce((s:number,o:any) => s+o.total_price, 0),
+                    'שם': ords[0]?.customerName || '', 'טלפון': phone,
+                    'מספר הזמנות': ords.length, 'סה"כ': ords.reduce((s:number,o:any) => s+o.totalPrice, 0),
                   }))
                   const csvOrders = [Object.keys(ordersData[0]||{}).join(','), ...ordersData.map(r => Object.values(r).map(v => '"' + String(v).replace(/"/g,'""') + '"').join(','))].join('\n')
                   const a1 = document.createElement('a'); a1.href = URL.createObjectURL(new Blob([csvOrders], {type:'text/csv;charset=utf-8'})); a1.download = 'הזמנות_' + date.replace(/\//g,'-') + '.csv'; a1.click()
@@ -684,7 +747,7 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
                     const a2 = document.createElement('a'); a2.href = URL.createObjectURL(new Blob([csvCustomers], {type:'text/csv;charset=utf-8'})); a2.download = 'לקוחות_' + date.replace(/\//g,'-') + '.csv'; a2.click()
                   }, 500)
                   setTimeout(() => {
-                    const total = delivered.reduce((s,o) => s+o.total_price, 0)
+                    const total = delivered.reduce((s,o) => s+o.totalPrice, 0)
                     alert('✅ 2 קבצי CSV הורדו!\n\n📎 כעת יפתח האימייל — צרף את הקבצים שהורדו:\n• הזמנות_' + date.replace(/\//g,'-') + '.csv\n• לקוחות_' + date.replace(/\//g,'-') + '.csv')
                     window.location.href = 'mailto:sssnoy81@gmail.com?subject=' + encodeURIComponent('דוח יומי פלאפל בתחנה — ' + date) + '&body=' + encodeURIComponent('שלום, מצורפים קבצי הדוח היומי לתאריך ' + date + '. סהכ הכנסות: ' + total + ' שח. מספר הזמנות: ' + delivered.length + '. פלאפל בתחנה')
                   }, 1000)
@@ -739,6 +802,11 @@ function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void })
               {[{ id: 'all', name: 'כל הסניפים' }, ...branches].map(b => (
                 <button key={b.id} onClick={() => setFilterBranch(b.id)} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 12, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', fontWeight: filterBranch === b.id ? 700 : 400, background: filterBranch === b.id ? '#FFD700' : '#1A1A1A', color: filterBranch === b.id ? '#000' : '#9CA3AF', border: `1px solid ${filterBranch === b.id ? '#FFD700' : '#333'}` }}>{b.name}</button>
               ))}
+            </div>
+          )}
+          {(loadError || actionError) && !editOrder && (
+            <div onClick={() => setActionError('')} style={{ marginTop: 8, color: '#FF6B6B', background: 'rgba(255,107,107,0.1)', border: '1px solid rgba(255,107,107,0.3)', borderRadius: 8, padding: '6px 10px', fontSize: 12, cursor: 'pointer' }}>
+              ❌ {actionError || 'טעינת ההזמנות נכשלה — מנסה שוב…'}
             </div>
           )}
         </div>
