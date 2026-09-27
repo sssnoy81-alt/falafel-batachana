@@ -55,3 +55,37 @@ export function getBusinessStatus(now: Date = new Date()): { isOpen: boolean; ne
 }
 
 export const isShopOpen = (now: Date = new Date()): boolean => getBusinessStatus(now).isOpen
+
+/* ─── Israel calendar day as UTC instants (DST-safe) ─── */
+
+/** Offset of Asia/Jerusalem from UTC at the given instant, in minutes (e.g. +180 in summer, +120 in winter). */
+function israelOffsetMinutes(at: Date): number {
+  const name = new Intl.DateTimeFormat('en-US', { timeZone: TIME_ZONE, timeZoneName: 'longOffset' })
+    .formatToParts(at).find(p => p.type === 'timeZoneName')?.value ?? 'GMT'
+  const m = /^GMT([+-])(\d{2}):?(\d{2})?$/.exec(name)
+  if (!m) return 0 // "GMT" exactly
+  const minutes = Number(m[2]) * 60 + Number(m[3] ?? 0)
+  return m[1] === '-' ? -minutes : minutes
+}
+
+/** UTC instant of 00:00 Israel time on the given Israel calendar date. */
+function israelMidnightUtc(year: number, month: number, day: number): Date {
+  const naiveUtc = Date.UTC(year, month - 1, day, 0, 0, 0)
+  // Two passes converge even across DST changes (Israel switches at 02:00, never at midnight).
+  let guess = naiveUtc - israelOffsetMinutes(new Date(naiveUtc)) * 60_000
+  guess = naiveUtc - israelOffsetMinutes(new Date(guess)) * 60_000
+  return new Date(guess)
+}
+
+/**
+ * Start (inclusive) and end (exclusive) of TODAY in Israel, as UTC Dates — for queries like
+ * created_at >= start AND created_at < end. Days around DST changes are 23h / 25h long, correctly.
+ */
+export function israelDayBounds(now: Date = new Date()): { start: Date; end: Date } {
+  const c = israelClock(now)
+  const next = new Date(Date.UTC(c.year, c.month - 1, c.day + 1))
+  return {
+    start: israelMidnightUtc(c.year, c.month, c.day),
+    end: israelMidnightUtc(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate()),
+  }
+}

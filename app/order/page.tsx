@@ -1,6 +1,6 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
-import { createClient } from '@supabase/supabase-js'
+import { getBrowserSupabase } from '@/lib/supabaseBrowser'
 import {
   DELIVERY_AREAS, DELIVERY_FEE, DELIVERY_FIELD_LIMITS, DELIVERY_MEAL_SURCHARGE, MAX_CUSTOMER_NAME, MAX_ITEM_NOTES, MAX_LINE_QUANTITY, PAYMENT_METHODS, PAYMENT_METHOD_LABELS, PHONE_REGEX,
   SET_ADDON_FREE, SET_ADDONS_PAID, SET_DRINK_EXTRA, SET_DRINKS_FREE, SET_DRINKS_PAID,
@@ -16,10 +16,6 @@ import { getBusinessStatus } from '@/lib/hours'
 import { formatDeliveryAddress } from '@/lib/deliveryAddress'
 import type { CreateOrderRequest, CreateOrderResponse, OrderErrorCode } from '@/lib/orderRequest'
 
-const supabase = createClient(
-  'https://sqgnrzcmjhwgfjxocvlr.supabase.co',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNxZ25yemNtamh3Z2ZqeG9jdmxyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIzNjcxMDEsImV4cCI6MjA4Nzk0MzEwMX0.pnKjYQU3f9oFEL0DfPrJSayyIHQaRmDpCQP0FpQEzRs'
-)
 
 type Branch = { id: string; name: string; address: string }
 type Category = { id: string; name_he: string; sort_order: number }
@@ -229,10 +225,10 @@ export default function Home() {
 
   async function restoreBranch(branch: Branch, savedScreen: Screen) {
     const [catRes, itemRes, topRes, priceRes] = await Promise.all([
-      supabase.from('menu_categories').select('*').order('sort_order'),
-      supabase.from('menu_items').select('*').eq('is_active', true).order('sort_order'),
-      supabase.from('toppings').select('*').order('sort_order'),
-      supabase.from('branch_prices').select('item_id, price').eq('branch_id', branch.id).eq('is_available', true),
+      getBrowserSupabase().from('menu_categories').select('*').order('sort_order'),
+      getBrowserSupabase().from('menu_items').select('*').eq('is_active', true).order('sort_order'),
+      getBrowserSupabase().from('toppings').select('*').order('sort_order'),
+      getBrowserSupabase().from('branch_prices').select('item_id, price').eq('branch_id', branch.id).eq('is_available', true),
     ])
     const cats = catRes.data || []
     const prices: Record<string, number> = {}
@@ -244,13 +240,13 @@ export default function Home() {
   }
 
   async function fetchBranches() {
-    const { data } = await supabase.from('branches').select('id, name, address').order('sort_order')
+    const { data } = await getBrowserSupabase().from('branches').select('id, name, address').order('sort_order')
     const HIDDEN = '3ab15ad1-e835-492b-bae5-11b202ee2314'
     setBranches((data || []).filter((b: any) => b.id !== HIDDEN)); setLoading(false)
   }
 
   async function fetchBranchesAndRestore(branchId?: string) {
-    const { data } = await supabase.from('branches').select('id, name, address').order('sort_order')
+    const { data } = await getBrowserSupabase().from('branches').select('id, name, address').order('sort_order')
     const HIDDEN = '3ab15ad1-e835-492b-bae5-11b202ee2314'
     setBranches((data || []).filter((b: any) => b.id !== HIDDEN))
     if (branchId && data) {
@@ -266,10 +262,10 @@ export default function Home() {
     setOrderTypeChoice(type === 'delivery' && isDeliveryBranch(branch.id) ? 'delivery' : 'pickup')
     setOrderError('')
     const [catRes, itemRes, topRes, priceRes] = await Promise.all([
-      supabase.from('menu_categories').select('*').order('sort_order'),
-      supabase.from('menu_items').select('*').eq('is_active', true).order('sort_order'),
-      supabase.from('toppings').select('*').order('sort_order'),
-      supabase.from('branch_prices').select('item_id, price').eq('branch_id', branch.id).eq('is_available', true),
+      getBrowserSupabase().from('menu_categories').select('*').order('sort_order'),
+      getBrowserSupabase().from('menu_items').select('*').eq('is_active', true).order('sort_order'),
+      getBrowserSupabase().from('toppings').select('*').order('sort_order'),
+      getBrowserSupabase().from('branch_prices').select('item_id, price').eq('branch_id', branch.id).eq('is_available', true),
     ])
     const cats = catRes.data || []
     const prices: Record<string, number> = {}

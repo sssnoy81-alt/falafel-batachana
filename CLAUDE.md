@@ -31,18 +31,19 @@ A Hebrew-first (RTL) online ordering system for a falafel business with multiple
 **Customer-facing**
 - **Landing page** — marketing page built from designed images with clickable hotspots (phone, WhatsApp, Waze, social, "order" button) and a video.
 - **Ordering PWA** — installable, mobile-first app:
-  - branch selection (one branch is hidden from customers in code)
-  - **menu** by category, per-branch prices, item images from Supabase Storage
+  - **first step: 🏃 pickup or 🛵 delivery** (delivery locks to מישור אדומים; pickup → branch list; one branch hidden)
+  - **menu** by category, per-branch prices, item images from Supabase Storage; header toggle pickup ↔ delivery keeps the cart
   - item sheet: sauces, salads, paid add-ons, "no lettuce", notes, meal-deal (עסקית) drink/add-on choice
   - **cart** with edit/remove and upsell prompt
-  - **checkout**: pickup / delivery (delivery only from מישור אדומים, approved localities only), delivery address,
-    name, phone, payment-method choice (labels only). **No discount** (the old 5% app discount was removed).
-  - **delivery pricing**: +₪4 per qualifying meal unit (category allowlist) + ₪20 fixed fee per delivery order
+  - **checkout**: delivery address (approved localities dropdown), name, phone, payment-method choice (labels only).
+    **No discount** (the old 5% app discount was removed).
+  - **delivery pricing**: +₪4 per qualifying meal unit (category allowlist) + ₪20 fixed fee per delivery order.
+    Customer-facing prices for delivery are shown **inclusive** of the +₪4; the ₪20 fee is a separate line.
   - **order tracking** screen with status, order number, order details; name/phone/address remembered for next order
   - business-hours gating (closed popup, order button disabled when closed)
 
 **Operations**
-- **Kitchen / staff order queue** (`/dashboard/orders`) — columns by status, one-tap status advance, new-order audio alarm, branch filter for admin.
+- **Kitchen / staff order queue** (`/dashboard/orders`) — server-verified login (HttpOnly session cookie), columns by status, one-tap status advance, new-order audio alarm, branch filter for admin. Delivery orders show 🛵 badge, address, courier notes, surcharge + fee.
 - **Order statuses**: `received → confirmed → preparing → ready → delivered`, plus `cancelled`.
 - **Order note editing** per order item.
 - **Cancellation** with confirmation.
@@ -64,23 +65,30 @@ A Hebrew-first (RTL) online ordering system for a falafel business with multiple
 |---|---|---|
 | `/` | `app/page.tsx` | Landing page. |
 | `/order` | `app/order/page.tsx` | Customer ordering application (~1,000 lines, single client component). |
-| `/dashboard` | `app/dashboard/page.tsx` | **Legacy** order board. Old, unprotected, uses a privileged credential client-side. Considered unsafe; do not extend. |
-| `/dashboard/orders` | `app/dashboard/orders/page.tsx` | **Main kitchen / staff application** (~780 lines). |
+| `/dashboard` | `app/dashboard/page.tsx` | **Retired.** Server redirect → `/dashboard/orders`. |
+| `/dashboard/orders` | `app/dashboard/orders/page.tsx` | **Kitchen / staff application.** Client UI only: **no Supabase client, no keys, no passwords**; all data via `/api/kitchen/*`. |
 | `POST /api/orders` | `app/api/orders/route.ts` | **Only customer order-creation path.** Validates intent, prices server-side, calls `create_order` RPC. |
-| `GET /api/orders/[id]/status` | `app/api/orders/[id]/status/route.ts` | Minimal tracking: `{ id, dailyNumber, status, type }` only, `no-store`. |
-| `/api/push/subscribe` | `app/api/push/subscribe/route.ts` | Stores a push subscription by `order_id` after verifying order + phone + recency. Server client only. |
-| `/api/push/send` | `app/api/push/send/route.ts` | `{ orderId }` only; sends only if DB status is `ready`; wording by order type. Not yet staff-authenticated. |
+| `GET /api/orders/[id]/status` | `app/api/orders/[id]/status/route.ts` | Minimal customer tracking: `{ id, dailyNumber, status, type }` only, `no-store`. |
+| `POST /api/push/subscribe` | `app/api/push/subscribe/route.ts` | Customer: stores a push subscription by `order_id` after verifying order + phone + recency. |
+| `POST /api/push/send` | `app/api/push/send/route.ts` | **Kitchen session required**, same-origin, `{ orderId }` only, branch-scoped. Manual re-send only (status route sends the ready push itself). |
+| `POST /api/kitchen/login` · `/logout` | `app/api/kitchen/{login,logout}/route.ts` | Server-verified kitchen login (scrypt hashes from env) → HttpOnly signed cookie. |
+| `GET /api/kitchen/session` | `app/api/kitchen/session/route.ts` | Current kitchen user (+ branch list for admin). |
+| `GET /api/kitchen/orders` | `app/api/kitchen/orders/route.ts` | Today's orders (Asia/Jerusalem day), session branch scope, minimal fields. |
+| `PATCH /api/kitchen/orders/[id]/status` | `app/api/kitchen/orders/[id]/status/route.ts` | Locked transition table, conditional update (tablet-race safe), server-side ready push. |
+| `PATCH /api/kitchen/order-items/[id]/notes` | `app/api/kitchen/order-items/[id]/notes/route.ts` | Item notes (≤500), only while order is confirmed/preparing. |
 
-**Shared order modules (`lib/`)**: `orderConfig.ts` (IDs, delivery areas, fees, labels, menu rules),
-`pricing.ts` (pure pricing used by UI + server), `orderRequest.ts` (pure request validation + order building),
-`hours.ts` (Asia/Jerusalem opening hours), `deliveryAddress.ts`, `supabaseServer.ts` (server-only client, no anon
-fallback), `createOrder.ts` (atomic RPC adapter). Local checks: `node scripts/verify-pricing.mjs`.
+**Shared modules (`lib/`)**: `orderConfig.ts` (IDs, delivery areas, fees, labels, menu rules),
+`pricing.ts` (pure pricing used by UI + server; customer display helpers), `orderRequest.ts` (order validation/building),
+`hours.ts` (Asia/Jerusalem opening hours + Israel-day bounds), `deliveryAddress.ts`, `createOrder.ts` (atomic RPC adapter),
+`supabaseServer.ts` (**server-only** privileged client, no anon fallback), `supabaseBrowser.ts` (public env key only),
+`kitchenAuth.ts` (server-only auth/session/CSRF), `kitchenOrders.ts` (read model), `kitchenMutations.ts`
+(transitions/notes), `push.ts` (server-only ready push), `kitchenTypes.ts` (API contract types, client-safe).
+Local checks: `node scripts/verify-{pricing,kitchen-auth,kitchen-read,kitchen-mutations}.mjs`.
+Kitchen password hashes: `node scripts/hash-kitchen-password.mjs` (run locally; never commit passwords/hashes).
 
 Layouts: `app/layout.tsx` (root, RTL, PWA meta, "Powered by SN Capital AI" footer), `app/dashboard/layout.tsx` (kitchen manifest + Vercel Analytics).
 
 Public PWA assets: `public/manifest.json` (customer app, start `/order`), `public/manifest-kitchen.json` (kitchen, start `/dashboard/orders`), `public/sw.js` (push handler only, no caching), `public/kitchen.html` (kitchen install page), `public/falafel-landing/*` (landing images + video).
-
-`lib/supabase.js` exists but is **not used** by the current pages — each page creates its own Supabase client.
 
 ---
 
@@ -107,7 +115,7 @@ Public PWA assets: `public/manifest.json` (customer app, start `/order`), `publi
 - **Inline styles are common**; Tailwind is present but lightly used.
 - `next.config.ts` is empty (no headers, redirects, or image config). Images use plain `<img>`.
 - Next.js 16: route protection middleware file is `proxy.ts` (not `middleware.ts`). None exists yet.
-- Hardcoded business values exist in code: branch IDs, the hidden branch, business hours, meal-deal extra prices, discount rate.
+- Hardcoded business values live in code (`lib/orderConfig.ts`, `lib/hours.ts`, `lib/kitchenAuth.ts`): branch IDs, the hidden branch, meal/drink category IDs, delivery areas, ₪4/₪20 delivery charges, business hours, meal-deal extra prices.
 
 ---
 
@@ -123,35 +131,39 @@ Inferred **only from application code**:
 | `toppings` | Sauces (`spread`), salads (`filling`), paid add-ons (`paid_addon`, with price). |
 | `branch_prices` | Per-branch item price and `is_available`. Items without a price are hidden. |
 | `orders` | branch_id, phone, customer_name, payment_method, status, total_price, daily_number (per Israel day), order_number (global sequence — NOT the ticket number), `type` ('pickup'/'delivery', NULL on legacy rows; new orders always set it), created_at. |
-| `deliveries` | 1:1 extension of `orders` for delivery orders (FK + UNIQUE order_id, ON DELETE NO ACTION): address, notes, delivery_fee; structured address + meal_surcharge/meal_quantity pending migration. Must be server-only (RLS). |
+| `deliveries` | 1:1 extension of `orders` for delivery orders (FK + UNIQUE order_id, ON DELETE NO ACTION): address, structured address (city/street/house_number/apartment/floor/entrance), notes, delivery_fee, meal_surcharge, meal_quantity. **RLS on, no anon/authenticated access — server-only.** |
 | `order_items` | order_id, item_id, quantity, unit_price, notes (selected options are serialized into notes text). |
 | `push_subscriptions` | phone, order_id, subscription JSON. |
 
 Storage: public bucket `menu-images` (logos, menu images, manifest icons).
-Not used: RPCs, views, Realtime, Supabase Auth.
+RPC: `public.create_order(p_order, p_items, p_delivery)` — SECURITY INVOKER, EXECUTE for `service_role` only.
+Not used: views, Realtime, Supabase Auth. `orders.confirmed_at/ready_at/delivered_at` exist but are not maintained.
 
-> ⚠️ **The exact production schema, constraints, triggers, and RLS policies have NOT been verified from the
-> database.** Do not assume them. Any schema/RLS inspection or change requires explicit approval (§10).
+> ⚠️ Verified: `deliveries` (RLS + grants), `create_order` (exists, privileges). **Not verified / known open:** anon
+> still reads/inserts `orders`, `order_items`, `push_subscriptions` (SEC-2). Any schema/RLS change requires approval (§10).
 
 ---
 
 ## 6. Current Order Flow
 
 ```
-customer → branch → menu → item options → cart → checkout (pickup/delivery, address, name, phone, payment label)
+customer → pickup|delivery → branch (pickup) / מישור אדומים (delivery) → menu → item options → cart
+  → checkout (address for delivery, name, phone, payment label)
   → POST /api/orders (server validates + prices → create_order RPC: orders + order_items + deliveries atomically)
   → customer tracking screen (polls GET /api/orders/[id]/status)
-  → kitchen queue (polls today's orders, incl. deliveries embed)
-  → received → confirmed → preparing → ready (push sent to customer) → delivered
-  (cancel available from the kitchen board)
+  → kitchen (logged in) polls GET /api/kitchen/orders every 20s
+  → PATCH /api/kitchen/orders/[id]/status: received → confirmed → preparing → ready (server sends push) → delivered
+    (cancel from confirmed/preparing)
 ```
 
 - **Prices are authoritative on the server** (`lib/pricing.ts`); the browser only displays the same calculation.
   `order_items.unit_price` = base + paid add-ons + deal extras. Delivery charges live in `deliveries`.
 - `daily_number` is assigned inside the `create_order` DB function (advisory lock per Israel day).
 - **Cash / credit / Cibus / Bit do not represent real payment processing.** Payment method never affects price.
-- ⚠️ **DB dependency (feature/delivery-sec1):** `/api/orders` returns 503 until the approved `create_order` RPC exists;
-  delivery also needs the approved `deliveries` migration + RLS lock-down. Do not deploy before those DB steps.
+- DB steps for delivery are **applied** (deliveries migration + RLS lock-down + `create_order`). If `create_order` were
+  ever missing, `/api/orders` returns 503 (no partial orders, no fallback writes).
+- ⚠️ **Deploy coupling:** the kitchen security work (auth + `/api/kitchen/*` + protected push + migrated kitchen UI)
+  must ship **together** and only with `KITCHEN_SESSION_SECRET` + `KITCHEN_USERS` (and the public Supabase vars) set.
 
 ---
 
@@ -159,37 +171,42 @@ customer → branch → menu → item options → cart → checkout (pickup/deli
 
 These issues are **known and documented**. Never paste actual keys, JWTs, passwords, tokens, or secret values into code, docs, commits, or chat.
 
-- A Supabase **service_role credential is referenced in client-side dashboard code** (`app/dashboard/page.tsx`, `app/dashboard/orders/page.tsx`). Service credentials must eventually move server-side.
-- The Supabase URL and public anon key are hardcoded in `app/order/page.tsx` instead of read from env.
-- **Legacy staff login is client-side only** (`app/dashboard/orders/page.tsx`); staff passwords are in browser code and must eventually be removed. Session is a `localStorage` entry.
-- **`/dashboard` is legacy and unprotected.**
-- **Push send is not staff-authenticated** (it only acts on orders whose DB status is `ready`). Push routes no longer fall back to the anon key.
-- **Anon can still read `orders` / `order_items` / `push_subscriptions` and insert orders directly** (existing debt → SEC-2).
+**Fixed in the current code (06B–06E):** no service_role in browser code; no hardcoded Supabase keys (customer uses
+public `NEXT_PUBLIC_*` env); kitchen login is server-verified (no passwords in code, no localStorage auth); legacy
+`/dashboard` retired; push send requires a kitchen session.
+
+**Still open:**
+- **The old service_role + anon JWTs and old kitchen passwords are in public git history** (and in the currently
+  deployed production build until this work ships). **RLS does not protect against the leaked service_role key** —
+  addresses stay readable with it until **key rotation**.
+- **Anon can still read `orders` / `order_items` / `push_subscriptions` and insert orders directly** (SEC-2 → RLS).
   The customer app no longer depends on those anon reads/inserts.
-- **RLS does not protect against the historically exposed service_role key**; real delivery addresses in production need an explicit rotation / risk decision.
-- The GitHub repository is public and historical commits contain credentials.
+- Kitchen accounts are shared per branch (no per-person audit); login protection is a delay only (no attempt limit).
+- The GitHub repository is public.
 
-**Key rotation is intentionally DEFERRED for now by project decision.**
-Do not repeatedly block or re-litigate unrelated development because the key has not yet been rotated.
+**Planned key rotation (separately approved, after the secure release is live in ALL deployments):** create new
+Supabase keys (publishable + secret) → set server secret + public key in Vercel (both projects) → redeploy → verify →
+disable legacy JWT keys → confirm old keys return 401.
 
-**However — hard rule: never introduce any new client-side privileged credential**, never hardcode any key or password, and never widen the use of the existing exposed credential. New code reads Supabase config from environment variables; privileged access belongs in server-only code.
+**Hard rule: never introduce any client-side privileged credential**, never hardcode any key or password, never
+put a server secret in a `NEXT_PUBLIC_*` variable. Privileged access belongs in server-only code (`lib/supabaseServer.ts`).
 
-Environment variable names referenced by code (names only):
-`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `NEXT_PUBLIC_VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_EMAIL`, `VAPID_SUBJECT`.
-Never print the values of `.env*` files.
+Environment variable names (names only):
+public: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_VAPID_PUBLIC_KEY` ·
+server-only: `SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_SERVICE_KEY`), `KITCHEN_SESSION_SECRET`, `KITCHEN_USERS`,
+`VAPID_PRIVATE_KEY`, `VAPID_EMAIL` / `VAPID_SUBJECT`. Never print the values of `.env*` files or env settings.
 
 ---
 
 ## 8. Target Security Direction (roadmap context only)
 
-- Server-only privileged Supabase client; browser client uses only public/publishable credentials from env.
-- Supabase Auth for staff; role (admin / branch staff) + branch in a server-trusted location (not `user_metadata`).
-- Role/branch-based access: branch staff see only their branch; admin sees all.
-- Secure staff API routes for reading orders, status changes, and note edits; `/dashboard/*` protected via `proxy.ts`.
-- Server-side pricing: client sends item IDs/options/quantities only; server loads canonical prices and writes the order.
-- Secure order tracking (order-scoped token instead of broad anon reads).
-- Authenticated / internal-only push sending; subscriptions tied to an order.
-- RLS as the final database safety layer.
+Done: server-only privileged client · public-env browser client · server-side pricing · secure tracking endpoint ·
+server-verified kitchen session with role/branch scope · secure kitchen APIs · authenticated push send.
+
+Remaining:
+- Key rotation (see §7).
+- SEC-2: RLS so anon can no longer read/insert `orders` / `order_items` / `push_subscriptions`.
+- Optional later: Supabase Auth per-person staff accounts; login attempt limiting.
 
 Implement these only when a task explicitly asks for them.
 

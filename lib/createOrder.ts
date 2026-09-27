@@ -1,11 +1,10 @@
 // SERVER-ONLY. Single entry point for persisting an order.
 //
-// Target: the atomic Postgres function public.create_order(p_order, p_items, p_delivery)
+// Uses the atomic Postgres function public.create_order(p_order, p_items, p_delivery)
 // (orders + order_items + deliveries + daily_number in ONE transaction, EXECUTE granted to service_role only).
 //
-// STATUS: the function does NOT exist in the database yet (pending approved SQL — see FALAFEL-SN-03B7 §E).
-// Until it exists this adapter raises OrderCreationUnavailableError. It never fakes success and never
-// falls back to direct / anon inserts.
+// If the function is ever missing, this adapter raises OrderCreationUnavailableError (→ 503). It never fakes
+// success and never falls back to direct / anon inserts.
 
 import { getServerSupabase } from './supabaseServer'
 import type { CreateOrderRpcArgs } from './orderRequest'
