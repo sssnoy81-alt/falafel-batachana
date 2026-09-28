@@ -5,6 +5,7 @@
 
 import { geocodeDeliveryAddress, toDeliveryGeoFields, UNRESOLVED_DELIVERY_GEO, type GeocodeAddressInput, type GeocodeResult } from './geocoding'
 import { resolveGeocodingProvider } from './geocodingProvider'
+import { deviceLocationGeoFields, isTrustedDeviceLocation } from './deliveryLocation'
 import { applyDeliveryGeo, type BuiltOrder, type CreateOrderRequest } from './orderRequest'
 
 export interface OrderGeoDeps {
@@ -20,11 +21,21 @@ export const defaultOrderGeoDeps = (): OrderGeoDeps => ({
   log: code => console.warn('orders: geocode', code),
 })
 
-/** Delivery only; pickup (or a build without p_delivery) is returned untouched and the geocoder is never called. */
+/**
+ * Delivery only; pickup (or a build without p_delivery) is returned untouched and the geocoder is never called.
+ * Priority: 1) trusted customer-confirmed device location (authoritative; Mapbox is not called and can never
+ * overwrite it) → 2) server Mapbox geocoding (street match or locality) → 3) explicit unresolved.
+ */
 export async function attachDeliveryGeo(
   order: CreateOrderRequest, built: BuiltOrder, deps: OrderGeoDeps = defaultOrderGeoDeps(),
 ): Promise<BuiltOrder> {
   if (order.type !== 'delivery' || !order.delivery || !built.rpcArgs.p_delivery) return built
+
+  if (order.deliveryLocation) {
+    if (isTrustedDeviceLocation(order.deliveryLocation))
+      return applyDeliveryGeo(built, deviceLocationGeoFields(order.deliveryLocation))
+    deps.log('location_low_accuracy') // code only — never coordinates or accuracy
+  }
 
   let result: GeocodeResult
   try {

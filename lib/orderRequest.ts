@@ -28,6 +28,7 @@ import {
 import { computeOrderTotals, type PricingBreakdown, type PricingLineInput } from './pricing'
 import { formatDeliveryAddress, type DeliveryAddress } from './deliveryAddress'
 import { UNRESOLVED_DELIVERY_GEO, type DeliveryGeoFields } from './geocoding'
+import { LOCATION_INPUT_KEYS, parseDeviceLocationInput, type DeliveryLocationWire, type DeviceLocation } from './deliveryLocation'
 
 /* ─── Public contract ─── */
 
@@ -49,7 +50,10 @@ export interface CreateOrderRequest {
   phone: string
   paymentMethod: PaymentMethod
   items: OrderItemRequest[]
-  delivery?: DeliveryAddress
+  /** Wire: the address plus optional customer device-location inputs (location_*). Parsed: address only. */
+  delivery?: DeliveryAddress & Partial<DeliveryLocationWire>
+  /** Parsed server-side only: validated device location (trust / accuracy decided later by the server). */
+  deliveryLocation?: DeviceLocation
 }
 
 export interface CreateOrderResponse {
@@ -123,6 +127,8 @@ export function parseCreateOrderRequest(body: unknown): Result<CreateOrderReques
   if (!isRecord(body)) return fail('invalid_request')
   if (hasAnyKey(body, FORBIDDEN_ORDER_KEYS)) return fail('client_prices_not_accepted')
   if (hasAnyKey(body, FORBIDDEN_GEO_KEYS)) return fail('invalid_request', 'client_geo_not_accepted')
+  // Device-location inputs are only accepted inside `delivery` (so never on pickup).
+  if (hasAnyKey(body, [...LOCATION_INPUT_KEYS])) return fail('invalid_request', 'client_geo_not_accepted')
 
   const { branchId, type, customerName, phone, paymentMethod, items, delivery } = body
 
@@ -164,6 +170,7 @@ export function parseCreateOrderRequest(body: unknown): Result<CreateOrderReques
   }
 
   let parsedDelivery: DeliveryAddress | undefined
+  let parsedLocation: DeviceLocation | undefined
   if (type === 'pickup') {
     if (delivery !== undefined && delivery !== null) return fail('invalid_request', 'pickup_with_delivery')
   } else {
@@ -180,6 +187,9 @@ export function parseCreateOrderRequest(body: unknown): Result<CreateOrderReques
     if (!street || !houseNumber) return fail('invalid_address')
     if (apartment === null || floor === null || entrance === null || courierNotes === null) return fail('invalid_address')
     parsedDelivery = { city: delivery.city, street, houseNumber, apartment, floor, entrance, courierNotes }
+    const location = parseDeviceLocationInput(delivery)
+    if (!location.ok) return fail('invalid_request', 'invalid_location')
+    parsedLocation = location.value
   }
 
   return {
@@ -187,6 +197,7 @@ export function parseCreateOrderRequest(body: unknown): Result<CreateOrderReques
     value: {
       branchId, type, customerName: name, phone: normalizedPhone, paymentMethod,
       items: parsedItems, delivery: parsedDelivery,
+      ...(parsedLocation ? { deliveryLocation: parsedLocation } : {}),
     },
   }
 }

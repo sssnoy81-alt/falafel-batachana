@@ -14,6 +14,10 @@ import {
 } from '@/lib/pricing'
 import { getBusinessStatus } from '@/lib/hours'
 import { formatDeliveryAddress } from '@/lib/deliveryAddress'
+import {
+  classifyGeolocationError, deliveryLocationWireFields, evaluateDevicePosition,
+  type DeviceLocation, type LocationCaptureState,
+} from '@/lib/deliveryLocation'
 import type { CreateOrderRequest, CreateOrderResponse, OrderErrorCode } from '@/lib/orderRequest'
 
 
@@ -157,6 +161,9 @@ export default function Home() {
   // איסוף / משלוח — הצעד הראשון בהזמנה (לפני התפריט); נקבע מחדש בכל התחלת הזמנה
   const [orderTypeChoice, setOrderTypeChoice] = useState<OrderType | null>(null)
   const [deliveryForm, setDeliveryForm] = useState<DeliveryForm>(() => loadSavedDeliveryForm())
+  // מיקום מכשיר למשלוח — רק אחרי לחיצה מפורשת; לא נשמר ב-localStorage ולא מוצג כקואורדינטות
+  const [locationState, setLocationState] = useState<LocationCaptureState>('idle')
+  const [deviceLocation, setDeviceLocation] = useState<DeviceLocation | null>(null)
 
   // *** חדש: שמירת פירוט ההזמנה למסך מעקב ***
   const [orderCart, setOrderCart] = useState<CartItem[]>([])
@@ -393,6 +400,27 @@ export default function Home() {
     } catch (e) { console.error('Push subscribe error:', e) }
   }
 
+  // Device location: only on an explicit click. Only a fix that passes the server's accuracy rule is kept.
+  function requestDeviceLocation() {
+    if (locationState === 'requesting') return
+    setDeviceLocation(null)
+    if (typeof navigator === 'undefined' || !navigator.geolocation) { setLocationState('unavailable'); return }
+    setLocationState('requesting')
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        const r = evaluateDevicePosition(pos.coords)
+        setDeviceLocation(r.location)
+        setLocationState(r.state)
+      },
+      err => { setDeviceLocation(null); setLocationState(classifyGeolocationError(err.code)) },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
+    )
+  }
+  function resetDeviceLocation() {
+    setDeviceLocation(null)
+    setLocationState('idle')
+  }
+
   // Converts the cart (which stores option names) into the server contract (option IDs, no prices).
   function buildOrderRequest(branchId: string, type: OrderType): CreateOrderRequest | null {
     const idsOf = (names: string[], type: 'spread' | 'filling' | 'paid_addon') => {
@@ -429,6 +457,7 @@ export default function Home() {
         floor: deliveryForm.floor.trim() || undefined,
         entrance: deliveryForm.entrance.trim() || undefined,
         courierNotes: deliveryForm.courierNotes.trim() || undefined,
+        ...deliveryLocationWireFields(deviceLocation), // {} unless a trusted location was captured
       } : undefined,
     }
   }
@@ -794,7 +823,7 @@ export default function Home() {
           <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${C.border}` }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>📍 כתובת למשלוח</div>
             <label style={labelStyle}>יישוב *</label>
-            <select value={deliveryForm.city} onChange={e => setDeliveryForm(f => ({ ...f, city: e.target.value }))}
+            <select value={deliveryForm.city} onChange={e => { setDeliveryForm(f => ({ ...f, city: e.target.value })); resetDeviceLocation() }}
               style={{ ...inputStyle(!!deliveryForm.city), appearance: 'auto', marginBottom: 12 }}>
               <option value="">בחרו יישוב</option>
               {DELIVERY_AREAS.map(a => <option key={a} value={a}>{a}</option>)}
@@ -824,6 +853,31 @@ export default function Home() {
             <textarea value={deliveryForm.courierNotes} maxLength={DELIVERY_FIELD_LIMITS.courierNotes} dir="rtl"
               onChange={e => setDeliveryForm(f => ({ ...f, courierNotes: e.target.value }))} placeholder="קוד לשער, להתקשר כשמגיעים..."
               style={{ ...inputStyle(false), resize: 'none', height: 70, fontSize: 15 }} />
+
+            {/* מיקום למשלוח — משלים את הכתובת, לא מחליף אותה; ההזמנה אפשרית גם בלעדיו */}
+            <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.border}` }}>
+              <div style={{ fontWeight: 800, fontSize: 15, color: C.white, marginBottom: 6 }}>מיקום למשלוח</div>
+              <div style={{ fontSize: 13, color: C.gray, marginBottom: 10, lineHeight: 1.5 }}>
+                אם אתה נמצא עכשיו בכתובת המשלוח, המיקום יעזור לשליח להגיע אליך בדיוק.
+              </div>
+              {locationState === 'success' ? (
+                <div style={{ color: C.green, fontWeight: 700, fontSize: 15 }}>✅ המיקום נקלט</div>
+              ) : (
+                <button type="button" onClick={requestDeviceLocation} disabled={locationState === 'requesting'}
+                  style={{ width: '100%', padding: 14, border: `1px solid ${C.gold}`, borderRadius: 12, background: 'rgba(255,215,0,0.08)', color: C.gold, fontWeight: 700, fontSize: 15, cursor: locationState === 'requesting' ? 'default' : 'pointer', fontFamily: 'Heebo, sans-serif', opacity: locationState === 'requesting' ? 0.7 : 1 }}>
+                  {locationState === 'requesting' ? 'מאתרים את המיקום...' : '📍 שלח את המיקום שלי'}
+                </button>
+              )}
+              {locationState === 'denied' && (
+                <div style={{ color: C.gray, fontSize: 13, marginTop: 8 }}>לא התקבלה הרשאת מיקום. אפשר להמשיך עם הכתובת.</div>
+              )}
+              {locationState === 'unavailable' && (
+                <div style={{ color: C.gray, fontSize: 13, marginTop: 8 }}>לא הצלחנו לקבל מיקום. אפשר להמשיך עם הכתובת.</div>
+              )}
+              {locationState === 'inaccurate' && (
+                <div style={{ color: C.gray, fontSize: 13, marginTop: 8 }}>המיקום שהתקבל לא מדויק מספיק. אפשר לנסות שוב או להמשיך עם הכתובת.</div>
+              )}
+            </div>
           </div>
         )}
         <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${C.border}` }}>

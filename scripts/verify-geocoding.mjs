@@ -29,6 +29,7 @@ const geo = load('geocoding')
 const prov = load('geocodingProvider')
 const { parseCreateOrderRequest, buildOrderFromCatalog } = load('orderRequest')
 const { attachDeliveryGeo } = load('orderGeo')
+const loc = load('deliveryLocation')
 
 let passed = 0
 const test = async (name, fn) => { await fn(); passed++; console.log('  ✓', name) }
@@ -440,113 +441,167 @@ await test('M18. order creation stays intact: Mapbox failure → unresolved orde
   assert.equal(pickup.calls.geocode, 0); assert.equal(pickup.rpcArgs.p_delivery, null)
 })
 
-/* ─── TEMPORARY (08C6) Preview-only precision diagnostic ─── */
-console.log('Preview precision diagnostic (08C6, temporary)')
+/* ─── Customer device location (08D1) ─── */
+console.log('Device location (08D1)')
 
-const DIAG_KEYS = ['accuracy', 'address_match', 'confidence', 'feature_type', 'final_reason', 'has_house_number', 'localities', 'place_match', 'provider_precision', 'street_match']
-async function diagRun(env, feature) {
-  const lines = []
-  const resolution = prov.resolveGeocodingProvider({ GEOCODING_PROVIDER: 'mapbox', GEOCODING_API_KEY: TOKEN, ...env },
-    async () => jsonRes(fc(feature)), line => lines.push(line))
-  const result = await geo.geocodeDeliveryAddress(ADDR, { resolution })
-  return { lines, result }
-}
-const approxAddress = mbFeature({ coordinates: { longitude: 35.311615, latitude: 31.78051, accuracy: 'approximate' },
-  match_code: { address_number: 'unmatched', street: 'matched', place: 'matched', confidence: 'medium' } })
+// A real-looking fix far from STREET_HIT, so "which source won" is unambiguous.
+const DEVICE = { location_lat: 31.80123456, location_lng: 35.33987654, location_accuracy: 18, location_confirmed: true }
+const DEVICE_GEO = { delivery_lat: 31.801235, delivery_lng: 35.339877, geo_source: 'manual', geo_precision: 'street' }
+const parseLoc = extra => parseCreateOrderRequest(body('delivery', {}, extra))
+const rejected = r => ({ ok: r.ok, code: r.code, detail: r.detail })
+const INVALID_LOCATION = { ok: false, code: 'invalid_request', detail: 'invalid_location' }
 
-await test('D1. Preview + locality-classified result → exactly one diagnostic with allow-listed fields only', async () => {
-  const { lines, result } = await diagRun({ VERCEL_ENV: 'preview' }, approxAddress)
-  assert.equal(result.precision, 'locality')
-  assert.equal(lines.length, 1); assert.match(lines[0], /^mapbox_geo_diagnostic \{/)
-  const d = JSON.parse(lines[0].slice('mapbox_geo_diagnostic '.length))
-  assert.deepEqual(Object.keys(d).sort(), DIAG_KEYS)
-  assert.deepEqual(d, { feature_type: 'address', accuracy: 'approximate', confidence: 'medium', address_match: 'unmatched',
-    street_match: 'matched', place_match: 'matched', has_house_number: true, localities: [CITY], provider_precision: 'street_partial', final_reason: 'locality' })
+await test('DL1–2. valid confirmed device location → stored as manual / street with device coordinates', async () => {
+  const r = await placeOrder(body('delivery', {}, DEVICE), withProvider(providerReturning(STREET_HIT)))
+  assert.ok(r.created); assert.deepEqual(geoOf(r.rpcArgs.p_delivery), DEVICE_GEO)
+  assert.ok(loc.isDispatchEligibleGeo(r.rpcArgs.p_delivery))
 })
 
-await test('D2. diagnostic never contains token, URL, street, house number, full address, coordinates or customer data', async () => {
-  const { lines } = await diagRun({ VERCEL_ENV: 'preview' }, approxAddress)
-  const forbidden = [TOKEN, 'access_token', 'api.mapbox.com', 'הדקל', '12,', 'full_address', '31.78', '35.31', 'Israel', ...Object.values(PRIVATE)]
-  for (const f of forbidden) assert.ok(!lines[0].includes(f), `leaked ${f}`)
-  const weird = mbFeature({ feature_type: 'הדקל 12', coordinates: { longitude: 35.3, latitude: 31.78, accuracy: 'Rooftop near הדקל 12' },
-    match_code: { address_number: 12, street: { x: 1 }, confidence: 'LOW!' } })
-  const w = await diagRun({ VERCEL_ENV: 'preview' }, weird)
-  const d = JSON.parse(w.lines[0].slice('mapbox_geo_diagnostic '.length))
-  assert.deepEqual([d.feature_type, d.accuracy, d.address_match, d.street_match, d.confidence], ['other', 'other', 'other', 'other', 'other'])
-  assert.ok(!w.lines[0].includes('הדקל'))
+await test('DL3–4. device location overrides Mapbox and the geocoder is never called', async () => {
+  const r = await placeOrder(body('delivery', {}, DEVICE), withProvider(providerReturning(STREET_HIT)))
+  assert.equal(r.calls.geocode, 0); assert.deepEqual(r.calls.logs, [])
+  assert.notEqual(r.rpcArgs.p_delivery.delivery_lat, 31.773612)
 })
 
-await test('D3. no diagnostic on Production / unset VERCEL_ENV / confirmed street results', async () => {
-  for (const env of [{ VERCEL_ENV: 'production' }, {}, { VERCEL_ENV: 'development' }]) assert.deepEqual((await diagRun(env, approxAddress)).lines, [])
-  const street = await diagRun({ VERCEL_ENV: 'preview' }, mbFeature())
-  assert.equal(street.result.precision, 'street'); assert.deepEqual(street.lines, [])
+await test('DL5. valid coordinates parse to the server-side deliveryLocation (address kept separately)', async () => {
+  const p = parseLoc(DEVICE)
+  assert.ok(p.ok); assert.deepEqual(p.value.deliveryLocation, { lat: 31.80123456, lng: 35.33987654, accuracy: 18 })
+  assert.deepEqual(Object.keys(p.value.delivery).filter(k => k.startsWith('location')), [], 'parsed address carries no location keys')
+  assert.equal(p.value.delivery.street, 'הדקל')
 })
 
-await test('D4. diagnostic does not change results and a failing logger is ignored', async () => {
-  for (const feature of [approxAddress, mbFeature({ feature_type: 'place', name: CITY, context: {}, match_code: undefined }), mbFeature()]) {
-    const off = (await diagRun({}, feature)).result
-    const on = (await diagRun({ VERCEL_ENV: 'preview' }, feature)).result
-    assert.deepEqual(on, off)
+await test('DL6. invalid latitude rejected (out of range / NaN / Infinity / null)', async () => {
+  for (const v of [40, 28.9, NaN, Infinity, null]) assert.deepEqual(rejected(parseLoc({ ...DEVICE, location_lat: v })), INVALID_LOCATION, String(v))
+})
+
+await test('DL7. invalid longitude rejected; swapped coordinates rejected', async () => {
+  for (const v of [36.1, 33.9, -Infinity, NaN]) assert.deepEqual(rejected(parseLoc({ ...DEVICE, location_lng: v })), INVALID_LOCATION, String(v))
+  assert.deepEqual(rejected(parseLoc({ ...DEVICE, location_lat: 35.33, location_lng: 31.80 })), INVALID_LOCATION)
+})
+
+await test('DL8. string coordinates / accuracy rejected', async () => {
+  for (const over of [{ location_lat: '31.8' }, { location_lng: '35.3' }, { location_accuracy: '18' }])
+    assert.deepEqual(rejected(parseLoc({ ...DEVICE, ...over })), INVALID_LOCATION, JSON.stringify(over))
+})
+
+await test('DL9–10. only latitude / only longitude rejected', async () => {
+  const { location_lng, ...onlyLat } = DEVICE
+  const { location_lat, ...onlyLng } = DEVICE
+  assert.deepEqual(rejected(parseLoc(onlyLat)), INVALID_LOCATION); assert.deepEqual(rejected(parseLoc(onlyLng)), INVALID_LOCATION)
+  assert.ok(location_lat && location_lng)
+})
+
+await test('DL11. confirmed must be exactly true (false / missing / "true" rejected)', async () => {
+  const { location_confirmed, ...unconfirmed } = DEVICE
+  assert.ok(location_confirmed)
+  for (const d of [{ ...DEVICE, location_confirmed: false }, { ...DEVICE, location_confirmed: 'true' }, unconfirmed])
+    assert.deepEqual(rejected(parseLoc(d)), INVALID_LOCATION)
+})
+
+await test('DL12. poor accuracy (> 100 m) is valid input but NOT trusted → Mapbox fallback, code-only log', async () => {
+  for (const a of [100.5, 500, 5000]) {
+    const r = await placeOrder(body('delivery', {}, { ...DEVICE, location_accuracy: a }), withProvider(providerReturning(STREET_HIT)))
+    assert.ok(r.created); assert.equal(r.calls.geocode, 1)
+    assert.equal(r.rpcArgs.p_delivery.geo_source, 'geocoder'); assert.deepEqual(r.calls.logs, ['location_low_accuracy'])
   }
-  const resolution = prov.resolveGeocodingProvider({ GEOCODING_PROVIDER: 'mapbox', GEOCODING_API_KEY: TOKEN, VERCEL_ENV: 'preview' },
-    async () => jsonRes(fc(approxAddress)), () => { throw new Error('logger down') })
-  assert.equal((await geo.geocodeDeliveryAddress(ADDR, { resolution })).precision, 'locality')
+  const none = await placeOrder(body('delivery', {}, { ...DEVICE, location_accuracy: 800 }), withProvider(providerReturning(null)))
+  assert.ok(none.created); assert.deepEqual(geoOf(none.rpcArgs.p_delivery), UNRESOLVED)
+  for (const a of [0, -5, NaN, 20000]) assert.deepEqual(rejected(parseLoc({ ...DEVICE, location_accuracy: a })), INVALID_LOCATION, String(a))
 })
 
-// Street-level address whose settlement is NOT the selected area (the real-world Preview failure shape).
-const streetOtherPlace = mbFeature({ context: {
-  address: { name: 'הדקל 12', address_number: '12', street_name: 'הדקל' }, street: { name: 'הדקל' },
-  place: { name: 'ירושלים' }, locality: { name: 'שכונה לדוגמה' }, country: { name: 'ישראל', country_code: 'IL' },
-} })
-const parseDiag = line => JSON.parse(line.slice('mapbox_geo_diagnostic '.length))
-
-await test('L1. Preview + locality_mismatch (street-level result) → exactly one diagnostic, final_reason=locality_mismatch', async () => {
-  const { lines, result } = await diagRun({ VERCEL_ENV: 'preview' }, streetOtherPlace)
-  assert.equal(result.reason, 'locality_mismatch')
-  assert.equal(lines.length, 1)
-  const d = parseDiag(lines[0])
-  assert.deepEqual(Object.keys(d).sort(), DIAG_KEYS)
-  assert.equal(d.final_reason, 'locality_mismatch'); assert.equal(d.provider_precision, 'street'); assert.equal(d.feature_type, 'address')
-})
-
-await test('L2. returned settlement names are visible (place + locality)', async () => {
-  const d = parseDiag((await diagRun({ VERCEL_ENV: 'preview' }, streetOtherPlace)).lines[0])
-  assert.deepEqual(d.localities, ['ירושלים', 'שכונה לדוגמה'])
-  const settlementMismatch = mbFeature({ feature_type: 'place', name: 'ירושלים', context: {}, match_code: undefined })
-  const d2 = parseDiag((await diagRun({ VERCEL_ENV: 'preview' }, settlementMismatch)).lines[0])
-  assert.deepEqual([d2.final_reason, d2.provider_precision, d2.localities], ['locality_mismatch', 'locality', ['ירושלים']])
-})
-
-await test('L3. mismatch diagnostic leaks no street / house number / address / coordinates / token / customer data', async () => {
-  const line = (await diagRun({ VERCEL_ENV: 'preview' }, streetOtherPlace)).lines[0]
-  const forbidden = [TOKEN, 'access_token', 'api.mapbox.com', 'הדקל', '"12"', '12,', 'full_address', 'address_number', 'street_name',
-    '31.77', '35.29', 'Israel', ...Object.values(PRIVATE)]
-  for (const f of forbidden) assert.ok(!line.includes(f), `leaked ${f}`)
-})
-
-await test('L4. Production / unset VERCEL_ENV emit nothing on mismatch', async () => {
-  for (const env of [{ VERCEL_ENV: 'production' }, {}]) assert.deepEqual((await diagRun(env, streetOtherPlace)).lines, [])
-})
-
-await test('L5. classifier + matching unchanged with the diagnostic on; confirmed matching street still emits nothing', async () => {
-  for (const feature of [streetOtherPlace, mbFeature(), approxAddress]) {
-    assert.deepEqual((await diagRun({ VERCEL_ENV: 'preview' }, feature)).result, (await diagRun({}, feature)).result)
+await test('DL13. good accuracy (≤ 100 m, boundary included) trusted', async () => {
+  for (const a of [3, 50, 100]) {
+    const r = await placeOrder(body('delivery', {}, { ...DEVICE, location_accuracy: a }), withProvider(providerReturning(STREET_HIT)))
+    assert.equal(r.rpcArgs.p_delivery.geo_source, 'manual', String(a)); assert.equal(r.calls.geocode, 0)
   }
-  assert.deepEqual((await diagRun({ VERCEL_ENV: 'preview' }, mbFeature())).lines, [])
+  assert.equal(loc.DEVICE_LOCATION_MAX_ACCURACY_M, 100)
 })
 
-await test('L6. locality_mismatch still stores unresolved and the order is created; logger failure ignored', async () => {
-  const mk = log => {
-    const resolution = prov.resolveGeocodingProvider({ GEOCODING_PROVIDER: 'mapbox', GEOCODING_API_KEY: TOKEN, VERCEL_ENV: 'preview' },
-      async () => jsonRes(fc(streetOtherPlace)), log)
-    return input => geo.geocodeDeliveryAddress(input, { resolution })
-  }
-  const lines = []
-  const r = await placeOrder(body('delivery'), mk(l => lines.push(l)))
+await test('DL14. permission denied: client sends no location, order still created via address', async () => {
+  assert.equal(loc.classifyGeolocationError(1), 'denied')
+  assert.deepEqual(loc.deliveryLocationWireFields(null), {})
+  const r = await placeOrder(body('delivery', {}, loc.deliveryLocationWireFields(null)), withProvider(providerReturning(STREET_HIT)))
+  assert.ok(r.created); assert.equal(r.calls.geocode, 1); assert.equal(r.rpcArgs.p_delivery.geo_precision, 'street')
+})
+
+await test('DL15. unavailable / timeout / inaccurate / garbage fix: nothing sent, order still created', async () => {
+  assert.equal(loc.classifyGeolocationError(2), 'unavailable'); assert.equal(loc.classifyGeolocationError(3), 'unavailable')
+  assert.deepEqual(loc.evaluateDevicePosition({ latitude: 31.8, longitude: 35.34, accuracy: 900 }), { state: 'inaccurate', location: null })
+  assert.deepEqual(loc.evaluateDevicePosition({ latitude: NaN, longitude: 35.34, accuracy: 10 }), { state: 'unavailable', location: null })
+  assert.deepEqual(loc.evaluateDevicePosition({ latitude: 31.8, longitude: 35.34, accuracy: 12 }),
+    { state: 'success', location: { lat: 31.8, lng: 35.34, accuracy: 12 } })
+  const r = await placeOrder(body('delivery'), withProvider(providerReturning(null)))
   assert.ok(r.created); assert.deepEqual(geoOf(r.rpcArgs.p_delivery), UNRESOLVED)
-  assert.deepEqual(r.calls.logs, ['geocode_locality_mismatch']); assert.equal(lines.length, 1)
-  const r2 = await placeOrder(body('delivery'), mk(() => { throw new Error('logger down') }))
-  assert.ok(r2.created); assert.deepEqual(geoOf(r2.rpcArgs.p_delivery), UNRESOLVED)
+})
+
+await test('DL15b. client wire fields for a captured fix are exactly the four location_* keys', async () => {
+  const w = loc.deliveryLocationWireFields({ lat: 31.8, lng: 35.34, accuracy: 12 })
+  assert.deepEqual(w, { location_lat: 31.8, location_lng: 35.34, location_accuracy: 12, location_confirmed: true })
+  assert.ok(parseLoc(w).ok)
+})
+
+await test('DL16–17. direct delivery_lat / geo_source still rejected (even alongside a valid device location)', async () => {
+  for (const over of [{ delivery_lat: 31.8 }, { delivery_lng: 35.3 }, { geo_source: 'manual' }, { geo_precision: 'street' }, { lat: 31.8 }])
+    assert.deepEqual(rejected(parseLoc({ ...DEVICE, ...over })), { ok: false, code: 'invalid_request', detail: 'client_geo_not_accepted' }, JSON.stringify(over))
+  for (const over of [{ geo_source: 'manual' }, { dispatch_eligible: true }]) {
+    const p = parseCreateOrderRequest(body('delivery', over, DEVICE))
+    if (over.geo_source) assert.equal(p.detail, 'client_geo_not_accepted')
+    else assert.ok(p.ok && !('dispatch_eligible' in p.value), 'unknown keys are never copied')
+  }
+})
+
+await test('DL18. pickup cannot submit location (top level or via a delivery object)', async () => {
+  for (const extra of [{ location_lat: 31.8, location_lng: 35.3, location_accuracy: 10, location_confirmed: true }, { location_confirmed: true }]) {
+    assert.deepEqual(rejected(parseCreateOrderRequest(body('pickup', { paymentMethod: 'cash', ...extra }))),
+      { ok: false, code: 'invalid_request', detail: 'client_geo_not_accepted' })
+  }
+  assert.deepEqual(rejected(parseCreateOrderRequest(body('delivery', DEVICE))), { ok: false, code: 'invalid_request', detail: 'client_geo_not_accepted' },
+    'location_* at top level is rejected for delivery too')
+  const pickupWithDelivery = parseCreateOrderRequest({ ...body('pickup', { paymentMethod: 'cash' }), delivery: { city: CITY, street: 'x', houseNumber: '1', ...DEVICE } })
+  assert.equal(pickupWithDelivery.ok, false)
+})
+
+await test('DL19–21. without device location: Mapbox street eligible; locality / unresolved / legacy not eligible', async () => {
+  const street = await placeOrder(body('delivery'), withProvider(providerReturning(STREET_HIT)))
+  assert.equal(street.rpcArgs.p_delivery.geo_source, 'geocoder'); assert.ok(loc.isDispatchEligibleGeo(street.rpcArgs.p_delivery))
+  const locality = await placeOrder(body('delivery'), withProvider(providerReturning({ ...STREET_HIT, level: 'locality' })))
+  assert.equal(locality.rpcArgs.p_delivery.geo_precision, 'locality'); assert.ok(!loc.isDispatchEligibleGeo(locality.rpcArgs.p_delivery))
+  assert.ok(loc.needsPreciseLocationWarning(locality.rpcArgs.p_delivery))
+  for (const g of [UNRESOLVED, { delivery_lat: null, delivery_lng: null, geo_source: null, geo_precision: null }, null,
+    { ...DEVICE_GEO, geo_precision: 'locality' }, { ...DEVICE_GEO, geo_source: 'none' }, { ...DEVICE_GEO, delivery_lat: 40 }])
+    assert.ok(!loc.isDispatchEligibleGeo(g), JSON.stringify(g))
+})
+
+await test('DL22–23. pricing and payment rules unchanged by device location', async () => {
+  const withLoc = await placeOrder(body('delivery', {}, DEVICE), withProvider(providerReturning(null)))
+  const without = await placeOrder(body('delivery'), withProvider(providerReturning(null)))
+  assert.deepEqual(withLoc.rpcArgs.p_order, without.rpcArgs.p_order); assert.deepEqual(withLoc.rpcArgs.p_items, without.rpcArgs.p_items)
+  assert.equal(withLoc.rpcArgs.p_order.total_price, 92)
+  assert.equal(rejected(parseCreateOrderRequest(body('delivery', { paymentMethod: 'cash' }, DEVICE))).code, 'payment_method_not_allowed')
+})
+
+await test('DL24–25. no Maale call / dispatch rows; temporary Mapbox diagnostics fully removed', async () => {
+  const srcs = ['lib/orderGeo.ts', 'lib/deliveryLocation.ts', 'lib/orderRequest.ts', 'lib/geocodingProvider.ts', 'lib/geocoding.ts',
+    'app/api/orders/route.ts', 'app/order/page.tsx'].map(f => [f, readFileSync(join(ROOT, f), 'utf8')])
+  for (const [f, s] of srcs) {
+    assert.ok(!/maalehamishlohim|delivery_dispatches|express\/integrations/i.test(s), `${f}: no Maale / dispatch`)
+    assert.ok(!/mapbox_geo_diagnostic|VERCEL_ENV|MapboxDiagnostic/.test(s), `${f}: no diagnostics`)
+  }
+})
+
+await test('DL26. privacy: location only on explicit click, never persisted or logged', async () => {
+  const page = readFileSync(join(ROOT, 'app', 'order', 'page.tsx'), 'utf8')
+  assert.equal(page.split('getCurrentPosition(').length - 1, 1, 'single call site')
+  assert.ok(!page.includes('watchPosition'))
+  const fn = page.indexOf('function requestDeviceLocation()'), call = page.indexOf('getCurrentPosition(')
+  assert.ok(fn > 0 && call > fn && call - fn < 600, 'called only inside the click handler')
+  assert.ok(page.includes('onClick={requestDeviceLocation}'))
+  assert.ok(!/localStorage[^\n]*(deviceLocation|location_lat)/.test(page), 'never stored in localStorage')
+  assert.ok(/type DeliveryForm = \{[^}]*\}/.test(page) && !/type DeliveryForm = \{[^}]*location/.test(page), 'saved address form has no location')
+  const geoSrc = readFileSync(join(LIB, 'orderGeo.ts'), 'utf8')
+  const logArgs = [...geoSrc.matchAll(/deps\.log\(([^)]*)\)/g)].map(m => m[1].trim())
+  assert.ok(logArgs.length >= 3)
+  for (const a of logArgs) assert.match(a, /^'[a-z_]+'$|^`geocode_\$\{result\.reason\}`$/, `log argument must be a fixed code: ${a}`)
 })
 
 /* ─── Static guards ─── */
