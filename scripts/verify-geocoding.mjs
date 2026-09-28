@@ -443,7 +443,7 @@ await test('M18. order creation stays intact: Mapbox failure → unresolved orde
 /* ─── TEMPORARY (08C6) Preview-only precision diagnostic ─── */
 console.log('Preview precision diagnostic (08C6, temporary)')
 
-const DIAG_KEYS = ['accuracy', 'address_match', 'confidence', 'feature_type', 'has_house_number', 'localities', 'place_match', 'provider_precision', 'street_match']
+const DIAG_KEYS = ['accuracy', 'address_match', 'confidence', 'feature_type', 'final_reason', 'has_house_number', 'localities', 'place_match', 'provider_precision', 'street_match']
 async function diagRun(env, feature) {
   const lines = []
   const resolution = prov.resolveGeocodingProvider({ GEOCODING_PROVIDER: 'mapbox', GEOCODING_API_KEY: TOKEN, ...env },
@@ -461,7 +461,7 @@ await test('D1. Preview + locality-classified result → exactly one diagnostic 
   const d = JSON.parse(lines[0].slice('mapbox_geo_diagnostic '.length))
   assert.deepEqual(Object.keys(d).sort(), DIAG_KEYS)
   assert.deepEqual(d, { feature_type: 'address', accuracy: 'approximate', confidence: 'medium', address_match: 'unmatched',
-    street_match: 'matched', place_match: 'matched', has_house_number: true, localities: [CITY], provider_precision: 'street_partial' })
+    street_match: 'matched', place_match: 'matched', has_house_number: true, localities: [CITY], provider_precision: 'street_partial', final_reason: 'locality' })
 })
 
 await test('D2. diagnostic never contains token, URL, street, house number, full address, coordinates or customer data', async () => {
@@ -491,6 +491,62 @@ await test('D4. diagnostic does not change results and a failing logger is ignor
   const resolution = prov.resolveGeocodingProvider({ GEOCODING_PROVIDER: 'mapbox', GEOCODING_API_KEY: TOKEN, VERCEL_ENV: 'preview' },
     async () => jsonRes(fc(approxAddress)), () => { throw new Error('logger down') })
   assert.equal((await geo.geocodeDeliveryAddress(ADDR, { resolution })).precision, 'locality')
+})
+
+// Street-level address whose settlement is NOT the selected area (the real-world Preview failure shape).
+const streetOtherPlace = mbFeature({ context: {
+  address: { name: 'הדקל 12', address_number: '12', street_name: 'הדקל' }, street: { name: 'הדקל' },
+  place: { name: 'ירושלים' }, locality: { name: 'שכונה לדוגמה' }, country: { name: 'ישראל', country_code: 'IL' },
+} })
+const parseDiag = line => JSON.parse(line.slice('mapbox_geo_diagnostic '.length))
+
+await test('L1. Preview + locality_mismatch (street-level result) → exactly one diagnostic, final_reason=locality_mismatch', async () => {
+  const { lines, result } = await diagRun({ VERCEL_ENV: 'preview' }, streetOtherPlace)
+  assert.equal(result.reason, 'locality_mismatch')
+  assert.equal(lines.length, 1)
+  const d = parseDiag(lines[0])
+  assert.deepEqual(Object.keys(d).sort(), DIAG_KEYS)
+  assert.equal(d.final_reason, 'locality_mismatch'); assert.equal(d.provider_precision, 'street'); assert.equal(d.feature_type, 'address')
+})
+
+await test('L2. returned settlement names are visible (place + locality)', async () => {
+  const d = parseDiag((await diagRun({ VERCEL_ENV: 'preview' }, streetOtherPlace)).lines[0])
+  assert.deepEqual(d.localities, ['ירושלים', 'שכונה לדוגמה'])
+  const settlementMismatch = mbFeature({ feature_type: 'place', name: 'ירושלים', context: {}, match_code: undefined })
+  const d2 = parseDiag((await diagRun({ VERCEL_ENV: 'preview' }, settlementMismatch)).lines[0])
+  assert.deepEqual([d2.final_reason, d2.provider_precision, d2.localities], ['locality_mismatch', 'locality', ['ירושלים']])
+})
+
+await test('L3. mismatch diagnostic leaks no street / house number / address / coordinates / token / customer data', async () => {
+  const line = (await diagRun({ VERCEL_ENV: 'preview' }, streetOtherPlace)).lines[0]
+  const forbidden = [TOKEN, 'access_token', 'api.mapbox.com', 'הדקל', '"12"', '12,', 'full_address', 'address_number', 'street_name',
+    '31.77', '35.29', 'Israel', ...Object.values(PRIVATE)]
+  for (const f of forbidden) assert.ok(!line.includes(f), `leaked ${f}`)
+})
+
+await test('L4. Production / unset VERCEL_ENV emit nothing on mismatch', async () => {
+  for (const env of [{ VERCEL_ENV: 'production' }, {}]) assert.deepEqual((await diagRun(env, streetOtherPlace)).lines, [])
+})
+
+await test('L5. classifier + matching unchanged with the diagnostic on; confirmed matching street still emits nothing', async () => {
+  for (const feature of [streetOtherPlace, mbFeature(), approxAddress]) {
+    assert.deepEqual((await diagRun({ VERCEL_ENV: 'preview' }, feature)).result, (await diagRun({}, feature)).result)
+  }
+  assert.deepEqual((await diagRun({ VERCEL_ENV: 'preview' }, mbFeature())).lines, [])
+})
+
+await test('L6. locality_mismatch still stores unresolved and the order is created; logger failure ignored', async () => {
+  const mk = log => {
+    const resolution = prov.resolveGeocodingProvider({ GEOCODING_PROVIDER: 'mapbox', GEOCODING_API_KEY: TOKEN, VERCEL_ENV: 'preview' },
+      async () => jsonRes(fc(streetOtherPlace)), log)
+    return input => geo.geocodeDeliveryAddress(input, { resolution })
+  }
+  const lines = []
+  const r = await placeOrder(body('delivery'), mk(l => lines.push(l)))
+  assert.ok(r.created); assert.deepEqual(geoOf(r.rpcArgs.p_delivery), UNRESOLVED)
+  assert.deepEqual(r.calls.logs, ['geocode_locality_mismatch']); assert.equal(lines.length, 1)
+  const r2 = await placeOrder(body('delivery'), mk(() => { throw new Error('logger down') }))
+  assert.ok(r2.created); assert.deepEqual(geoOf(r2.rpcArgs.p_delivery), UNRESOLVED)
 })
 
 /* ─── Static guards ─── */

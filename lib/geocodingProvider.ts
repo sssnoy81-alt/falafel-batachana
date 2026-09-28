@@ -11,7 +11,7 @@
 // NOT enabled until GEOCODING_PROVIDER=mapbox + GEOCODING_API_KEY are set (approval required) and the
 // account is confirmed eligible for permanent geocoding, then verified on a Preview deployment.
 
-import type { GeocodeQuery, GeocodingProvider, GeocodingProviderResolution, ProviderGeocodeResult } from './geocoding'
+import { classifyGeocode, type GeocodeQuery, type GeocodingProvider, type GeocodingProviderResolution, type ProviderGeocodeResult } from './geocoding'
 
 type FetchLike = (url: string, init: { signal: AbortSignal; cache: 'no-store' }) =>
   Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>
@@ -122,13 +122,15 @@ export interface MapboxDiagnostic {
   has_house_number: boolean
   localities: string[]
   provider_precision: 'street' | 'street_partial' | 'locality' | 'other' | 'no_result'
+  /** The domain outcome (precision or failure reason) — an internal enum value, never provider text. */
+  final_reason: string
 }
 
 // Enum-like provider values only; anything else (or absent) is reported as a fixed token, never echoed.
 const token_ = (v: unknown): string => (typeof v === 'string' && /^[a-z_]{1,32}$/.test(v) ? v : v === undefined ? 'absent' : 'other')
 
 /** Builds the diagnostic from a v6 body. Never includes coordinates, street, house number, full address or token. */
-export function mapboxDiagnostic(body: unknown): MapboxDiagnostic {
+export function mapboxDiagnostic(body: unknown, finalReason: string): MapboxDiagnostic {
   const mapped = (() => { try { return mapMapboxV6Response(body) } catch { return null } })()
   const f = isObj(body) && Array.isArray(body.features) && isObj(body.features[0]) ? body.features[0] : {}
   const p = isObj(f.properties) ? f.properties : {}
@@ -149,6 +151,7 @@ export function mapboxDiagnostic(body: unknown): MapboxDiagnostic {
     provider_precision: !mapped ? 'no_result'
       : mapped.level === 'street' ? (mapped.partial ? 'street_partial' : 'street')
       : mapped.level,
+    final_reason: finalReason,
   }
 }
 
@@ -171,9 +174,15 @@ export function mapboxProvider(
       throw new GeocodingProviderError('mapbox_bad_json')
     }
     const mapped = mapMapboxV6Response(body)
-    // Only for results that will NOT be classified as street; a diagnostics failure never affects the result.
-    if (onDiagnostic && mapped && (mapped.level !== 'street' || mapped.partial)) {
-      try { onDiagnostic(mapboxDiagnostic(body)) } catch { /* ignore */ }
+    // Only for results that will NOT be stored as street (non-street provider result, or the domain's
+    // locality_mismatch). Read-only use of the same pure classifier; a diagnostics failure never affects the result.
+    if (onDiagnostic && mapped) {
+      try {
+        const outcome = classifyGeocode(query.city, mapped)
+        const mismatch = !outcome.ok && outcome.reason === 'locality_mismatch'
+        if (mapped.level !== 'street' || mapped.partial || mismatch)
+          onDiagnostic(mapboxDiagnostic(body, outcome.ok ? outcome.precision : outcome.reason))
+      } catch { /* ignore */ }
     }
     return mapped
   }
