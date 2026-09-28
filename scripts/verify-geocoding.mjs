@@ -55,7 +55,7 @@ const body = (type, extra = {}, deliveryExtra = {}) => ({
   ...extra,
 })
 
-const STREET_HIT = { lat: 31.77361234, lng: 35.29831299, locality: CITY, level: 'street', partial: false }
+const STREET_HIT = { lat: 31.77361234, lng: 35.29831299, localities: [CITY], level: 'street', partial: false }
 
 /** Mirrors deliveries_geo_* CHECK constraints (08B migration). */
 function dbGeoCheck(d) {
@@ -165,8 +165,8 @@ await test('9. swapped / obviously wrong coordinates → invalid_coordinates', a
 })
 
 await test('10. locality mismatch (other city / other delivery area / none) → unresolved', async () => {
-  for (const locality of ['ירושלים', 'כפר אדומים', 'Jerusalem', null, '']) assert.equal(await reasonFor({ ...STREET_HIT, locality }), 'locality_mismatch', String(locality))
-  const r = await placeOrder(body('delivery'), withProvider(providerReturning({ ...STREET_HIT, locality: 'ירושלים' })))
+  for (const localities of [['ירושלים'], ['כפר אדומים'], ['Jerusalem'], [], ['']]) assert.equal(await reasonFor({ ...STREET_HIT, localities }), 'locality_mismatch', String(localities))
+  const r = await placeOrder(body('delivery'), withProvider(providerReturning({ ...STREET_HIT, localities: ['ירושלים'] })))
   assert.ok(r.created); assert.deepEqual(geoOf(r.rpcArgs.p_delivery), UNRESOLVED)
 })
 
@@ -189,12 +189,12 @@ await test('11. missing / disabled / unknown provider env → unresolved, no fet
   const f = async () => { fetches++; throw new Error('no network in tests') }
   assert.equal(prov.resolveGeocodingProvider({}, f).status, 'disabled')
   assert.equal(prov.resolveGeocodingProvider({ GEOCODING_PROVIDER: 'none', GEOCODING_API_KEY: 'k' }, f).status, 'disabled')
-  assert.equal(prov.resolveGeocodingProvider({ GEOCODING_PROVIDER: 'google' }, f).status, 'not_configured')
-  assert.equal(prov.resolveGeocodingProvider({ GEOCODING_PROVIDER: 'google', GEOCODING_API_KEY: '  ' }, f).status, 'not_configured')
-  assert.equal(prov.resolveGeocodingProvider({ GEOCODING_PROVIDER: 'mapbox', GEOCODING_API_KEY: 'k' }, f).status, 'not_configured')
-  assert.equal(prov.resolveGeocodingProvider({ GEOCODING_PROVIDER: 'Google', GEOCODING_API_KEY: 'k' }, f).status, 'ready')
-  assert.equal(prov.resolveGeocodingProvider({ NEXT_PUBLIC_GEOCODING_API_KEY: 'k', GEOCODING_PROVIDER: 'google' }, f).status, 'not_configured')
-  for (const env of [{}, { GEOCODING_PROVIDER: 'google' }]) {
+  assert.equal(prov.resolveGeocodingProvider({ GEOCODING_PROVIDER: 'mapbox' }, f).status, 'not_configured')
+  assert.equal(prov.resolveGeocodingProvider({ GEOCODING_PROVIDER: 'mapbox', GEOCODING_API_KEY: '  ' }, f).status, 'not_configured')
+  assert.equal(prov.resolveGeocodingProvider({ GEOCODING_PROVIDER: 'google', GEOCODING_API_KEY: 'k' }, f).status, 'not_configured', 'google is deliberately unsupported')
+  assert.equal(prov.resolveGeocodingProvider({ GEOCODING_PROVIDER: 'Mapbox', GEOCODING_API_KEY: 'k' }, f).status, 'ready')
+  assert.equal(prov.resolveGeocodingProvider({ NEXT_PUBLIC_GEOCODING_API_KEY: 'k', GEOCODING_PROVIDER: 'mapbox' }, f).status, 'not_configured')
+  for (const env of [{}, { GEOCODING_PROVIDER: 'mapbox' }, { GEOCODING_PROVIDER: 'google', GEOCODING_API_KEY: 'k' }]) {
     const r = await placeOrder(body('delivery'), input => geo.geocodeDeliveryAddress(input, { resolution: prov.resolveGeocodingProvider(env, f) }))
     assert.ok(r.created); assert.deepEqual(geoOf(r.rpcArgs.p_delivery), UNRESOLVED); assert.deepEqual(r.calls.logs, [], 'quiet when not enabled')
   }
@@ -261,58 +261,183 @@ await test('P1. geocoder input is only city / street / house number (no name, ph
 })
 
 await test('P2. logs carry codes only (no address / name / phone)', async () => {
-  const r = await placeOrder(body('delivery'), withProvider(providerReturning({ ...STREET_HIT, locality: 'ירושלים' })))
+  const r = await placeOrder(body('delivery'), withProvider(providerReturning({ ...STREET_HIT, localities: ['ירושלים'] })))
   assert.deepEqual(r.calls.logs, ['geocode_locality_mismatch'])
   for (const l of r.calls.logs) assert.match(l, /^geocode_[a-z_]+$/)
 })
 
-/* ─── Google adapter (fixtures + mocked fetch; NOT enabled) ─── */
-console.log('Google adapter (fixtures only)')
+/* ─── Mapbox Geocoding v6 adapter (fixtures + mocked fetch; NOT enabled) ─── */
+console.log('Mapbox v6 adapter (fixtures only)')
 
-const gResult = (over = {}) => ({
-  types: ['street_address'], partial_match: undefined,
-  geometry: { location: { lat: 31.7736, lng: 35.2983 }, location_type: 'ROOFTOP' },
-  address_components: [{ long_name: '12', types: ['street_number'] }, { long_name: CITY, types: ['locality', 'political'] }],
-  ...over,
-})
-
-await test('G1. response mapping: street / approximate / locality / country / partial / zero / error', async () => {
-  const m = prov.mapGoogleGeocodeResponse
-  assert.equal(m({ status: 'OK', results: [gResult()] }).level, 'street')
-  assert.equal(m({ status: 'OK', results: [gResult({ geometry: { location: { lat: 31.77, lng: 35.29 }, location_type: 'APPROXIMATE' } })] }).level, 'locality')
-  assert.equal(m({ status: 'OK', results: [gResult({ types: ['locality', 'political'], geometry: { location: { lat: 31.77, lng: 35.29 }, location_type: 'APPROXIMATE' } })] }).level, 'locality')
-  assert.equal(m({ status: 'OK', results: [gResult({ types: ['country', 'political'], address_components: [] })] }).level, 'other')
-  assert.equal(m({ status: 'OK', results: [gResult({ partial_match: true })] }).partial, true)
-  assert.equal(m({ status: 'OK', results: [gResult()] }).locality, CITY)
-  assert.equal(m({ status: 'ZERO_RESULTS', results: [] }), null)
-  assert.throws(() => m({ status: 'REQUEST_DENIED', error_message: 'secret detail' }), /google_status_not_ok/)
-  assert.throws(() => m('nope'), /google_bad_body/)
-})
-
-await test('G2. request built server-side: Israel-restricted, Hebrew, key only in the outgoing URL, abort signal passed', async () => {
-  const seen = []
-  const fakeFetch = async (url, init) => { seen.push({ url, init }); return { ok: true, status: 200, json: async () => ({ status: 'OK', results: [gResult()] }) } }
-  const resolution = prov.resolveGeocodingProvider({ GEOCODING_PROVIDER: 'google', GEOCODING_API_KEY: 'test-key-not-real' }, fakeFetch)
-  const r = await geo.geocodeDeliveryAddress({ city: CITY, street: 'הדקל', houseNumber: '12' }, { resolution })
-  assert.equal(r.ok, true); assert.equal(r.precision, 'street')
-  const u = new URL(seen[0].url)
-  assert.equal(u.origin + u.pathname, 'https://maps.googleapis.com/maps/api/geocode/json')
-  assert.equal(u.searchParams.get('address'), `הדקל 12, ${CITY}, Israel`)
-  assert.equal(u.searchParams.get('components'), 'country:IL'); assert.equal(u.searchParams.get('language'), 'he')
-  assert.equal(u.searchParams.get('key'), 'test-key-not-real')
-  assert.ok(seen[0].init.signal instanceof AbortSignal); assert.equal(seen[0].init.cache, 'no-store')
-})
-
-await test('G3. HTTP error / REQUEST_DENIED → provider_error (soft), error text carries no key or URL', async () => {
-  const key = 'test-key-not-real'
-  for (const res of [{ ok: false, status: 500, json: async () => ({}) }, { ok: true, status: 200, json: async () => ({ status: 'REQUEST_DENIED' }) }]) {
-    let caught
-    const provider = prov.googleProvider(key, async () => res)
-    try { await provider({ text: 'x', city: CITY, street: 'x', houseNumber: '1' }, new AbortController().signal) } catch (e) { caught = e }
-    assert.ok(caught && !String(caught.message).includes(key) && !String(caught.message).includes('http'.concat('s://')))
-    const r = await geo.geocodeDeliveryAddress({ city: CITY, street: 'x', houseNumber: '1' }, { resolution: { status: 'ready', provider } })
-    assert.equal(r.reason, 'provider_error')
+const TOKEN = 'pk.test-token-not-real'
+const ADDR = { city: CITY, street: 'הדקל', houseNumber: '12' }
+const mbFeature = (over = {}) => {
+  const base = {
+    feature_type: 'address', name: 'הדקל 12', full_address: `הדקל 12, ${CITY}, ישראל`,
+    coordinates: { longitude: 35.29831299, latitude: 31.77361234, accuracy: 'rooftop' },
+    context: {
+      address: { name: 'הדקל 12', address_number: '12', street_name: 'הדקל' },
+      street: { name: 'הדקל' }, place: { name: CITY }, country: { name: 'ישראל', country_code: 'IL' },
+    },
+    match_code: { address_number: 'matched', street: 'matched', place: 'matched', country: 'matched', confidence: 'exact' },
   }
+  return { type: 'Feature', geometry: { type: 'Point', coordinates: [35.29831299, 31.77361234] }, properties: { ...base, ...over } }
+}
+const fc = (...features) => ({ type: 'FeatureCollection', features, attribution: 'test' })
+const jsonRes = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body })
+
+/** Runs the real adapter through the domain entry point with a fake fetch; records requested URLs. */
+async function mapboxRun(respond, timeoutMs) {
+  const urls = []
+  const fakeFetch = async (url, init) => { urls.push(url); return respond(url, init) }
+  const resolution = prov.resolveGeocodingProvider({ GEOCODING_PROVIDER: 'mapbox', GEOCODING_API_KEY: TOKEN }, fakeFetch)
+  assert.equal(resolution.status, 'ready')
+  const result = await geo.geocodeDeliveryAddress(ADDR, { resolution, timeoutMs })
+  return { result, urls }
+}
+
+await test('M1. exact address success → ok, street precision, coordinates from properties (rounded)', async () => {
+  const { result } = await mapboxRun(() => jsonRes(fc(mbFeature())))
+  assert.deepEqual(result, { ok: true, lat: 31.773612, lng: 35.298313, precision: 'street', source: 'geocoder' })
+})
+
+await test('M2. street precision only for a confirmed house-level match; weaker address matches → locality', async () => {
+  assert.equal((await mapboxRun(() => jsonRes(fc(mbFeature({ coordinates: { longitude: 35.2983, latitude: 31.7736, accuracy: 'interpolated' } }))))).result.precision, 'street')
+  const weaker = [
+    { coordinates: { longitude: 35.2983, latitude: 31.7736, accuracy: 'approximate' } },
+    { coordinates: { longitude: 35.2983, latitude: 31.7736 } },
+    { match_code: { address_number: 'unmatched', street: 'matched', confidence: 'medium' } },
+    { match_code: { address_number: 'inferred', street: 'matched', confidence: 'high' } },
+    { match_code: { address_number: 'matched', street: 'unmatched', confidence: 'high' } },
+    { match_code: { address_number: 'matched', street: 'matched', confidence: 'low' } },
+    { feature_type: 'street', name: 'הדקל' },
+  ]
+  for (const over of weaker) assert.equal((await mapboxRun(() => jsonRes(fc(mbFeature(over))))).result.precision, 'locality', JSON.stringify(over))
+})
+
+await test('M3. locality-only result (place feature, or locality inside the place) → locality', async () => {
+  const placeOnly = mbFeature({ feature_type: 'place', name: CITY, context: { country: { name: 'ישראל' } }, match_code: undefined })
+  assert.equal((await mapboxRun(() => jsonRes(fc(placeOnly)))).result.precision, 'locality')
+  const loc = mbFeature({ feature_type: 'locality', name: 'שכונה', context: { place: { name: CITY } }, match_code: undefined })
+  assert.equal((await mapboxRun(() => jsonRes(fc(loc)))).result.precision, 'locality')
+  const region = mbFeature({ feature_type: 'region', name: 'אזור', context: { place: { name: CITY } } })
+  assert.equal((await mapboxRun(() => jsonRes(fc(region)))).result.reason, 'insufficient_precision')
+})
+
+await test('M4. wrong locality (other city / other delivery area / none) → locality_mismatch', async () => {
+  for (const context of [{ place: { name: 'ירושלים' } }, { place: { name: 'כפר אדומים' } }, {}, { place: { name: '' } }]) {
+    const { result } = await mapboxRun(() => jsonRes(fc(mbFeature({ context }))))
+    assert.equal(result.reason, 'locality_mismatch', JSON.stringify(context))
+  }
+  // matching via context.locality (e.g. a settlement reported as locality under another place)
+  const viaLocality = mbFeature({ context: { place: { name: 'ירושלים' }, locality: { name: CITY } } })
+  assert.equal((await mapboxRun(() => jsonRes(fc(viaLocality)))).result.precision, 'street')
+})
+
+await test('M5. invalid / swapped / missing coordinates → invalid_coordinates; geometry fallback works', async () => {
+  const bad = [
+    { coordinates: { longitude: 31.77361234, latitude: 35.29831299, accuracy: 'rooftop' } }, // swapped
+    { coordinates: { longitude: '35.29', latitude: '31.77', accuracy: 'rooftop' } },
+    { coordinates: { longitude: 0, latitude: 0, accuracy: 'rooftop' } },
+  ]
+  for (const over of bad) assert.equal((await mapboxRun(() => jsonRes(fc(mbFeature(over))))).result.reason, 'invalid_coordinates', JSON.stringify(over))
+  const noCoords = mbFeature({ coordinates: undefined }); noCoords.geometry = { type: 'Point', coordinates: [] }
+  assert.equal((await mapboxRun(() => jsonRes(fc(noCoords)))).result.reason, 'invalid_coordinates')
+  const geometryOnly = mbFeature({ coordinates: undefined })
+  const r = (await mapboxRun(() => jsonRes(fc(geometryOnly)))).result
+  assert.equal(r.ok, true); assert.equal(r.lat, 31.773612); assert.equal(r.precision, 'locality', 'no accuracy → not street')
+})
+
+await test('M6. no results → no_result', async () => {
+  assert.equal((await mapboxRun(() => jsonRes(fc()))).result.reason, 'no_result')
+})
+
+await test('M7. HTTP 4xx (401 / 403 / 422 / 429) → provider_error', async () => {
+  for (const status of [401, 403, 422, 429]) assert.equal((await mapboxRun(() => jsonRes({ message: 'Not Authorized - Invalid Token' }, status))).result.reason, 'provider_error', String(status))
+})
+
+await test('M8. HTTP 5xx → provider_error', async () => {
+  for (const status of [500, 502, 503]) assert.equal((await mapboxRun(() => jsonRes({}, status))).result.reason, 'provider_error', String(status))
+})
+
+await test('M9. malformed JSON / non-FeatureCollection body / network error → provider_error', async () => {
+  const badJson = { ok: true, status: 200, json: async () => { throw new SyntaxError('Unexpected token <') } }
+  assert.equal((await mapboxRun(() => badJson)).result.reason, 'provider_error')
+  assert.equal((await mapboxRun(() => jsonRes({ message: 'oops' }))).result.reason, 'provider_error')
+  assert.equal((await mapboxRun(() => jsonRes(fc('not-a-feature')))).result.reason, 'provider_error')
+  assert.equal((await mapboxRun(() => { throw new TypeError('fetch failed') })).result.reason, 'provider_error')
+})
+
+await test('M10. timeout → timeout (request aborted, bounded)', async () => {
+  let aborted = false
+  const hang = (_url, init) => new Promise((_res, rej) => {
+    init.signal.addEventListener('abort', () => { aborted = true; rej(new Error('aborted')) })
+  })
+  const t0 = Date.now()
+  const { result } = await mapboxRun(hang, 30)
+  assert.equal(result.reason, 'timeout'); assert.ok(aborted); assert.ok(Date.now() - t0 < 250)
+})
+
+await test('M11. access token never appears in thrown errors or order logs', async () => {
+  const provider = prov.mapboxProvider(TOKEN, async url => { throw new Error(`request to ${url} failed`) })
+  const failing = [
+    async url => { throw new Error(`request to ${url} failed`) },
+    async () => jsonRes({ message: `Invalid token ${TOKEN}` }, 401),
+    async () => ({ ok: true, status: 200, json: async () => { throw new Error(`bad json ${TOKEN}`) } }),
+    async () => jsonRes({ message: TOKEN }),
+  ]
+  for (const f of [provider, ...failing.map(ff => prov.mapboxProvider(TOKEN, ff))]) {
+    let caught
+    try { await f({ text: 'x', city: CITY, street: 'x', houseNumber: '1' }, new AbortController().signal) } catch (e) { caught = e }
+    assert.ok(caught, 'must throw')
+    const text = `${caught.name} ${caught.message} ${caught.stack ?? ''}`
+    assert.ok(!text.includes(TOKEN) && !text.includes('access_token') && !text.includes('api.mapbox.com'), text.slice(0, 80))
+    assert.match(caught.message, /^mapbox_[a-z0-9_]+$/)
+  }
+  const resolution = prov.resolveGeocodingProvider({ GEOCODING_PROVIDER: 'mapbox', GEOCODING_API_KEY: TOKEN }, async () => jsonRes({}, 401))
+  const r = await placeOrder(body('delivery'), input => geo.geocodeDeliveryAddress(input, { resolution }))
+  assert.deepEqual(r.calls.logs, ['geocode_provider_error'])
+})
+
+await test('M12–16. every request: permanent=true, country=il, language=he, autocomplete=false, limit=1 (not overridable)', async () => {
+  const { urls } = await mapboxRun(() => jsonRes(fc(mbFeature())))
+  assert.equal(urls.length, 1)
+  const u = new URL(urls[0])
+  assert.equal(u.origin + u.pathname, 'https://api.mapbox.com/search/geocode/v6/forward')
+  assert.deepEqual(u.searchParams.getAll('permanent'), ['true'])
+  assert.deepEqual(u.searchParams.getAll('country'), ['il'])
+  assert.deepEqual(u.searchParams.getAll('language'), ['he'])
+  assert.deepEqual(u.searchParams.getAll('autocomplete'), ['false'])
+  assert.deepEqual(u.searchParams.getAll('limit'), ['1'])
+  assert.equal(u.searchParams.get('access_token'), TOKEN)
+  assert.ok(Object.isFrozen(prov.MAPBOX_FIXED_PARAMS))
+  const evil = new URL(prov.buildMapboxForwardUrl({ text: 'x&permanent=false&country=us', city: CITY, street: 'x', houseNumber: '1' }, TOKEN))
+  assert.deepEqual(evil.searchParams.getAll('permanent'), ['true']); assert.deepEqual(evil.searchParams.getAll('country'), ['il'])
+  assert.equal(evil.searchParams.get('q'), 'x&permanent=false&country=us')
+})
+
+await test('M17. query contains only street / house number / city / Israel — no other PII', async () => {
+  const urls = []
+  const resolution = prov.resolveGeocodingProvider({ GEOCODING_PROVIDER: 'mapbox', GEOCODING_API_KEY: TOKEN },
+    async url => { urls.push(url); return jsonRes(fc(mbFeature())) })
+  await placeOrder(body('delivery'), input => geo.geocodeDeliveryAddress(input, { resolution }))
+  const u = new URL(urls[0])
+  assert.equal(u.searchParams.get('q'), `הדקל 12, ${CITY}, Israel`)
+  assert.deepEqual([...u.searchParams.keys()].sort(), ['access_token', 'autocomplete', 'country', 'language', 'limit', 'permanent', 'q'])
+  const decoded = decodeURIComponent(urls[0])
+  for (const v of Object.values(PRIVATE)) assert.ok(!decoded.includes(v), `leaked ${v}`)
+})
+
+await test('M18. order creation stays intact: Mapbox failure → unresolved order; success → street coordinates stored', async () => {
+  const mk = f => { const resolution = prov.resolveGeocodingProvider({ GEOCODING_PROVIDER: 'mapbox', GEOCODING_API_KEY: TOKEN }, f); return input => geo.geocodeDeliveryAddress(input, { resolution }) }
+  for (const f of [async () => jsonRes({}, 503), async () => { throw new Error('down') }, async () => jsonRes(fc())]) {
+    const r = await placeOrder(body('delivery'), mk(f))
+    assert.ok(r.created); assert.deepEqual(geoOf(r.rpcArgs.p_delivery), UNRESOLVED); assert.equal(r.rpcArgs.p_order.total_price, 92)
+  }
+  const ok = await placeOrder(body('delivery'), mk(async () => jsonRes(fc(mbFeature()))))
+  assert.deepEqual(geoOf(ok.rpcArgs.p_delivery), { delivery_lat: 31.773612, delivery_lng: 35.298313, geo_source: 'geocoder', geo_precision: 'street' })
+  const pickup = await placeOrder(body('pickup', { paymentMethod: 'cash' }), mk(async () => { throw new Error('must not be called') }))
+  assert.equal(pickup.calls.geocode, 0); assert.equal(pickup.rpcArgs.p_delivery, null)
 })
 
 /* ─── Static guards ─── */
@@ -320,7 +445,10 @@ console.log('Static guards')
 
 await test('S1. no NEXT_PUBLIC geocoding key; provider module not imported by client code', async () => {
   const provSrc = readFileSync(join(LIB, 'geocodingProvider.ts'), 'utf8')
-  assert.ok(!/NEXT_PUBLIC/.test(provSrc.replace(/\/\/.*$/gm, '')))
+  const provCode = provSrc.replace(/\/\/.*$/gm, '')
+  assert.ok(!/NEXT_PUBLIC/.test(provCode))
+  assert.ok(!/googleapis|google\w*Provider|mapGoogle/i.test(provCode), 'no Google adapter code')
+  assert.ok(/permanent:\s*'true'/.test(provCode), 'permanent=true is part of the fixed request policy')
   for (const f of ['app/order/page.tsx', 'app/dashboard/orders/page.tsx', 'lib/geocoding.ts', 'lib/orderRequest.ts']) {
     const src = readFileSync(join(ROOT, f), 'utf8')
     assert.ok(!/from\s+['"][^'"]*(geocodingProvider|orderGeo)['"]/.test(src), f)

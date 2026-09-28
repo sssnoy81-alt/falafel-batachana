@@ -79,8 +79,8 @@ export interface GeocodeQuery {
 export interface ProviderGeocodeResult {
   lat: unknown
   lng: unknown
-  /** Locality name reported by the provider (null when it reported none). */
-  locality: string | null
+  /** Settlement-level names the provider reported for the result (e.g. place + locality); [] when none. */
+  localities: string[]
   /** street = address / building level; locality = settlement / approximate centre; other = anything coarser. */
   level: 'street' | 'locality' | 'other'
   /** Provider says it matched only part of the query. */
@@ -168,7 +168,7 @@ const failure = (reason: GeocodeFailureReason): GeocodeFailure =>
 export function classifyGeocode(selectedCity: string, r: ProviderGeocodeResult | null): GeocodeResult {
   if (!r) return failure('no_result')
   if (!isValidCoordinatePair(r.lat, r.lng)) return failure('invalid_coordinates')
-  if (!localityMatches(selectedCity, r.locality)) return failure('locality_mismatch')
+  if (!r.localities.some(name => localityMatches(selectedCity, name))) return failure('locality_mismatch')
 
   let precision: 'street' | 'locality'
   if (r.level === 'street' && !r.partial) precision = 'street'

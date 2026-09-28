@@ -1,13 +1,17 @@
-// SERVER-ONLY geocoding provider resolution + adapters (FALAFEL-SN-08C).
-// Reads GEOCODING_PROVIDER / GEOCODING_API_KEY (never NEXT_PUBLIC_*). The key is only placed in the
-// outgoing provider request and is never logged or returned. Raw provider responses are mapped to the
-// provider-neutral ProviderGeocodeResult here and never leave this module.
+// SERVER-ONLY geocoding provider resolution + adapter (FALAFEL-SN-08C / 08C3).
+// Reads GEOCODING_PROVIDER / GEOCODING_API_KEY (never NEXT_PUBLIC_*). The token is only placed in the
+// outgoing provider request; it is never logged, returned or put into an error. Raw provider responses are
+// mapped to the provider-neutral ProviderGeocodeResult here and never leave this module.
 //
-// Status: the Google adapter is implemented against the documented Geocoding API response shape and is
-// covered by fixture tests only. It is NOT enabled until GEOCODING_PROVIDER + GEOCODING_API_KEY are set
-// (approval required) and it has been verified against the real API on a Preview deployment.
+// Provider decision: Mapbox Geocoding API v6 with PERMANENT geocoding is the only supported provider,
+// because coordinates are persisted in public.deliveries. Every request carries permanent=true.
+// Google Geocoding is intentionally NOT supported (its caching terms do not fit indefinite storage).
+//
+// Status: implemented against the documented v6 response shape and covered by fixture tests only.
+// NOT enabled until GEOCODING_PROVIDER=mapbox + GEOCODING_API_KEY are set (approval required) and the
+// account is confirmed eligible for permanent geocoding, then verified on a Preview deployment.
 
-import type { GeocodingProvider, GeocodingProviderResolution, ProviderGeocodeResult } from './geocoding'
+import type { GeocodeQuery, GeocodingProvider, GeocodingProviderResolution, ProviderGeocodeResult } from './geocoding'
 
 type FetchLike = (url: string, init: { signal: AbortSignal; cache: 'no-store' }) =>
   Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>
@@ -16,81 +20,106 @@ type EnvLike = Record<string, string | undefined>
 
 export class GeocodingProviderError extends Error {
   constructor(code: string) {
-    super(code) // a short code only — never a URL, key or response body
+    super(code) // a short code only — never a URL, token or response body
     this.name = 'GeocodingProviderError'
   }
 }
 
-/** Missing / "none" / "disabled" → disabled. Unknown provider or missing key → not_configured. */
+/** Missing / "none" / "disabled" → disabled. Missing token or any provider other than mapbox → not_configured. */
 export function resolveGeocodingProvider(env: EnvLike, fetchImpl: FetchLike): GeocodingProviderResolution {
   const name = (env.GEOCODING_PROVIDER ?? '').trim().toLowerCase()
   if (name === '' || name === 'none' || name === 'disabled') return { status: 'disabled' }
-  const apiKey = (env.GEOCODING_API_KEY ?? '').trim()
-  if (!apiKey) return { status: 'not_configured' }
-  if (name === 'google') return { status: 'ready', provider: googleProvider(apiKey, fetchImpl) }
-  return { status: 'not_configured' } // e.g. 'mapbox' — adapter not implemented yet
+  const token = (env.GEOCODING_API_KEY ?? '').trim()
+  if (!token) return { status: 'not_configured' }
+  if (name === 'mapbox') return { status: 'ready', provider: mapboxProvider(token, fetchImpl) }
+  return { status: 'not_configured' } // incl. 'google' — deliberately unsupported
 }
 
-/* ─── Google Geocoding API ─── */
+/* ─── Mapbox Geocoding API v6 (forward, permanent) ─── */
 
-const GOOGLE_GEOCODE_URL = 'https://maps.googleapis.com/maps/api/geocode/json'
+const MAPBOX_FORWARD_URL = 'https://api.mapbox.com/search/geocode/v6/forward'
 
-interface GoogleComponent { long_name?: unknown; types?: unknown }
-interface GoogleResult {
-  types?: unknown
-  partial_match?: unknown
-  address_components?: unknown
-  geometry?: { location?: { lat?: unknown; lng?: unknown }; location_type?: unknown }
+// Fixed request policy. permanent=true is mandatory: results are stored in our DB.
+export const MAPBOX_FIXED_PARAMS: Readonly<Record<string, string>> = Object.freeze({
+  country: 'il',
+  language: 'he',
+  limit: '1',
+  autocomplete: 'false',
+  permanent: 'true',
+})
+
+/** The only way a Mapbox URL is built. q = the validated address text; fixed params cannot be overridden. */
+export function buildMapboxForwardUrl(query: GeocodeQuery, token: string): string {
+  const params = new URLSearchParams({ q: query.text, ...MAPBOX_FIXED_PARAMS, access_token: token })
+  if (params.get('permanent') !== 'true') throw new GeocodingProviderError('mapbox_permanent_required')
+  return `${MAPBOX_FORWARD_URL}?${params.toString()}`
 }
 
-const strArray = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
+type Obj = Record<string, unknown>
+const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v)
+const nameOf = (v: unknown): string | null => (isObj(v) && typeof v.name === 'string' && v.name.trim() ? v.name : null)
 
-const STREET_TYPES = ['street_address', 'premise', 'subpremise']
-const STREET_LOCATION_TYPES = ['ROOFTOP', 'RANGE_INTERPOLATED']
-// Coarser than an address but inside a settlement. ('political' is deliberately absent: countries carry it too.)
-const LOCALITY_TYPES = ['locality', 'route', 'neighborhood', 'sublocality', 'sublocality_level_1']
+const STREET_ACCURACY = ['rooftop', 'parcel', 'point', 'interpolated']
+const SETTLEMENT_TYPES = ['place', 'locality', 'neighborhood', 'street'] // coarser than a house, inside a settlement
 
-/** Pure mapping of a Google Geocoding JSON body to the neutral result. ZERO_RESULTS → null; other non-OK → throws. */
-export function mapGoogleGeocodeResponse(body: unknown): ProviderGeocodeResult | null {
-  if (typeof body !== 'object' || body === null) throw new GeocodingProviderError('google_bad_body')
-  const status = (body as { status?: unknown }).status
-  if (status === 'ZERO_RESULTS') return null
-  if (status !== 'OK') throw new GeocodingProviderError('google_status_not_ok')
+/** Pure mapping of a Mapbox v6 FeatureCollection body to the neutral result. No features → null. */
+export function mapMapboxV6Response(body: unknown): ProviderGeocodeResult | null {
+  if (!isObj(body) || !Array.isArray(body.features)) throw new GeocodingProviderError('mapbox_bad_body')
+  const feature = body.features[0]
+  if (feature === undefined) return null
+  if (!isObj(feature) || !isObj(feature.properties)) throw new GeocodingProviderError('mapbox_bad_body')
 
-  const results = (body as { results?: unknown }).results
-  if (!Array.isArray(results) || results.length === 0) return null
-  const r = results[0] as GoogleResult
+  const p = feature.properties
+  const featureType = typeof p.feature_type === 'string' ? p.feature_type : ''
+  const context = isObj(p.context) ? p.context : {}
+  const coords = isObj(p.coordinates) ? p.coordinates : {}
+  const geometry = isObj(feature.geometry) && Array.isArray(feature.geometry.coordinates) ? feature.geometry.coordinates : []
 
-  const types = strArray(r.types)
-  const locationType = typeof r.geometry?.location_type === 'string' ? r.geometry.location_type : ''
-  const components = Array.isArray(r.address_components) ? (r.address_components as GoogleComponent[]) : []
-  const locality = components.find(c => strArray(c.types).includes('locality'))?.long_name
+  // Prefer properties.coordinates; fall back to GeoJSON geometry [lng, lat].
+  const lat = coords.latitude ?? geometry[1]
+  const lng = coords.longitude ?? geometry[0]
+
+  // Settlement names: the containing place / locality, or the feature itself when it IS the settlement.
+  const localities = [
+    nameOf(context.place),
+    nameOf(context.locality),
+    featureType === 'place' || featureType === 'locality' ? nameOf(p) : null,
+  ].filter((n): n is string => n !== null)
 
   let level: ProviderGeocodeResult['level'] = 'other'
-  const streetType = types.some(t => STREET_TYPES.includes(t))
-  if (streetType && STREET_LOCATION_TYPES.includes(locationType)) level = 'street'
-  else if (streetType || types.some(t => LOCALITY_TYPES.includes(t))) level = 'locality' // approximate address → locality only
-
-  return {
-    lat: r.geometry?.location?.lat,
-    lng: r.geometry?.location?.lng,
-    locality: typeof locality === 'string' ? locality : null,
-    level,
-    partial: r.partial_match === true,
+  let partial = false
+  if (featureType === 'address' || featureType === 'secondary_address') {
+    level = 'street'
+    const accuracy = typeof coords.accuracy === 'string' ? coords.accuracy : ''
+    const mc = isObj(p.match_code) ? p.match_code : {}
+    // Anything short of a confirmed house-level match is not trusted as street precision.
+    partial = !STREET_ACCURACY.includes(accuracy)
+      || (mc.address_number !== undefined && mc.address_number !== 'matched')
+      || (mc.street !== undefined && mc.street !== 'matched')
+      || mc.confidence === 'low'
+  } else if (SETTLEMENT_TYPES.includes(featureType)) {
+    level = 'locality'
   }
+
+  return { lat, lng, localities, level, partial }
 }
 
-export function googleProvider(apiKey: string, fetchImpl: FetchLike): GeocodingProvider {
+export function mapboxProvider(token: string, fetchImpl: FetchLike): GeocodingProvider {
   return async (query, signal) => {
-    const params = new URLSearchParams({
-      address: query.text,
-      components: 'country:IL',
-      language: 'he',
-      region: 'il',
-      key: apiKey,
-    })
-    const res = await fetchImpl(`${GOOGLE_GEOCODE_URL}?${params.toString()}`, { signal, cache: 'no-store' })
-    if (!res.ok) throw new GeocodingProviderError(`google_http_${res.status}`)
-    return mapGoogleGeocodeResponse(await res.json())
+    const url = buildMapboxForwardUrl(query, token)
+    let res: Awaited<ReturnType<FetchLike>>
+    try {
+      res = await fetchImpl(url, { signal, cache: 'no-store' })
+    } catch {
+      throw new GeocodingProviderError('mapbox_network') // original error may carry the URL (token) — dropped
+    }
+    if (!res.ok) throw new GeocodingProviderError(`mapbox_http_${res.status}`)
+    let body: unknown
+    try {
+      body = await res.json()
+    } catch {
+      throw new GeocodingProviderError('mapbox_bad_json')
+    }
+    return mapMapboxV6Response(body)
   }
 }
