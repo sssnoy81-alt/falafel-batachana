@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
 import { createOrderAtomic, OrderCreationUnavailableError } from '@/lib/createOrder'
 import { isShopOpen } from '@/lib/hours'
+import { attachDeliveryGeo } from '@/lib/orderGeo'
 import {
   buildOrderFromCatalog,
   parseCreateOrderRequest,
@@ -68,7 +69,11 @@ export async function POST(req: NextRequest) {
     const built = buildOrderFromCatalog(order, catalog)
     if (!built.ok) return errorResponse(400, built.code, built.detail)
 
-    const created = await createOrderAtomic(built.value.rpcArgs)
+    // Delivery only: server geocoding (one attempt, ~2.5 s max). A failure never blocks the order —
+    // it is created with the explicit unresolved geo state. Pickup never calls the geocoder.
+    const toCreate = await attachDeliveryGeo(order, built.value)
+
+    const created = await createOrderAtomic(toCreate.rpcArgs)
 
     const response: CreateOrderResponse = {
       id: created.orderId,
