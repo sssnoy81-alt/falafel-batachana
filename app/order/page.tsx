@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { getBrowserSupabase } from '@/lib/supabaseBrowser'
 import {
-  DELIVERY_AREAS, DELIVERY_FEE, DELIVERY_FIELD_LIMITS, DELIVERY_MEAL_SURCHARGE, MAX_CUSTOMER_NAME, MAX_ITEM_NOTES, MAX_LINE_QUANTITY, PAYMENT_METHOD_LABELS, PHONE_REGEX,
+  DELIVERY_AREAS, DELIVERY_FEE_RANGE, DELIVERY_FIELD_LIMITS, DELIVERY_MEAL_SURCHARGE, MAX_CUSTOMER_NAME, MAX_ITEM_NOTES, MAX_LINE_QUANTITY, PAYMENT_METHOD_LABELS, PHONE_REGEX, getDeliveryFeeForArea,
   SET_ADDON_FREE, SET_ADDONS_PAID, SET_DRINK_EXTRA, SET_DRINKS_FREE, SET_DRINKS_PAID,
   isDealCategory, isDeliveryBranch, isDrinkCategory, isOrderType, isPaymentMethod, isSidesCategory, isToppingAllowedForItem,
   allowedPaymentMethods, normalizePhone, resolvePaymentMethod, setAddonExtra, setDrinkExtra,
@@ -77,6 +77,8 @@ const ORDER_ERROR_MESSAGES: Partial<Record<OrderErrorCode, string>> = {
   payment_method_not_allowed: 'במשלוח ניתן לשלם באשראי בלבד',
 }
 const GENERIC_ORDER_ERROR = 'לא ניתן לשלוח את ההזמנה כרגע. נסו שוב בעוד רגע או התקשרו לסניף'
+// Destination-based delivery fee (lib/orderConfig DELIVERY_FEES_BY_AREA); range shown until an area is chosen.
+const DELIVERY_FEE_LABEL = `דמי משלוח ₪${DELIVERY_FEE_RANGE.min}–₪${DELIVERY_FEE_RANGE.max} לפי יישוב`
 const DELIVERY_PRICE_NOTE = `מחירי המשלוח למנות כוללים תוספת של ${DELIVERY_MEAL_SURCHARGE} ₪ למנה.`
 
 const C = {
@@ -315,7 +317,7 @@ export default function Home() {
   }
 
   const pricingInputs = cart.map(toPricingInput)
-  const cartDisplay = computeDisplayTotals(pricingInputs, displayType)   // what the customer sees
+  const cartDisplay = computeDisplayTotals(pricingInputs, displayType, deliveryForm.city)   // what the customer sees (fee by area)
   const cartCount = cart.reduce((s, c) => s + c.quantity, 0)
 
   const deliveryFormValid = !!deliveryForm.city && DELIVERY_AREAS.includes(deliveryForm.city)
@@ -591,7 +593,7 @@ export default function Home() {
                 style={{ ...fulfillmentButtonStyle, border: `1px solid ${C.gold}` }}>
                 <span style={{ fontSize: 44 }}>🛵</span>
                 <span style={{ fontWeight: 900, fontSize: 19, color: C.gold }}>משלוח</span>
-                <span style={{ fontSize: 12, color: C.gray }}>מ{deliveryBranch.name} · דמי משלוח ₪{DELIVERY_FEE}</span>
+                <span style={{ fontSize: 12, color: C.gray }}>מ{deliveryBranch.name} · {DELIVERY_FEE_LABEL}</span>
               </button>
             )}
           </div>
@@ -806,7 +808,7 @@ export default function Home() {
           <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${effectiveOrderType ? C.border : C.gold}` }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>🚦 אופן קבלת ההזמנה</div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              {([['pickup', '🏃', 'איסוף עצמי', ''], ['delivery', '🛵', 'משלוח', `דמי משלוח ₪${DELIVERY_FEE}`]] as const).map(([v, icon, label, sub]) => (
+              {([['pickup', '🏃', 'איסוף עצמי', ''], ['delivery', '🛵', 'משלוח', DELIVERY_FEE_LABEL]] as const).map(([v, icon, label, sub]) => (
                 <button key={v} onClick={() => { setOrderTypeChoice(v); setOrderError('') }}
                   style={{ padding: '16px 10px', border: `2px solid ${effectiveOrderType === v ? C.gold : C.border}`, borderRadius: 14, background: effectiveOrderType === v ? 'rgba(255,215,0,0.1)' : C.bg, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
                   <span style={{ fontSize: 28 }}>{icon}</span>
@@ -826,7 +828,7 @@ export default function Home() {
             <select value={deliveryForm.city} onChange={e => { setDeliveryForm(f => ({ ...f, city: e.target.value })); resetDeviceLocation() }}
               style={{ ...inputStyle(!!deliveryForm.city), appearance: 'auto', marginBottom: 12 }}>
               <option value="">בחרו יישוב</option>
-              {DELIVERY_AREAS.map(a => <option key={a} value={a}>{a}</option>)}
+              {DELIVERY_AREAS.map(a => <option key={a} value={a}>{a} · משלוח ₪{getDeliveryFeeForArea(a)}</option>)}
             </select>
             <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10, marginBottom: 12 }}>
               <div>
@@ -913,13 +915,13 @@ export default function Home() {
           {effectiveOrderType === 'delivery' && (
             <>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 6 }}>
-                <span style={{ color: C.gray }}>דמי משלוח</span><span style={{ color: C.gray }}>{fmt(cartDisplay.deliveryFee)}</span>
+                <span style={{ color: C.gray }}>דמי משלוח</span><span style={{ color: C.gray }}>{cartDisplay.deliveryFee === null ? 'בחרו יישוב' : fmt(cartDisplay.deliveryFee)}</span>
               </div>
               <div style={{ color: C.gray, fontSize: 12, marginBottom: 6 }}>{DELIVERY_PRICE_NOTE}</div>
             </>
           )}
           <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 10, marginTop: 4, borderTop: `1px solid ${C.border}`, fontWeight: 900, fontSize: 20 }}>
-            <span style={{ color: C.white }}>לתשלום</span><span style={{ color: C.gold }}>{fmt(cartDisplay.total)}</span>
+            <span style={{ color: C.white }}>לתשלום</span><span style={{ color: C.gold }}>{cartDisplay.total === null ? '—' : fmt(cartDisplay.total)}</span>
           </div>
         </div>
 
@@ -934,7 +936,7 @@ export default function Home() {
             : placingOrder ? '⏳ שולח הזמנה...'
             : !effectiveOrderType ? '👆 בחרו איסוף עצמי או משלוח'
             : effectiveOrderType === 'delivery' && !deliveryFormValid ? '📍 נא להשלים כתובת למשלוח'
-            : `✅ שלח הזמנה • ${fmt(cartDisplay.total)}`}
+            : cartDisplay.total === null ? '✅ שלח הזמנה' : `✅ שלח הזמנה • ${fmt(cartDisplay.total)}`}
         </button>
       </div>
     </div>

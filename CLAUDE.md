@@ -37,8 +37,15 @@ A Hebrew-first (RTL) online ordering system for a falafel business with multiple
   - **cart** with edit/remove and upsell prompt
   - **checkout**: delivery address (approved localities dropdown), name, phone, payment-method choice (labels only).
     **No discount** (the old 5% app discount was removed).
-  - **delivery pricing**: +₪4 per qualifying meal unit (category allowlist) + ₪20 fixed fee per delivery order.
-    Customer-facing prices for delivery are shown **inclusive** of the +₪4; the ₪20 fee is a separate line.
+  - **delivery pricing**: +₪4 per qualifying meal unit (category allowlist; drinks never surcharged) + a
+    **destination-based delivery fee** per order, from the single table `DELIVERY_FEES_BY_AREA` in `lib/orderConfig.ts`:
+    מעלה אדומים ₪20 · מישור אדומים ₪25 · כפר אדומים ₪40 · נופי פרת ₪40 · אלון ₪40 · מצפה יריחו ₪40
+    (כפר אדומים is priced with the "יישובי אלון" group).
+    Customer-facing prices for delivery are shown **inclusive** of the +₪4; the area's fee is a separate line
+    (shown per area in the locality dropdown; "₪20–₪40 לפי יישוב" before an area is chosen).
+    **Server-authoritative:** `POST /api/orders` computes the fee from the validated area (unknown area → rejected,
+    fail closed); client-sent fee/total fields are rejected or ignored, so the browser cannot override the fee.
+    The stored `deliveries.delivery_fee` is the server-computed fee for that order.
   - **order tracking** screen with status, order number, order details; name/phone/address remembered for next order
   - business-hours gating (closed popup, order button disabled when closed)
 
@@ -115,7 +122,7 @@ Public PWA assets: `public/manifest.json` (customer app, start `/order`), `publi
 - **Inline styles are common**; Tailwind is present but lightly used.
 - `next.config.ts` is empty (no headers, redirects, or image config). Images use plain `<img>`.
 - Next.js 16: route protection middleware file is `proxy.ts` (not `middleware.ts`). None exists yet.
-- Hardcoded business values live in code (`lib/orderConfig.ts`, `lib/hours.ts`, `lib/kitchenAuth.ts`): branch IDs, the hidden branch, meal/drink category IDs, delivery areas, ₪4/₪20 delivery charges, business hours, meal-deal extra prices.
+- Hardcoded business values live in code (`lib/orderConfig.ts`, `lib/hours.ts`, `lib/kitchenAuth.ts`): branch IDs, the hidden branch, meal/drink category IDs, delivery areas, ₪4 meal surcharge + per-area delivery fees, business hours, meal-deal extra prices.
 
 ---
 

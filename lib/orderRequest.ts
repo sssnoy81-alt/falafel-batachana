@@ -5,6 +5,7 @@ import {
   CUSTOMER_HIDDEN_BRANCH_IDS,
   DELIVERY_AREAS,
   DELIVERY_FIELD_LIMITS,
+  getDeliveryFeeForArea,
   MAX_CART_LINES,
   MAX_CUSTOMER_NAME,
   MAX_ITEM_NOTES,
@@ -323,7 +324,9 @@ export function buildOrderFromCatalog(req: CreateOrderRequest, catalog: OrderCat
     })
   }
 
-  const totals = computeOrderTotals(pricingInputs, req.type)
+  // Delivery fee comes only from the server's destination table for the validated area (fail closed).
+  if (req.type === 'delivery' && getDeliveryFeeForArea(req.delivery?.city) === null) return fail('invalid_delivery_area')
+  const totals = computeOrderTotals(pricingInputs, req.type, req.delivery?.city)
 
   let p_delivery: CreateOrderRpcArgs['p_delivery'] = null
   if (req.type === 'delivery') {

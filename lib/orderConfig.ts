@@ -51,7 +51,30 @@ export const DELIVERY_AREAS: readonly string[] = [
   'מצפה יריחו',
 ]
 
-export const DELIVERY_FEE = 20            // ₪ per delivery order
+// Destination-based delivery fee (₪ per delivery order) — the ONLY source of delivery fees.
+// Server-authoritative: the fee is always derived from the validated area, never accepted from a client.
+// כפר אדומים is priced with the "יישובי אלון" group.
+export const DELIVERY_FEES_BY_AREA: Readonly<Record<string, number>> = Object.freeze({
+  'מעלה אדומים': 20,
+  'מישור אדומים': 25,
+  'כפר אדומים': 40,
+  'נופי פרת': 40,
+  'אלון': 40,
+  'מצפה יריחו': 40,
+})
+
+/** Fee for a supported delivery area; null for anything else (callers must fail closed). */
+export const getDeliveryFeeForArea = (city: unknown): number | null =>
+  typeof city === 'string' && DELIVERY_AREAS.includes(city) && Object.prototype.hasOwnProperty.call(DELIVERY_FEES_BY_AREA, city)
+    ? DELIVERY_FEES_BY_AREA[city]
+    : null
+
+/** Lowest / highest configured fee (for "₪20–₪40" labels before an area is chosen). */
+export const DELIVERY_FEE_RANGE = Object.freeze({
+  min: Math.min(...DELIVERY_AREAS.map(a => DELIVERY_FEES_BY_AREA[a])),
+  max: Math.max(...DELIVERY_AREAS.map(a => DELIVERY_FEES_BY_AREA[a])),
+})
+
 export const DELIVERY_MEAL_SURCHARGE = 4  // ₪ per qualifying meal unit
 
 // Must match the DB CHECK constraints on public.deliveries.

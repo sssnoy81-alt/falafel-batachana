@@ -109,7 +109,7 @@ test('stale method can never reach a delivery submit (resolved value is always a
 
 console.log('Pricing independence')
 test('13. pricing is unchanged by payment method (functions take no payment input; server totals equal)', () => {
-  assert.equal(computeOrderTotals.length, 2); assert.equal(computeDisplayTotals.length, 2)
+  assert.equal(computeOrderTotals.length, 3); assert.equal(computeDisplayTotals.length, 3) // (lines, type, deliveryCity) — no payment input
   const pickupTotals = cfg.PAYMENT_METHODS.map(pm => run(req('pickup', pm)).value.breakdown)
   for (const b of pickupTotals) assert.deepEqual(b, pickupTotals[0])
   const d = run(req('delivery', 'credit')).value.breakdown

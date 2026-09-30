@@ -26,7 +26,9 @@ function load(name) {
 }
 
 const cfg = load('orderConfig')
-const { computeOrderTotals } = load('pricing')
+// Existing delivery fixtures use מעלה אדומים (destination fee ₪20); destination fees are covered separately below.
+const MA = 'מעלה אדומים'
+const computeOrderTotals = (lines, type, city = MA) => load('pricing').computeOrderTotals(lines, type, city)
 const { parseCreateOrderRequest, buildOrderFromCatalog } = load('orderRequest')
 const { getBusinessStatus } = load('hours')
 const { formatDeliveryAddress } = load('deliveryAddress')
@@ -79,7 +81,7 @@ test('free deal options add nothing; money rounding is stable', () => {
 
 console.log('Customer display pricing (fulfillment-first UX, lib/pricing.ts)')
 const P = load('pricing')
-const display = (lines, type) => P.computeDisplayTotals(lines, type)
+const display = (lines, type, city = MA) => P.computeDisplayTotals(lines, type, city)
 test('D1. pickup qualifying item: menu ₪28, line ₪28', () => {
   assert.equal(P.displayMenuPrice(28, CAT.falafel, 'pickup'), 28)
   assert.equal(P.displayLineTotal(line(CAT.falafel, 28, 1), 'pickup'), 28)
@@ -133,7 +135,7 @@ test('D10. no discount: display total = sum of display lines (+ fee), discount f
   assert.equal(display(c, 'pickup').total, 28); assert.equal(computeOrderTotals(c, 'pickup').discount, 0)
 })
 test('D11. payment method has no input into display or authoritative pricing', () => {
-  assert.equal(P.computeDisplayTotals.length, 2); assert.equal(computeOrderTotals.length, 2) // (lines, type) only
+  assert.equal(P.computeDisplayTotals.length, 3); assert.equal(P.computeOrderTotals.length, 3) // (lines, type, deliveryCity) — no payment input
 })
 test('D12. delivery fee appears exactly once regardless of cart size', () => {
   const big = Array.from({ length: 6 }, () => line(CAT.falafel, 20, 3))
@@ -263,6 +265,96 @@ test('winter time: Mon 2026-12-07 19:29 IST → open; 19:30 → closed', () => {
 console.log('Address formatter (lib/deliveryAddress.ts)')
 test('skips empty optional parts', () => {
   assert.equal(formatDeliveryAddress({ city: 'אלון', street: 'הגפן', houseNumber: '5' }), 'אלון, הגפן 5')
+})
+
+console.log('Destination delivery fees (08D5)')
+const FEES = { 'מעלה אדומים': 20, 'מישור אדומים': 25, 'כפר אדומים': 40, 'נופי פרת': 40, 'אלון': 40, 'מצפה יריחו': 40 }
+const deliveryReq = (city, over = {}) => baseReq({ type: 'delivery', paymentMethod: 'credit', delivery: { ...address, city }, ...over })
+
+test('DP1–6. every delivery area → its destination fee (config, pricing and stored delivery_fee)', () => {
+  assert.deepEqual({ ...cfg.DELIVERY_FEES_BY_AREA }, FEES)
+  assert.deepEqual([...cfg.DELIVERY_AREAS].sort(), Object.keys(FEES).sort(), 'exactly the six locked areas')
+  for (const [city, fee] of Object.entries(FEES)) {
+    assert.equal(cfg.getDeliveryFeeForArea(city), fee, city)
+    assert.equal(P.computeOrderTotals([line(CAT.falafel, 20, 1)], 'delivery', city).deliveryFee, fee, city)
+    const r = build(deliveryReq(city))
+    assert.ok(r.ok, JSON.stringify(r)); assert.equal(r.value.rpcArgs.p_delivery.delivery_fee, fee, city) // DP17
+  }
+  assert.ok(Object.isFrozen(cfg.DELIVERY_FEES_BY_AREA)); assert.deepEqual({ ...cfg.DELIVERY_FEE_RANGE }, { min: 20, max: 40 })
+})
+
+test('DP7. unknown / unsupported area rejected (config null, pricing throws, request rejected)', () => {
+  for (const city of ['ירושלים', '', null, undefined, 'toString', 'constructor', ' מעלה אדומים']) {
+    assert.equal(cfg.getDeliveryFeeForArea(city), null, String(city))
+    assert.throws(() => P.computeOrderTotals([line(CAT.falafel, 20, 1)], 'delivery', city), /unknown_delivery_area/)
+  }
+  assert.equal(build(deliveryReq('ירושלים')).code, 'invalid_delivery_area')
+  assert.deepEqual(P.computeDisplayTotals([line(CAT.falafel, 20, 1)], 'delivery', ''), { itemsTotal: 24, deliveryFee: null, total: null })
+})
+
+test('DP8. pickup has no delivery fee (any area argument ignored)', () => {
+  for (const city of [undefined, 'מצפה יריחו']) {
+    const t = P.computeOrderTotals([line(CAT.falafel, 20, 2)], 'pickup', city)
+    assert.deepEqual([t.deliveryFee, t.mealSurcharge, t.total], [0, 0, 40])
+  }
+  const r = build(baseReq()); assert.equal(r.value.rpcArgs.p_delivery, null); assert.equal(r.value.breakdown.deliveryFee, 0)
+})
+
+test('DP9–10. meal surcharge still ₪4 per qualifying unit; drinks never surcharged', () => {
+  const t = P.computeOrderTotals([line(CAT.falafel, 20, 3), line(CAT.drinks, 9, 2)], 'delivery', 'אלון')
+  assert.deepEqual([t.mealQuantity, t.mealSurcharge], [3, 12])
+  assert.equal(P.displayMenuPrice(9, CAT.drinks, 'delivery'), 9); assert.equal(P.displayMenuPrice(20, CAT.falafel, 'delivery'), 24)
+})
+
+test('DP11–13. one meal: מעלה אדומים 20+4+20=44 · מישור אדומים 20+4+25=49 · כפר אדומים 20+4+40=64', () => {
+  const one = city => build(deliveryReq(city, { items: [{ itemId: ITEM.falafel, quantity: 1 }] })).value.rpcArgs.p_order.total_price
+  assert.equal(one('מעלה אדומים'), 44); assert.equal(one('מישור אדומים'), 49); assert.equal(one('כפר אדומים'), 64)
+})
+
+test('DP14. multiple meals + drink to מצפה יריחו: 3×20 + 9 + 3×4 + 40 = 121 (display = server)', () => {
+  const r = build(deliveryReq('מצפה יריחו', { items: [{ itemId: ITEM.falafel, quantity: 3 }, { itemId: ITEM.drink, quantity: 1 }] }))
+  assert.ok(r.ok); const b = r.value.breakdown
+  assert.deepEqual([b.subtotal, b.mealSurcharge, b.deliveryFee, b.total], [69, 12, 40, 121])
+  const d = P.computeDisplayTotals([line(CAT.falafel, 20, 3), line(CAT.drinks, 9, 1)], 'delivery', 'מצפה יריחו')
+  assert.deepEqual(d, { itemsTotal: 81, deliveryFee: 40, total: 121 })
+  assert.equal(P.foodTotalAgorot(b), 8100) // future Maale food total = subtotal + surcharge, fee excluded
+})
+
+test('DP15. payment method does not alter price (delivery is credit-only; pickup methods all equal)', () => {
+  const pickup = cfg.PAYMENT_METHODS.map(pm => build(baseReq({ paymentMethod: pm })).value.rpcArgs.p_order.total_price)
+  assert.deepEqual(pickup, [60, 60, 60, 60])
+  assert.equal(build(deliveryReq('נופי פרת', { paymentMethod: 'cash' })).code, 'payment_method_not_allowed')
+})
+
+test('DP16. malicious client fee cannot override the server fee (מצפה יריחו stays ₪40)', () => {
+  for (const over of [{ deliveryFee: 20 }, { delivery_fee: 20 }, { total: 72 }])
+    assert.equal(build(deliveryReq('מצפה יריחו', over)).code, 'client_prices_not_accepted', JSON.stringify(over))
+  const inDelivery = build(baseReq({ type: 'delivery', paymentMethod: 'credit', delivery: { ...address, city: 'מצפה יריחו', deliveryFee: 20, delivery_fee: 20, fee: 20 } }))
+  assert.ok(inDelivery.ok); assert.equal(inDelivery.value.rpcArgs.p_delivery.delivery_fee, 40)
+  assert.equal(inDelivery.value.rpcArgs.p_order.total_price, 60 + 12 + 40)
+})
+
+test('DP18–20. historical rows untouched; no Maale call; no DB migration / SQL in the change', () => {
+  const srcs = ['lib/orderConfig.ts', 'lib/pricing.ts', 'lib/orderRequest.ts', 'app/order/page.tsx'].map(f => readFileSync(join(LIB, '..', f), 'utf8'))
+  for (const s of srcs) {
+    assert.ok(!/maalehamishlohim|delivery_dispatches|express\/integrations/i.test(s))
+    assert.ok(!/\b(UPDATE|ALTER TABLE|INSERT INTO)\s+(public\.)?(orders|deliveries)\b/i.test(s))
+  }
+  assert.ok(!/DELIVERY_FEE\b(?!S_BY_AREA|_RANGE|_LABEL)/.test(srcs.join('\n')), 'flat DELIVERY_FEE constant fully removed')
+})
+
+test('DP21–22. checkout shows the dynamic destination fee; pickup copy unchanged', () => {
+  const page = readFileSync(join(LIB, '..', 'app', 'order', 'page.tsx'), 'utf8')
+  assert.ok(page.includes('computeDisplayTotals(pricingInputs, displayType, deliveryForm.city)'))
+  assert.ok(page.includes('getDeliveryFeeForArea(a)'), 'area dropdown shows each destination fee')
+  assert.ok(page.includes("cartDisplay.deliveryFee === null ? 'בחרו יישוב'"))
+  assert.ok(page.includes("['pickup', '🏃', 'איסוף עצמי', '']"), 'pickup option unchanged')
+  assert.ok(!page.includes('₪{DELIVERY_FEE}') && !page.includes('${DELIVERY_FEE}'))
+})
+
+test('DP23–24. device-location and area-proximity modules untouched by fee logic', () => {
+  for (const f of ['deliveryLocation.ts', 'deliveryAreasGeo.ts', 'orderGeo.ts'])
+    assert.ok(!/DELIVERY_FEES_BY_AREA|getDeliveryFeeForArea|delivery_fee/.test(readFileSync(join(LIB, f), 'utf8')), f)
 })
 
 console.log(`\nAll ${passed} checks passed.`)

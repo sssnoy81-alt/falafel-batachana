@@ -696,7 +696,7 @@ await test('AP12 + AP20–21. trusted GPS in ANOTHER area → mismatch (B); orde
   const r = await placeOrder(body('delivery', {}, { city: KFAR, location_lat: 31.2, location_lng: 35.2, location_accuracy: 15, location_confirmed: true }),
     withProvider(providerReturning(STREET_HIT)))
   assert.ok(r.created); assert.equal(r.calls.geocode, 0)
-  assert.deepEqual(geoOf(r.rpcArgs.p_delivery), gpsGeo(31.2, 35.2)); assert.equal(r.rpcArgs.p_order.total_price, 92)
+  assert.deepEqual(geoOf(r.rpcArgs.p_delivery), gpsGeo(31.2, 35.2)); assert.equal(r.rpcArgs.p_order.total_price, 112) // 60 + 12 + כפר אדומים ₪40
   const a = assess(KFAR, r.rpcArgs.p_delivery)
   assert.deepEqual([a.readiness, a.eligible, a.warning], ['location_area_mismatch', false, 'מיקום המשלוח אינו תואם לאזור שנבחר'])
 })
