@@ -30,6 +30,7 @@ const prov = load('geocodingProvider')
 const { parseCreateOrderRequest, buildOrderFromCatalog } = load('orderRequest')
 const { attachDeliveryGeo } = load('orderGeo')
 const loc = load('deliveryLocation')
+const areas = load('deliveryAreasGeo')
 
 let passed = 0
 const test = async (name, fn) => { await fn(); passed++; console.log('  ✓', name) }
@@ -454,7 +455,7 @@ const INVALID_LOCATION = { ok: false, code: 'invalid_request', detail: 'invalid_
 await test('DL1–2. valid confirmed device location → stored as manual / street with device coordinates', async () => {
   const r = await placeOrder(body('delivery', {}, DEVICE), withProvider(providerReturning(STREET_HIT)))
   assert.ok(r.created); assert.deepEqual(geoOf(r.rpcArgs.p_delivery), DEVICE_GEO)
-  assert.ok(loc.isDispatchEligibleGeo(r.rpcArgs.p_delivery))
+  assert.ok(loc.hasPreciseCoordinates(r.rpcArgs.p_delivery))
 })
 
 await test('DL3–4. device location overrides Mapbox and the geocoder is never called', async () => {
@@ -561,15 +562,15 @@ await test('DL18. pickup cannot submit location (top level or via a delivery obj
   assert.equal(pickupWithDelivery.ok, false)
 })
 
-await test('DL19–21. without device location: Mapbox street eligible; locality / unresolved / legacy not eligible', async () => {
+await test('DL19–21. without device location: Mapbox street = precise coords; locality / unresolved / legacy are not', async () => {
   const street = await placeOrder(body('delivery'), withProvider(providerReturning(STREET_HIT)))
-  assert.equal(street.rpcArgs.p_delivery.geo_source, 'geocoder'); assert.ok(loc.isDispatchEligibleGeo(street.rpcArgs.p_delivery))
+  assert.equal(street.rpcArgs.p_delivery.geo_source, 'geocoder'); assert.ok(loc.hasPreciseCoordinates(street.rpcArgs.p_delivery))
   const locality = await placeOrder(body('delivery'), withProvider(providerReturning({ ...STREET_HIT, level: 'locality' })))
-  assert.equal(locality.rpcArgs.p_delivery.geo_precision, 'locality'); assert.ok(!loc.isDispatchEligibleGeo(locality.rpcArgs.p_delivery))
-  assert.ok(loc.needsPreciseLocationWarning(locality.rpcArgs.p_delivery))
+  assert.equal(locality.rpcArgs.p_delivery.geo_precision, 'locality'); assert.ok(!loc.hasPreciseCoordinates(locality.rpcArgs.p_delivery))
+  assert.equal(loc.assessDeliveryDispatch({ type: 'delivery', address: { city: CITY, street: 'הדקל', houseNumber: '12' }, geo: locality.rpcArgs.p_delivery }).warning, 'חסר מיקום מדויק למשלוח')
   for (const g of [UNRESOLVED, { delivery_lat: null, delivery_lng: null, geo_source: null, geo_precision: null }, null,
     { ...DEVICE_GEO, geo_precision: 'locality' }, { ...DEVICE_GEO, geo_source: 'none' }, { ...DEVICE_GEO, delivery_lat: 40 }])
-    assert.ok(!loc.isDispatchEligibleGeo(g), JSON.stringify(g))
+    assert.ok(!loc.hasPreciseCoordinates(g), JSON.stringify(g))
 })
 
 await test('DL22–23. pricing and payment rules unchanged by device location', async () => {
@@ -602,6 +603,153 @@ await test('DL26. privacy: location only on explicit click, never persisted or l
   const logArgs = [...geoSrc.matchAll(/deps\.log\(([^)]*)\)/g)].map(m => m[1].trim())
   assert.ok(logArgs.length >= 3)
   for (const a of logArgs) assert.match(a, /^'[a-z_]+'$|^`geocode_\$\{result\.reason\}`$/, `log argument must be a fixed code: ${a}`)
+})
+
+/* ─── Delivery-area proximity (08D4) — SYNTHETIC fixture coordinates only, never production values ─── */
+console.log('Area proximity (08D4, synthetic fixtures)')
+
+const KFAR = 'כפר אדומים', NOFEI = 'נופי פרת'
+// TEST-ONLY config: fake centres / radii to exercise the logic. The real DELIVERY_AREA_GEO stays unapproved.
+const FIX = Object.freeze({
+  ...areas.DELIVERY_AREA_GEO,
+  [KFAR]: { city: KFAR, center: { lat: 31.0, lng: 35.0 }, radiusMeters: 1500, approvedForDispatch: true, source: 'TEST FIXTURE' },
+  [CITY]: { city: CITY, center: { lat: 31.2, lng: 35.2 }, radiusMeters: 3000, approvedForDispatch: true, source: 'TEST FIXTURE' },
+  [NOFEI]: { city: NOFEI, center: { lat: 31.4, lng: 35.4 }, radiusMeters: 2000, approvedForDispatch: false, source: 'TEST FIXTURE' },
+})
+const near = (a, b, tol) => Math.abs(a - b) <= tol
+const gpsGeo = (lat, lng) => ({ delivery_lat: lat, delivery_lng: lng, geo_source: 'manual', geo_precision: 'street' })
+const FULL = city => ({ city, street: 'הדקל', houseNumber: '12' })
+const assess = (city, geo, address = FULL(city), type = 'delivery', config = FIX) => loc.assessDeliveryDispatch({ type, address, geo }, config)
+
+await test('AP1. Haversine: identical point = 0 m', async () => {
+  assert.equal(areas.distanceMetersBetweenCoordinates(31.5, 35.2, 31.5, 35.2), 0)
+})
+
+await test('AP2. Haversine: synthetic known distances (0.01° lat ≈ 1111.95 m; 0.01° lng at 31° ≈ 953.1 m)', async () => {
+  assert.ok(near(areas.distanceMetersBetweenCoordinates(31.0, 35.0, 31.01, 35.0), 1111.95, 0.5))
+  assert.ok(near(areas.distanceMetersBetweenCoordinates(31.0, 35.0, 31.0, 35.01), 1111.95 * Math.cos(31 * Math.PI / 180), 0.5))
+  assert.equal(areas.distanceMetersBetweenCoordinates(31.0, 35.0, 31.01, 35.0), areas.distanceMetersBetweenCoordinates(31.01, 35.0, 31.0, 35.0))
+})
+
+await test('AP3. point clearly inside radius → matched', async () => {
+  const r = areas.checkDeliveryAreaProximity(KFAR, 31.0045, 35.0, FIX)
+  assert.deepEqual([r.checked, r.matched, r.reason, r.radiusMeters], [true, true, 'matched', 1500]); assert.ok(near(r.distanceMeters, 500.4, 1))
+})
+
+await test('AP4. point clearly outside radius → outside_area', async () => {
+  const r = areas.checkDeliveryAreaProximity(KFAR, 31.02, 35.0, FIX)
+  assert.deepEqual([r.checked, r.matched, r.reason], [true, false, 'outside_area']); assert.ok(r.distanceMeters > 2000)
+})
+
+await test('AP5. exact radius boundary matches; just beyond does not', async () => {
+  const d = areas.distanceMetersBetweenCoordinates(31.0, 35.0, 31.01, 35.0)
+  const at = { ...FIX, [KFAR]: { ...FIX[KFAR], radiusMeters: d } }
+  assert.equal(areas.checkDeliveryAreaProximity(KFAR, 31.01, 35.0, at).reason, 'matched')
+  const below = { ...FIX, [KFAR]: { ...FIX[KFAR], radiusMeters: d - 0.001 } }
+  assert.equal(areas.checkDeliveryAreaProximity(KFAR, 31.01, 35.0, below).reason, 'outside_area')
+})
+
+await test('AP6. invalid latitude → invalid_coordinates (Haversine returns null)', async () => {
+  for (const v of [NaN, Infinity, '31.0', null, undefined, 95]) {
+    assert.equal(areas.checkDeliveryAreaProximity(KFAR, v, 35.0, FIX).reason, 'invalid_coordinates', String(v))
+    assert.equal(areas.distanceMetersBetweenCoordinates(v, 35.0, 31.0, 35.0), null)
+  }
+})
+
+await test('AP7. invalid longitude → invalid_coordinates', async () => {
+  for (const v of [NaN, -Infinity, '35', null, 181]) assert.equal(areas.checkDeliveryAreaProximity(KFAR, 31.0, v, FIX).reason, 'invalid_coordinates', String(v))
+})
+
+await test('AP8. unknown delivery area → unknown_area', async () => {
+  assert.equal(areas.checkDeliveryAreaProximity('ירושלים', 31.0, 35.0, FIX).reason, 'unknown_area')
+})
+
+await test('AP9. configured but NOT approved → area_not_approved (no distance check)', async () => {
+  const r = areas.checkDeliveryAreaProximity(NOFEI, 31.4, 35.4, FIX)
+  assert.deepEqual([r.checked, r.matched, r.reason], [false, false, 'area_not_approved'])
+})
+
+await test('AP10. no config / real config: every area unconfigured + unapproved; bad radius rejected', async () => {
+  assert.deepEqual(areas.areasWithoutGeoConfig(), [])
+  assert.ok(Object.isFrozen(areas.DELIVERY_AREA_GEO))
+  for (const a of cfg.DELIVERY_AREAS) {
+    const c = areas.DELIVERY_AREA_GEO[a]
+    assert.deepEqual([c.center, c.radiusMeters, c.approvedForDispatch], [null, null, false], a)
+    assert.equal(areas.checkDeliveryAreaProximity(a, 31.0, 35.0).reason, 'area_not_configured', a)
+  }
+  const { [KFAR]: _omit, ...missing } = FIX
+  assert.equal(areas.checkDeliveryAreaProximity(KFAR, 31.0, 35.0, missing).reason, 'area_not_configured'); assert.ok(_omit)
+  for (const radiusMeters of [0, -5, NaN, 50_000]) {
+    const bad = { ...FIX, [KFAR]: { ...FIX[KFAR], radiusMeters } }
+    assert.equal(areas.checkDeliveryAreaProximity(KFAR, 31.0, 35.0, bad).reason, 'area_not_configured', String(radiusMeters))
+  }
+})
+
+await test('AP11. trusted GPS + full address + area match → ready / eligible (A)', async () => {
+  const r = await placeOrder(body('delivery', {}, { city: KFAR, location_lat: 31.004, location_lng: 35.001, location_accuracy: 15, location_confirmed: true }),
+    withProvider(providerReturning(STREET_HIT)))
+  const a = assess(KFAR, r.rpcArgs.p_delivery)
+  assert.deepEqual([a.readiness, a.eligible, a.warning], ['ready', true, null]); assert.equal(a.proximity.reason, 'matched')
+})
+
+await test('AP12 + AP20–21. trusted GPS in ANOTHER area → mismatch (B); order still created; Mapbox not called; GPS kept', async () => {
+  const r = await placeOrder(body('delivery', {}, { city: KFAR, location_lat: 31.2, location_lng: 35.2, location_accuracy: 15, location_confirmed: true }),
+    withProvider(providerReturning(STREET_HIT)))
+  assert.ok(r.created); assert.equal(r.calls.geocode, 0)
+  assert.deepEqual(geoOf(r.rpcArgs.p_delivery), gpsGeo(31.2, 35.2)); assert.equal(r.rpcArgs.p_order.total_price, 92)
+  const a = assess(KFAR, r.rpcArgs.p_delivery)
+  assert.deepEqual([a.readiness, a.eligible, a.warning], ['location_area_mismatch', false, 'מיקום המשלוח אינו תואם לאזור שנבחר'])
+})
+
+await test('AP13. trusted GPS + incomplete address → not eligible (E)', async () => {
+  for (const address of [{ ...FULL(KFAR), street: '' }, { ...FULL(KFAR), houseNumber: '  ' }, { ...FULL(KFAR), city: 'ירושלים' }, { city: KFAR }]) {
+    const a = assess(KFAR, gpsGeo(31.004, 35.001), address)
+    assert.deepEqual([a.readiness, a.eligible, a.warning], ['incomplete_address', false, 'כתובת המשלוח אינה מלאה'], JSON.stringify(address))
+  }
+})
+
+await test('AP14. GPS only (no address) → not eligible', async () => {
+  assert.equal(assess(KFAR, gpsGeo(31.004, 35.001), null).eligible, false)
+})
+
+await test('AP15. address only (no precise location) → missing precise location (C)', async () => {
+  const a = assess(KFAR, UNRESOLVED)
+  assert.deepEqual([a.readiness, a.eligible, a.warning], ['missing_precise_location', false, 'חסר מיקום מדויק למשלוח'])
+})
+
+await test('AP16. Mapbox street + correct locality + approved area + in radius → ready', async () => {
+  const r = await placeOrder(body('delivery'), withProvider(providerReturning({ lat: 31.2005, lng: 35.2, localities: [CITY], level: 'street', partial: false })))
+  assert.equal(r.rpcArgs.p_delivery.geo_source, 'geocoder')
+  assert.equal(assess(CITY, r.rpcArgs.p_delivery).readiness, 'ready')
+  const far = { ...r.rpcArgs.p_delivery, delivery_lat: 31.3 } // same source, outside the fixture radius
+  assert.equal(assess(CITY, far).readiness, 'location_area_mismatch')
+})
+
+await test('AP17–18. Mapbox locality / unresolved / legacy NULL → not eligible', async () => {
+  const locality = await placeOrder(body('delivery'), withProvider(providerReturning({ lat: 31.2, lng: 35.2, localities: [CITY], level: 'locality', partial: false })))
+  assert.equal(assess(CITY, locality.rpcArgs.p_delivery).readiness, 'missing_precise_location')
+  for (const g of [UNRESOLVED, { delivery_lat: null, delivery_lng: null, geo_source: null, geo_precision: null }, null])
+    assert.equal(assess(CITY, g).eligible, false)
+})
+
+await test('AP19. pickup → never eligible, no warning', async () => {
+  const a = assess(KFAR, gpsGeo(31.004, 35.001), FULL(KFAR), 'pickup')
+  assert.deepEqual([a.readiness, a.eligible, a.warning], ['not_delivery', false, null])
+})
+
+await test('AP-D. REAL config today: precise GPS in any area → area_not_approved (D), never eligible', async () => {
+  for (const a of cfg.DELIVERY_AREAS) {
+    const r = loc.assessDeliveryDispatch({ type: 'delivery', address: FULL(a), geo: gpsGeo(31.8, 35.3) })
+    assert.deepEqual([r.readiness, r.eligible, r.warning], ['area_not_approved', false, 'אזור המשלוח עדיין לא מאומת לשליחה אוטומטית'], a)
+  }
+})
+
+await test('AP22–24. no Maale call / dispatch rows; no logging or coordinates output in the new modules', async () => {
+  for (const f of ['lib/deliveryAreasGeo.ts', 'lib/deliveryLocation.ts']) {
+    const src = readFileSync(join(ROOT, f), 'utf8')
+    assert.ok(!/maalehamishlohim|delivery_dispatches|express\/integrations|fetch\(/i.test(src), `${f}: no Maale / dispatch / network`)
+    assert.ok(!/console\.|\.log\(/.test(src), `${f}: no logging`)
+  }
 })
 
 /* ─── Static guards ─── */

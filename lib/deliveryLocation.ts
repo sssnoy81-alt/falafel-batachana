@@ -8,6 +8,8 @@
 // checked at order time and is not persisted.
 
 import { AUTO_DISPATCH_PRECISIONS, isValidCoordinatePair, type DeliveryGeoFields } from './geocoding'
+import { DELIVERY_AREAS } from './orderConfig'
+import { checkDeliveryAreaProximity, DELIVERY_AREA_GEO, type AreaProximityResult, type DeliveryAreaGeoConfig } from './deliveryAreasGeo'
 
 /** Trusted for courier use only when the device reports ≤ 100 m accuracy (building / street level). */
 export const DEVICE_LOCATION_MAX_ACCURACY_M = 100
@@ -65,21 +67,76 @@ export const deviceLocationGeoFields = (loc: DeviceLocation): DeliveryGeoFields 
 /* ─── Future courier dispatch (pure; dispatches nothing) ─── */
 
 /**
- * Stored geo is dispatch-eligible only when it came from a trusted source at street level:
- *  - manual  + street  (customer-confirmed device location, accuracy checked at order time), or
- *  - geocoder + street (Mapbox street match that passed locality validation).
- * locality / unresolved / legacy NULL → not eligible. Never stored or accepted from the client.
+ * Source-level check only: coordinates are valid (Israel box) and came from a dispatch-safe source at
+ * street level — manual + street (customer device GPS, accuracy checked at order time) or geocoder + street
+ * (Mapbox street match that passed locality validation). NOT sufficient for dispatch on its own:
+ * assessDeliveryDispatch() also requires a full address and approved-area proximity.
  */
-export function isDispatchEligibleGeo(geo: Partial<DeliveryGeoFields> | null | undefined): boolean {
+export function hasPreciseCoordinates(geo: Partial<DeliveryGeoFields> | null | undefined): boolean {
   if (!geo) return false
   if (!isValidCoordinatePair(geo.delivery_lat, geo.delivery_lng)) return false
   if (geo.geo_source !== 'manual' && geo.geo_source !== 'geocoder') return false
   return !!geo.geo_precision && AUTO_DISPATCH_PRECISIONS.includes(geo.geo_precision)
 }
 
-/** Future kitchen warning "⚠️ לא התקבל מיקום מדויק למשלוח" — shown when a delivery is not dispatch-eligible. */
-export const needsPreciseLocationWarning = (geo: Partial<DeliveryGeoFields> | null | undefined): boolean =>
-  !isDispatchEligibleGeo(geo)
+export type DispatchReadiness =
+  | 'ready'                      // A: full address + precise location + approved-area match
+  | 'location_area_mismatch'     // B
+  | 'missing_precise_location'   // C
+  | 'area_not_approved'          // D: area has no approved proximity config yet
+  | 'incomplete_address'         // E
+  | 'not_delivery'
+
+export const DISPATCH_WARNINGS: Readonly<Record<Exclude<DispatchReadiness, 'ready' | 'not_delivery'>, string>> = {
+  location_area_mismatch: 'מיקום המשלוח אינו תואם לאזור שנבחר',
+  missing_precise_location: 'חסר מיקום מדויק למשלוח',
+  area_not_approved: 'אזור המשלוח עדיין לא מאומת לשליחה אוטומטית',
+  incomplete_address: 'כתובת המשלוח אינה מלאה',
+}
+
+export interface DispatchAssessment {
+  readiness: DispatchReadiness
+  /** Future automatic courier dispatch allowed. Computed here only — never stored or accepted from a client. */
+  eligible: boolean
+  warning: string | null
+  proximity?: AreaProximityResult
+}
+
+export interface DispatchAssessmentInput {
+  type: string | null | undefined
+  address: { city?: string | null; street?: string | null; houseNumber?: string | null } | null | undefined
+  geo: Partial<DeliveryGeoFields> | null | undefined
+}
+
+const filled = (s: string | null | undefined): boolean => typeof s === 'string' && s.trim() !== ''
+
+/**
+ * Automatic dispatch requires ALL of: delivery order; full textual address (area from DELIVERY_AREAS, street,
+ * house number — Maale needs customer_address); precise coordinates from a dispatch-safe source; the area has
+ * approved proximity config; and the coordinates are within that area's approved radius. The same area check
+ * applies to device GPS and Mapbox street results. GPS is never checked against the street / house number.
+ */
+export function assessDeliveryDispatch(
+  input: DispatchAssessmentInput,
+  config: Readonly<Record<string, DeliveryAreaGeoConfig>> = DELIVERY_AREA_GEO,
+): DispatchAssessment {
+  const verdict = (readiness: DispatchReadiness, proximity?: AreaProximityResult): DispatchAssessment => ({
+    readiness,
+    eligible: readiness === 'ready',
+    warning: readiness === 'ready' || readiness === 'not_delivery' ? null : DISPATCH_WARNINGS[readiness],
+    ...(proximity ? { proximity } : {}),
+  })
+  if (input.type !== 'delivery') return verdict('not_delivery')
+  const a = input.address
+  if (!a || !filled(a.city) || !DELIVERY_AREAS.includes(a.city as string) || !filled(a.street) || !filled(a.houseNumber))
+    return verdict('incomplete_address')
+  if (!hasPreciseCoordinates(input.geo)) return verdict('missing_precise_location')
+  const proximity = checkDeliveryAreaProximity(a.city as string, input.geo?.delivery_lat, input.geo?.delivery_lng, config)
+  if (proximity.reason === 'matched') return verdict('ready', proximity)
+  if (proximity.reason === 'outside_area') return verdict('location_area_mismatch', proximity)
+  if (proximity.reason === 'invalid_coordinates') return verdict('missing_precise_location', proximity)
+  return verdict('area_not_approved', proximity) // not configured / not approved / unknown
+}
 
 /* ─── Client: capture states (browser calls stay in the page) ─── */
 
