@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { getBrowserSupabase } from '@/lib/supabaseBrowser'
 import {
   DELIVERY_AREAS, DELIVERY_FEE_RANGE, DELIVERY_FIELD_LIMITS, DELIVERY_MEAL_SURCHARGE, MAX_CUSTOMER_NAME, MAX_ITEM_NOTES, MAX_LINE_QUANTITY, PAYMENT_METHOD_LABELS, PHONE_REGEX, getDeliveryFeeForArea,
@@ -14,6 +14,8 @@ import {
 } from '@/lib/pricing'
 import { getBusinessStatus } from '@/lib/hours'
 import { formatDeliveryAddress } from '@/lib/deliveryAddress'
+import DeliveryAddressPicker from './DeliveryAddressPicker'
+import { isAddressSelectionValid, withCity, type AddressPickerState } from '@/lib/deliveryAddressSelection'
 import {
   classifyGeolocationError, deliveryLocationWireFields, evaluateDevicePosition,
   type DeviceLocation, type LocationCaptureState,
@@ -75,6 +77,7 @@ const ORDER_ERROR_MESSAGES: Partial<Record<OrderErrorCode, string>> = {
   invalid_name: 'נא להזין שם מלא',
   empty_cart: 'הסל ריק',
   payment_method_not_allowed: 'במשלוח ניתן לשלם באשראי בלבד',
+  address_not_verified: 'לא ניתן לאמת את הכתובת. נא לבחור כתובת מהרשימה',
 }
 const GENERIC_ORDER_ERROR = 'לא ניתן לשלוח את ההזמנה כרגע. נסו שוב בעוד רגע או התקשרו לסניף'
 // Destination-based delivery fee (lib/orderConfig DELIVERY_FEES_BY_AREA); range shown until an area is chosen.
@@ -163,6 +166,18 @@ export default function Home() {
   // איסוף / משלוח — הצעד הראשון בהזמנה (לפני התפריט); נקבע מחדש בכל התחלת הזמנה
   const [orderTypeChoice, setOrderTypeChoice] = useState<OrderType | null>(null)
   const [deliveryForm, setDeliveryForm] = useState<DeliveryForm>(() => loadSavedDeliveryForm())
+  // כתובת משלוח בעזרת Google (ברירת המחדל). 'manual' = גיבוי כשחיפוש הכתובות אינו זמין.
+  const [addressMode, setAddressMode] = useState<'google' | 'manual'>('google')
+  const [addressPicker, setAddressPicker] = useState<AddressPickerState>(() => {
+    const saved = loadSavedDeliveryForm() // a remembered address pre-fills the search text but must be re-selected
+    return { city: saved.city, query: [saved.street, saved.houseNumber].filter(Boolean).join(' '), selected: null }
+  })
+  const switchToManualAddress = useCallback(() => setAddressMode('manual'), [])
+  function handleAddressPickerChange(next: AddressPickerState) {
+    setAddressPicker(next)
+    // street / house number come only from a verified selection (the server re-verifies the place on submit)
+    setDeliveryForm(f => ({ ...f, street: next.selected?.street ?? '', houseNumber: next.selected?.houseNumber ?? '' }))
+  }
   // מיקום מכשיר למשלוח — רק אחרי לחיצה מפורשת; לא נשמר ב-localStorage ולא מוצג כקואורדינטות
   const [locationState, setLocationState] = useState<LocationCaptureState>('idle')
   const [deviceLocation, setDeviceLocation] = useState<DeviceLocation | null>(null)
@@ -322,6 +337,7 @@ export default function Home() {
 
   const deliveryFormValid = !!deliveryForm.city && DELIVERY_AREAS.includes(deliveryForm.city)
     && deliveryForm.street.trim().length > 0 && deliveryForm.houseNumber.trim().length > 0
+    && (addressMode === 'manual' || isAddressSelectionValid({ ...addressPicker, city: deliveryForm.city }))
   const orderTypeReady = effectiveOrderType === 'pickup' || (effectiveOrderType === 'delivery' && deliveryFormValid)
   const canPlaceOrder = isOpen && isValidPhone(orderPhone) && cart.length > 0 && customerName.trim().length >= 2
     && orderTypeReady && !placingOrder
@@ -460,6 +476,7 @@ export default function Home() {
         entrance: deliveryForm.entrance.trim() || undefined,
         courierNotes: deliveryForm.courierNotes.trim() || undefined,
         ...deliveryLocationWireFields(deviceLocation), // {} unless a trusted location was captured
+        ...(addressMode === 'google' && addressPicker.selected ? { google_place_id: addressPicker.selected.placeId } : {}),
       } : undefined,
     }
   }
@@ -825,23 +842,36 @@ export default function Home() {
           <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${C.border}` }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>📍 כתובת למשלוח</div>
             <label style={labelStyle}>יישוב *</label>
-            <select value={deliveryForm.city} onChange={e => { setDeliveryForm(f => ({ ...f, city: e.target.value })); resetDeviceLocation() }}
+            <select value={deliveryForm.city} onChange={e => {
+                const city = e.target.value
+                setDeliveryForm(f => ({ ...f, city, ...(addressMode === 'google' ? { street: '', houseNumber: '' } : {}) }))
+                setAddressPicker(p => withCity(p, city)) // new area → selection + Google coordinates cleared
+                resetDeviceLocation()
+              }}
               style={{ ...inputStyle(!!deliveryForm.city), appearance: 'auto', marginBottom: 12 }}>
               <option value="">בחרו יישוב</option>
               {DELIVERY_AREAS.map(a => <option key={a} value={a}>{a} · משלוח ₪{getDeliveryFeeForArea(a)}</option>)}
             </select>
-            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10, marginBottom: 12 }}>
-              <div>
-                <label style={labelStyle}>רחוב *</label>
-                <input type="text" value={deliveryForm.street} maxLength={DELIVERY_FIELD_LIMITS.street} dir="rtl"
-                  onChange={e => setDeliveryForm(f => ({ ...f, street: e.target.value }))} style={inputStyle(deliveryForm.street.trim().length > 0)} />
+            {addressMode === 'google' ? (
+              <DeliveryAddressPicker
+                state={{ ...addressPicker, city: deliveryForm.city }}
+                onChange={handleAddressPickerChange}
+                onUnavailable={switchToManualAddress}
+                colors={C} labelStyle={labelStyle} inputStyle={inputStyle} />
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10, marginBottom: 12 }}>
+                <div>
+                  <label style={labelStyle}>רחוב *</label>
+                  <input type="text" value={deliveryForm.street} maxLength={DELIVERY_FIELD_LIMITS.street} dir="rtl"
+                    onChange={e => setDeliveryForm(f => ({ ...f, street: e.target.value }))} style={inputStyle(deliveryForm.street.trim().length > 0)} />
+                </div>
+                <div>
+                  <label style={labelStyle}>מספר בית *</label>
+                  <input type="text" value={deliveryForm.houseNumber} maxLength={DELIVERY_FIELD_LIMITS.houseNumber} dir="rtl"
+                    onChange={e => setDeliveryForm(f => ({ ...f, houseNumber: e.target.value }))} style={inputStyle(deliveryForm.houseNumber.trim().length > 0)} />
+                </div>
               </div>
-              <div>
-                <label style={labelStyle}>מספר בית *</label>
-                <input type="text" value={deliveryForm.houseNumber} maxLength={DELIVERY_FIELD_LIMITS.houseNumber} dir="rtl"
-                  onChange={e => setDeliveryForm(f => ({ ...f, houseNumber: e.target.value }))} style={inputStyle(deliveryForm.houseNumber.trim().length > 0)} />
-              </div>
-            </div>
+            )}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 12 }}>
               {([['entrance', 'כניסה'], ['floor', 'קומה'], ['apartment', 'דירה']] as const).map(([k, label]) => (
                 <div key={k}>

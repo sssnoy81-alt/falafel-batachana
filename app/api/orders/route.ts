@@ -3,6 +3,7 @@ import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
 import { createOrderAtomic, OrderCreationUnavailableError } from '@/lib/createOrder'
 import { isShopOpen } from '@/lib/hours'
 import { attachDeliveryGeo } from '@/lib/orderGeo'
+import { resolveGoogleDeliveryAddress } from '@/lib/orderAddress'
 import {
   buildOrderFromCatalog,
   parseCreateOrderRequest,
@@ -34,9 +35,14 @@ export async function POST(req: NextRequest) {
 
   const parsed = parseCreateOrderRequest(body)
   if (!parsed.ok) return errorResponse(400, parsed.code, parsed.detail)
-  const order = parsed.value
 
   if (!isShopOpen()) return errorResponse(409, 'closed')
+
+  // Delivery with a Google-selected address: the server fetches and verifies the place itself (browser-sent
+  // place details are never trusted) and uses Google's street / house number / coordinates.
+  const resolved = await resolveGoogleDeliveryAddress(parsed.value)
+  if (!resolved.ok) return errorResponse(400, resolved.code, resolved.detail)
+  const order = resolved.order
 
   try {
     const supabase = getServerSupabase()

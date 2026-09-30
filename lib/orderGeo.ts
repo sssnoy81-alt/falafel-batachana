@@ -23,8 +23,11 @@ export const defaultOrderGeoDeps = (): OrderGeoDeps => ({
 
 /**
  * Delivery only; pickup (or a build without p_delivery) is returned untouched and the geocoder is never called.
- * Priority: 1) trusted customer-confirmed device location (authoritative; Mapbox is not called and can never
- * overwrite it) → 2) server Mapbox geocoding (street match or locality) → 3) explicit unresolved.
+ * Coordinate priority (the textual address is never changed here):
+ *  1) trusted customer-confirmed device GPS (≤ 100 m) — navigation coordinates only
+ *  2) server-verified Google place (resolveGoogleDeliveryAddress) → geocoder / street with Google's coordinates
+ *  3) Google place selected but not verifiable (Google unavailable) → explicit unresolved, Mapbox NOT called
+ *  4) legacy requests without a Google place → server Mapbox geocoding → otherwise explicit unresolved
  */
 export async function attachDeliveryGeo(
   order: CreateOrderRequest, built: BuiltOrder, deps: OrderGeoDeps = defaultOrderGeoDeps(),
@@ -36,6 +39,12 @@ export async function attachDeliveryGeo(
       return applyDeliveryGeo(built, deviceLocationGeoFields(order.deliveryLocation))
     deps.log('location_low_accuracy') // code only — never coordinates or accuracy
   }
+
+  if (order.googleAddress?.status === 'verified') {
+    const { lat, lng } = order.googleAddress
+    return applyDeliveryGeo(built, { delivery_lat: lat, delivery_lng: lng, geo_source: 'geocoder', geo_precision: 'street' })
+  }
+  if (order.googlePlaceId) return applyDeliveryGeo(built, UNRESOLVED_DELIVERY_GEO) // Google chosen: never Mapbox
 
   let result: GeocodeResult
   try {

@@ -31,6 +31,9 @@ import { formatDeliveryAddress, type DeliveryAddress } from './deliveryAddress'
 import { UNRESOLVED_DELIVERY_GEO, type DeliveryGeoFields } from './geocoding'
 import { LOCATION_INPUT_KEYS, parseDeviceLocationInput, type DeliveryLocationWire, type DeviceLocation } from './deliveryLocation'
 
+// Google Places place id format (same rule as lib/googlePlaces; duplicated here to keep this module client-type-safe).
+const PLACE_ID_REGEX = /^[A-Za-z0-9_-]{1,300}$/
+
 /* ─── Public contract ─── */
 
 export interface OrderItemRequest {
@@ -52,9 +55,17 @@ export interface CreateOrderRequest {
   paymentMethod: PaymentMethod
   items: OrderItemRequest[]
   /** Wire: the address plus optional customer device-location inputs (location_*). Parsed: address only. */
-  delivery?: DeliveryAddress & Partial<DeliveryLocationWire>
+  delivery?: DeliveryAddress & Partial<DeliveryLocationWire> & { google_place_id?: string }
   /** Parsed server-side only: validated device location (trust / accuracy decided later by the server). */
   deliveryLocation?: DeviceLocation
+  /** Parsed: the Google place the customer selected (format-checked only — verified server-side later). */
+  googlePlaceId?: string
+  /**
+   * SERVER-SET ONLY (never parsed from a client): result of server-side Google verification.
+   * 'verified' → street / house number were replaced by Google's and coordinates are Google's.
+   * 'unavailable' → Google could not be reached; the typed address is kept, coordinates stay unresolved.
+   */
+  googleAddress?: { status: 'verified'; lat: number; lng: number } | { status: 'unavailable' }
 }
 
 export interface CreateOrderResponse {
@@ -78,6 +89,7 @@ export type OrderErrorCode =
   | 'invalid_phone'
   | 'invalid_payment_method'
   | 'payment_method_not_allowed'
+  | 'address_not_verified'
   | 'empty_cart'
   | 'invalid_quantity'
   | 'item_unavailable'
@@ -130,6 +142,8 @@ export function parseCreateOrderRequest(body: unknown): Result<CreateOrderReques
   if (hasAnyKey(body, FORBIDDEN_GEO_KEYS)) return fail('invalid_request', 'client_geo_not_accepted')
   // Device-location inputs are only accepted inside `delivery` (so never on pickup).
   if (hasAnyKey(body, [...LOCATION_INPUT_KEYS])) return fail('invalid_request', 'client_geo_not_accepted')
+  // Google place / server verification state are only accepted as delivery.google_place_id.
+  if (hasAnyKey(body, ['google_place_id', 'googlePlaceId', 'googleAddress', 'verifiedPlace'])) return fail('invalid_request', 'client_geo_not_accepted')
 
   const { branchId, type, customerName, phone, paymentMethod, items, delivery } = body
 
@@ -172,6 +186,7 @@ export function parseCreateOrderRequest(body: unknown): Result<CreateOrderReques
 
   let parsedDelivery: DeliveryAddress | undefined
   let parsedLocation: DeviceLocation | undefined
+  let parsedPlaceId: string | undefined
   if (type === 'pickup') {
     if (delivery !== undefined && delivery !== null) return fail('invalid_request', 'pickup_with_delivery')
   } else {
@@ -191,6 +206,11 @@ export function parseCreateOrderRequest(body: unknown): Result<CreateOrderReques
     const location = parseDeviceLocationInput(delivery)
     if (!location.ok) return fail('invalid_request', 'invalid_location')
     parsedLocation = location.value
+    if (Object.prototype.hasOwnProperty.call(delivery, 'google_place_id')) {
+      if (typeof delivery.google_place_id !== 'string' || !PLACE_ID_REGEX.test(delivery.google_place_id))
+        return fail('invalid_request', 'invalid_place_id')
+      parsedPlaceId = delivery.google_place_id
+    }
   }
 
   return {
@@ -199,6 +219,7 @@ export function parseCreateOrderRequest(body: unknown): Result<CreateOrderReques
       branchId, type, customerName: name, phone: normalizedPhone, paymentMethod,
       items: parsedItems, delivery: parsedDelivery,
       ...(parsedLocation ? { deliveryLocation: parsedLocation } : {}),
+      ...(parsedPlaceId ? { googlePlaceId: parsedPlaceId } : {}),
     },
   }
 }
