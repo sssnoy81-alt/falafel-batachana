@@ -6,6 +6,7 @@ import {
   DELIVERY_AREAS,
   DELIVERY_FIELD_LIMITS,
   getDeliveryFeeForArea,
+  isActiveDeliveryArea,
   MAX_CART_LINES,
   MAX_CUSTOMER_NAME,
   MAX_ITEM_NOTES,
@@ -84,6 +85,7 @@ export type OrderErrorCode =
   | 'invalid_type'
   | 'delivery_not_available'
   | 'invalid_delivery_area'
+  | 'delivery_area_unavailable'
   | 'invalid_address'
   | 'invalid_name'
   | 'invalid_phone'
@@ -194,6 +196,8 @@ export function parseCreateOrderRequest(body: unknown): Result<CreateOrderReques
     if (!isRecord(delivery)) return fail('invalid_address')
     if (hasAnyKey(delivery, FORBIDDEN_GEO_KEYS)) return fail('invalid_request', 'client_geo_not_accepted')
     if (typeof delivery.city !== 'string' || !DELIVERY_AREAS.includes(delivery.city)) return fail('invalid_delivery_area')
+    // Known but temporarily unavailable (no agreed Maale price): never accepted for a NEW order.
+    if (!isActiveDeliveryArea(delivery.city)) return fail('delivery_area_unavailable')
     const street = optionalText(delivery.street, DELIVERY_FIELD_LIMITS.street)
     const houseNumber = optionalText(delivery.houseNumber, DELIVERY_FIELD_LIMITS.houseNumber)
     const apartment = optionalText(delivery.apartment, DELIVERY_FIELD_LIMITS.apartment)

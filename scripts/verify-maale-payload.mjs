@@ -146,10 +146,33 @@ test('17–19 + contract. no delivery_fee / delivery_area / price / API key / ex
   assert.ok(!/process\.env|fetch\(|X-Api-Key|MAALE_EXPRESS_KEY|console\./.test(src), 'no env / network / key / logging in the builder')
 })
 
-test('20–22. pickup, wrong branch and non-credit delivery rejected', () => {
+test('20–22. pickup, wrong branch and non-delivery payment methods rejected (08D14: cash + credit allowed)', () => {
   assert.ok(errorsOf(withOrder({ type: 'pickup' })).includes('not_delivery'))
   assert.ok(errorsOf(withOrder({ branch_id: '3ab15ad1-e835-492b-bae5-11b202ee2314' })).includes('wrong_branch'))
-  for (const pm of ['cash', 'cibus', 'bit', null]) assert.ok(errorsOf(withOrder({ payment_method: pm })).includes('payment_method_not_allowed'), String(pm))
+  for (const pm of ['cibus', 'bit', null, '', 'CASH', 'Credit'])
+    assert.ok(errorsOf(withOrder({ payment_method: pm })).includes('payment_method_not_allowed'), String(pm))
+})
+
+test('08D14 · 23–24. delivery cash → Maale "cash"; delivery credit → Maale "credit" (food total identical)', () => {
+  const cash = M.buildMaaleOrderPayload(withOrder({ payment_method: 'cash' }))
+  const credit = M.buildMaaleOrderPayload(base())
+  assert.ok(cash.ok && credit.ok)
+  assert.equal(cash.payload.payment_method, 'cash'); assert.equal(credit.payload.payment_method, 'credit')
+  assert.equal(cash.payload.food_total_agorot, 5300); assert.equal(credit.payload.food_total_agorot, 5300) // fee excluded, +₪4 included
+  assert.ok(!JSON.stringify(cash.payload).includes('delivery_fee'))
+})
+
+test('08D14 · 25. Maale payment method comes only from orders.payment_method (no other input can set it)', () => {
+  const s = withOrder({ payment_method: 'credit' })
+  s.delivery.payment_method = 'cash'; s.items[0].payment_method = 'cash'; s.paymentMethod = 'cash' // stray / injected fields
+  assert.equal(M.buildMaaleOrderPayload(s).payload.payment_method, 'credit')
+  const row = M.snapshotFromOrderRow({ id: ORDER_ID, payment_method: 'cash', paymentMethod: 'credit', deliveries: [], order_items: [] })
+  assert.equal(row.order.payment_method, 'cash'); assert.ok(!('paymentMethod' in row.order))
+})
+
+test('08D14. unavailable destinations (נופי פרת / מצפה יריחו) fail closed — no agreed Maale price', () => {
+  for (const city of ['נופי פרת', 'מצפה יריחו']) assert.ok(errorsOf(withDelivery({ city })).includes('invalid_city'), city)
+  for (const city of ['מעלה אדומים', 'מישור אדומים', 'כפר אדומים', 'אלון']) assert.ok(M.buildMaaleOrderPayload(withDelivery({ city })).ok, city)
 })
 
 test('23–24. verified Google (geocoder/street) and trusted GPS (manual/street) coordinates accepted', () => {

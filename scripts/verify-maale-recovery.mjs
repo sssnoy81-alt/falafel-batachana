@@ -241,7 +241,7 @@ await test('readiness: full field report + blockers (normal name, pickup, locali
     config: { status: 'ready', apiKey: KEY }, repo: { loadOrder: async () => null, getDispatch: async () => null }, isPaymentVerified: async () => false })
   assert.deepEqual([missing.orderExists, missing.result], [false, 'order_not_found'])
   const keys = Object.keys(normal)
-  for (const k of ['orderExists', 'isDelivery', 'branchOk', 'hasTestMarker', 'paymentMethodCredit', 'addressComplete', 'coordinatesPrecise', 'payloadValid',
+  for (const k of ['orderExists', 'isDelivery', 'branchOk', 'hasTestMarker', 'paymentMethod', 'paymentMethodAllowed', 'hypRequired', 'addressComplete', 'coordinatesPrecise', 'payloadValid',
     'dispatchState', 'maaleEnabled', 'maaleKeyConfigured', 'areaReady', 'hypVerified', 'requiresPaymentOverride', 'requiresAreaOverride', 'safeForControlledTest', 'result'])
     assert.ok(keys.includes(k), k)
 })

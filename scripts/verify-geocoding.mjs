@@ -229,8 +229,8 @@ await test('13. pricing unchanged by geocoding outcome (success vs failure ident
   const strip = d => Object.fromEntries(Object.entries(d).filter(([k]) => !GEO_KEYS.includes(k)))
   assert.deepEqual(strip(ok.rpcArgs.p_delivery), strip(bad.rpcArgs.p_delivery))
   assert.deepEqual(ok.rpcArgs.p_order, bad.rpcArgs.p_order); assert.deepEqual(ok.rpcArgs.p_items, bad.rpcArgs.p_items)
-  assert.equal(ok.rpcArgs.p_order.total_price, 92)
-  assert.deepEqual([ok.rpcArgs.p_delivery.delivery_fee, ok.rpcArgs.p_delivery.meal_surcharge, ok.rpcArgs.p_delivery.meal_quantity], [20, 12, 3])
+  assert.equal(ok.rpcArgs.p_order.total_price, 97)
+  assert.deepEqual([ok.rpcArgs.p_delivery.delivery_fee, ok.rpcArgs.p_delivery.meal_surcharge, ok.rpcArgs.p_delivery.meal_quantity], [25, 12, 3])
 })
 
 /* ─── create_order input (Part O) ─── */
@@ -434,7 +434,7 @@ await test('M18. order creation stays intact: Mapbox failure → unresolved orde
   const mk = f => { const resolution = prov.resolveGeocodingProvider({ GEOCODING_PROVIDER: 'mapbox', GEOCODING_API_KEY: TOKEN }, f); return input => geo.geocodeDeliveryAddress(input, { resolution }) }
   for (const f of [async () => jsonRes({}, 503), async () => { throw new Error('down') }, async () => jsonRes(fc())]) {
     const r = await placeOrder(body('delivery'), mk(f))
-    assert.ok(r.created); assert.deepEqual(geoOf(r.rpcArgs.p_delivery), UNRESOLVED); assert.equal(r.rpcArgs.p_order.total_price, 92)
+    assert.ok(r.created); assert.deepEqual(geoOf(r.rpcArgs.p_delivery), UNRESOLVED); assert.equal(r.rpcArgs.p_order.total_price, 97)
   }
   const ok = await placeOrder(body('delivery'), mk(async () => jsonRes(fc(mbFeature()))))
   assert.deepEqual(geoOf(ok.rpcArgs.p_delivery), { delivery_lat: 31.773612, delivery_lng: 35.298313, geo_source: 'geocoder', geo_precision: 'street' })
@@ -577,8 +577,9 @@ await test('DL22–23. pricing and payment rules unchanged by device location', 
   const withLoc = await placeOrder(body('delivery', {}, DEVICE), withProvider(providerReturning(null)))
   const without = await placeOrder(body('delivery'), withProvider(providerReturning(null)))
   assert.deepEqual(withLoc.rpcArgs.p_order, without.rpcArgs.p_order); assert.deepEqual(withLoc.rpcArgs.p_items, without.rpcArgs.p_items)
-  assert.equal(withLoc.rpcArgs.p_order.total_price, 92)
-  assert.equal(rejected(parseCreateOrderRequest(body('delivery', { paymentMethod: 'cash' }, DEVICE))).code, 'payment_method_not_allowed')
+  assert.equal(withLoc.rpcArgs.p_order.total_price, 97)
+  assert.equal(rejected(parseCreateOrderRequest(body('delivery', { paymentMethod: 'cibus' }, DEVICE))).code, 'payment_method_not_allowed') // 08D14: cash allowed, cibus/bit not
+  assert.equal(parseCreateOrderRequest(body('delivery', { paymentMethod: 'cash' }, DEVICE)).ok, true)
 })
 
 await test('DL24–25. no Maale call / dispatch rows; temporary Mapbox diagnostics fully removed', async () => {
@@ -696,7 +697,7 @@ await test('AP12 + AP20–21. trusted GPS in ANOTHER area → mismatch (B); orde
   const r = await placeOrder(body('delivery', {}, { city: KFAR, location_lat: 31.2, location_lng: 35.2, location_accuracy: 15, location_confirmed: true }),
     withProvider(providerReturning(STREET_HIT)))
   assert.ok(r.created); assert.equal(r.calls.geocode, 0)
-  assert.deepEqual(geoOf(r.rpcArgs.p_delivery), gpsGeo(31.2, 35.2)); assert.equal(r.rpcArgs.p_order.total_price, 112) // 60 + 12 + כפר אדומים ₪40
+  assert.deepEqual(geoOf(r.rpcArgs.p_delivery), gpsGeo(31.2, 35.2)); assert.equal(r.rpcArgs.p_order.total_price, 107) // 60 + 12 + כפר אדומים ₪35
   const a = assess(KFAR, r.rpcArgs.p_delivery)
   assert.deepEqual([a.readiness, a.eligible, a.warning], ['location_area_mismatch', false, 'מיקום המשלוח אינו תואם לאזור שנבחר'])
 })

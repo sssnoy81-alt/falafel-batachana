@@ -211,6 +211,48 @@ await test('gates: HYP payment not verified / area not approved / order not conf
   const r = await far.run(); assert.deepEqual([r.reason, r.detail], ['area_not_ready', 'location_area_mismatch'])
 })
 
+await test('08D14 · 26. normal CREDIT dispatch is blocked without HYP verification (no DB write, no network)', async () => {
+  let asked = 0
+  const s = setup({ paid: false }); const orig = s.deps.isPaymentVerified
+  s.deps.isPaymentVerified = async id => { asked++; return orig(id) }
+  const r = await s.run()
+  assert.equal(r.reason, 'payment_not_verified'); assert.equal(asked, 1); assert.equal(s.calls.length, 0); assert.equal(s.mem.state.writes, 0)
+})
+
+await test('08D14 · 27. normal CREDIT dispatch passes the payment gate when HYP is verified', async () => {
+  const s = setup({ paid: true })
+  assert.deepEqual(await s.run(), { ok: true, outcome: 'sent', kind: 'created', reclaimed: false })
+  assert.equal(JSON.parse(s.calls[0].init.body).payment_method, 'credit')
+})
+
+const cashSnapshot = () => ({ ...snapshot(), order: { ...snapshot().order, payment_method: 'cash' } })
+
+await test('08D14 · 28. normal CASH dispatch does not require HYP (never asked) and sends payment_method "cash"', async () => {
+  let asked = 0
+  const s = setup({ paid: false, orderSnapshot: cashSnapshot() })
+  s.deps.isPaymentVerified = async () => { asked++; return false }
+  assert.deepEqual(await s.run(), { ok: true, outcome: 'sent', kind: 'created', reclaimed: false })
+  assert.equal(asked, 0, 'no HYP check for cash'); assert.equal(JSON.parse(s.calls[0].init.body).payment_method, 'cash')
+})
+
+await test('08D14 · 29–30. cash AND credit still require area-ready (real config: no area approved)', async () => {
+  for (const [orderSnapshot, paid] of [[cashSnapshot(), false], [snapshot(), true]]) {
+    const s = setup({ orderSnapshot, paid, realAreas: true })
+    const r = await s.run()
+    assert.equal(r.reason, 'area_not_ready'); assert.equal(s.calls.length, 0); assert.equal(s.mem.state.writes, 0)
+  }
+})
+
+await test('08D14. cash and credit both still need every other gate (confirmed status, valid payload, Maale config)', async () => {
+  for (const orderSnapshot of [cashSnapshot(), snapshot()]) {
+    assert.equal((await setup({ orderSnapshot, status: 'received' }).run()).reason, 'order_not_confirmed')
+    assert.equal((await setup({ orderSnapshot: { ...orderSnapshot, delivery: { ...orderSnapshot.delivery, house_number: '' } } }).run()).reason, 'invalid_payload')
+    assert.equal((await setup({ orderSnapshot, config: { status: 'disabled' } }).run()).reason, 'maale_disabled')
+  }
+  const cibus = setup({ orderSnapshot: { ...snapshot(), order: { ...snapshot().order, payment_method: 'cibus' } } })
+  assert.equal((await cibus.run()).reason, 'invalid_payload'); assert.equal(cibus.calls.length, 0)
+})
+
 await test('27–28. logs are short codes only: no API key, no customer PII', async () => {
   const all = []
   for (const respond of [() => jsonRes({}, 201), () => jsonRes({ code: 'zone_unknown' }, 400), () => jsonRes({}, 500)]) {

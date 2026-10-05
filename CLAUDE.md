@@ -39,10 +39,15 @@ A Hebrew-first (RTL) online ordering system for a falafel business with multiple
     **No discount** (the old 5% app discount was removed).
   - **delivery pricing**: +₪4 per qualifying meal unit (category allowlist; drinks never surcharged) + a
     **destination-based delivery fee** per order, from the single table `DELIVERY_FEES_BY_AREA` in `lib/orderConfig.ts`:
-    מעלה אדומים ₪20 · מישור אדומים ₪25 · כפר אדומים ₪40 · נופי פרת ₪40 · אלון ₪40 · מצפה יריחו ₪40
-    (כפר אדומים is priced with the "יישובי אלון" group).
+    מעלה אדומים ₪25 · מישור אדומים ₪25 · כפר אדומים ₪35 · אלון ₪40 (Maale Express doc, 3 Oct 2026).
+    **נופי פרת and מצפה יריחו are temporarily unavailable** (no agreed Maale price): hidden from the selector
+    (`ACTIVE_DELIVERY_AREAS`) and rejected by the server for new orders (`delivery_area_unavailable`); they stay in
+    `DELIVERY_AREAS` for history / aliases / reactivation.
     Customer-facing prices for delivery are shown **inclusive** of the +₪4; the area's fee is a separate line
-    (shown per area in the locality dropdown; "₪20–₪40 לפי יישוב" before an area is chosen).
+    (shown per area in the locality dropdown; "₪25–₪40 לפי יישוב" before an area is chosen).
+    **Delivery payment = cash or credit** (no Cibus / Bit; pickup keeps all four). Cash: the courier collects food +
+    delivery fee from the customer and pays the restaurant for the food. Credit: paid to Falafel in advance, the
+    courier collects nothing (future HYP). Payment never changes the price.
     **Server-authoritative:** `POST /api/orders` computes the fee from the validated area (unknown area → rejected,
     fail closed); client-sent fee/total fields are rejected or ignored, so the browser cannot override the fee.
     The stored `deliveries.delivery_fee` is the server-computed fee for that order.

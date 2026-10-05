@@ -7,7 +7,7 @@
 // (assessDeliveryDispatch in lib/deliveryLocation) and the dispatch-state persistence (delivery_dispatches).
 
 import {
-  DELIVERY_AREAS, DELIVERY_BRANCH_IDS, MAX_CUSTOMER_NAME, PHONE_REGEX, allowedPaymentMethods, normalizePhone,
+  ACTIVE_DELIVERY_AREAS, DELIVERY_BRANCH_IDS, MAX_CUSTOMER_NAME, PHONE_REGEX, allowedPaymentMethods, normalizePhone,
 } from './orderConfig'
 import { hasPreciseCoordinates } from './deliveryLocation'
 import type { DeliveryGeoFields } from './geocoding'
@@ -23,7 +23,9 @@ export interface MaaleOrderItem { name: string; quantity: number }
  *  no no_house_number (our checkout requires a house number) and no prep_minutes (Maale defaults to 20). */
 export interface MaaleOrderPayload {
   external_order_id: string   // orders.id — idempotency key, identical on every retry
-  payment_method: 'credit'    // paid to Falafel; the courier collects nothing
+  /** cash → the courier collects food + delivery fee from the customer and pays the restaurant for the food;
+   *  credit → paid to Falafel in advance, the courier collects nothing. From orders.payment_method only. */
+  payment_method: 'cash' | 'credit'
   food_total_agorot: number   // (orders.total_price − deliveries.delivery_fee) × 100 — includes the internal +₪4
   items: MaaleOrderItem[]
   customer_name: string
@@ -143,8 +145,9 @@ export function buildMaaleOrderPayload(s: MaaleOrderSnapshot): MaalePayloadResul
   if (typeof o.id !== 'string' || !UUID.test(o.id)) errors.push('invalid_order_id')
   if (o.type !== 'delivery') errors.push('not_delivery')
   if (!o.branch_id || !DELIVERY_BRANCH_IDS.includes(o.branch_id)) errors.push('wrong_branch')
-  // Locked: delivery is credit-only (paid to Falafel; courier collects nothing).
-  if (o.payment_method !== 'credit' || !allowedPaymentMethods('delivery').includes('credit')) errors.push('payment_method_not_allowed')
+  // Delivery: cash or credit only (server-authoritative orders.payment_method); anything else fails closed.
+  const paymentMethod = o.payment_method === 'cash' || o.payment_method === 'credit' ? o.payment_method : null
+  if (!paymentMethod || !allowedPaymentMethods('delivery').includes(paymentMethod)) errors.push('payment_method_not_allowed')
 
   const name = clean(o.customer_name)
   if (name.length < 2 || name.length > MAX_CUSTOMER_NAME) errors.push('invalid_customer_name')
@@ -158,7 +161,7 @@ export function buildMaaleOrderPayload(s: MaaleOrderSnapshot): MaalePayloadResul
   if (!d) errors.push('missing_delivery')
   else {
     const city = clean(d.city), street = clean(d.street), house = clean(d.house_number)
-    if (!DELIVERY_AREAS.includes(city)) errors.push('invalid_city')
+    if (!ACTIVE_DELIVERY_AREAS.includes(city)) errors.push('invalid_city') // unavailable areas have no agreed Maale price
     if (!street) errors.push('missing_street')
     if (!house) errors.push('missing_house_number')
     address = `${street} ${house}, ${city}`
@@ -199,11 +202,11 @@ export function buildMaaleOrderPayload(s: MaaleOrderSnapshot): MaalePayloadResul
   }
 
   const uniq = [...new Set(errors)]
-  if (uniq.length > 0 || food === null || lat === null || lng === null) return { ok: false, errors: uniq.length ? uniq : ['invalid_amounts'] }
+  if (uniq.length > 0 || food === null || lat === null || lng === null || !paymentMethod) return { ok: false, errors: uniq.length ? uniq : ['invalid_amounts'] }
 
   const payload: MaaleOrderPayload = {
     external_order_id: o.id,
-    payment_method: 'credit',
+    payment_method: paymentMethod,
     food_total_agorot: foodTotalAgorot({ total: total as number, deliveryFee: fee as number }),
     items,
     customer_name: name,

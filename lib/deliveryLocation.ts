@@ -8,7 +8,7 @@
 // checked at order time and is not persisted.
 
 import { AUTO_DISPATCH_PRECISIONS, isValidCoordinatePair, type DeliveryGeoFields } from './geocoding'
-import { DELIVERY_AREAS } from './orderConfig'
+import { DELIVERY_AREAS, isActiveDeliveryArea } from './orderConfig'
 import { checkDeliveryAreaProximity, DELIVERY_AREA_GEO, type AreaProximityResult, type DeliveryAreaGeoConfig } from './deliveryAreasGeo'
 
 /** Trusted for courier use only when the device reports ≤ 100 m accuracy (building / street level). */
@@ -131,6 +131,7 @@ export function assessDeliveryDispatch(
   if (!a || !filled(a.city) || !DELIVERY_AREAS.includes(a.city as string) || !filled(a.street) || !filled(a.houseNumber))
     return verdict('incomplete_address')
   if (!hasPreciseCoordinates(input.geo)) return verdict('missing_precise_location')
+  if (!isActiveDeliveryArea(a.city)) return verdict('area_not_approved') // temporarily unavailable destination
   const proximity = checkDeliveryAreaProximity(a.city as string, input.geo?.delivery_lat, input.geo?.delivery_lng, config)
   if (proximity.reason === 'matched') return verdict('ready', proximity)
   if (proximity.reason === 'outside_area') return verdict('location_area_mismatch', proximity)

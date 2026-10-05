@@ -116,6 +116,10 @@ export type DispatchResult =
 
 interface GateEvaluation {
   payload: ReturnType<typeof buildMaaleOrderPayload>
+  /** Server-authoritative orders.payment_method when it is a delivery method, else null. */
+  paymentMethod: 'cash' | 'credit' | null
+  /** Credit is prepaid → needs server-verified HYP success. Cash is collected by the courier → no HYP gate. */
+  hypRequired: boolean
   paymentVerified: boolean
   assessment: DispatchAssessment
 }
@@ -126,9 +130,14 @@ async function evaluateGates(
 ): Promise<GateEvaluation> {
   const d = loaded.snapshot.delivery
   const toNum = (v: number | string | null) => (typeof v === 'string' ? Number(v) : v)
+  const pm = loaded.snapshot.order.payment_method
+  const paymentMethod = pm === 'cash' || pm === 'credit' ? pm : null
+  const hypRequired = paymentMethod === 'credit'
   return {
     payload: buildMaaleOrderPayload(loaded.snapshot),
-    paymentVerified: await deps.isPaymentVerified(orderId),
+    paymentMethod,
+    hypRequired,
+    paymentVerified: hypRequired ? await deps.isPaymentVerified(orderId) : false,
     assessment: assessDeliveryDispatch({
       type: loaded.snapshot.order.type,
       address: d ? { city: d.city, street: d.street, houseNumber: d.house_number } : null,
@@ -164,8 +173,9 @@ export async function dispatchOrderToMaale(
   const gates = await evaluateGates(orderId, loaded, deps)
   if (!gates.payload.ok) return { ok: false, outcome: 'blocked', reason: 'invalid_payload', detail: gates.payload.errors }
   const payload = gates.payload.payload
+  // Payment gate: credit only (prepaid → server-verified HYP success). Cash is collected by the courier.
   // Bypasses exist only inside an explicit, marker-verified test call (never env / global / normal orders).
-  if (!gates.paymentVerified && !(test && test.bypassPaymentGate === true))
+  if (gates.hypRequired && !gates.paymentVerified && !(test && test.bypassPaymentGate === true))
     return { ok: false, outcome: 'blocked', reason: 'payment_not_verified' }
   if (gates.assessment.readiness !== 'ready' && !(test && test.bypassAreaGate === true))
     return { ok: false, outcome: 'blocked', reason: 'area_not_ready', detail: gates.assessment.readiness }
@@ -217,7 +227,11 @@ export interface MaaleTestReadiness {
   isDelivery: boolean
   branchOk: boolean
   hasTestMarker: boolean
-  paymentMethodCredit: boolean
+  /** orders.payment_method when it is a delivery method (cash / credit), else null. */
+  paymentMethod: 'cash' | 'credit' | null
+  paymentMethodAllowed: boolean
+  /** true for credit (prepaid): needs server-verified HYP success; false for cash. */
+  hypRequired: boolean
   addressComplete: boolean
   coordinatesPrecise: boolean
   payloadValid: boolean
@@ -250,9 +264,9 @@ export async function assessMaaleTestReadiness(
   const loaded = await deps.repo.loadOrder(orderId)
   const base: MaaleTestReadiness = {
     orderId, orderExists: !!loaded, orderStatus: loaded?.status ?? null, isDelivery: false, branchOk: false, hasTestMarker: false,
-    paymentMethodCredit: false, addressComplete: false, coordinatesPrecise: false, payloadValid: false, payloadErrors: [],
+    paymentMethod: null, paymentMethodAllowed: false, hypRequired: false, addressComplete: false, coordinatesPrecise: false, payloadValid: false, payloadErrors: [],
     dispatchState: 'none', maaleEnabled, maaleKeyConfigured, areaReady: false, areaReadiness: null, hypVerified: false,
-    requiresPaymentOverride: true, requiresAreaOverride: true, blockers, safeForControlledTest: false, result: 'order_not_found',
+    requiresPaymentOverride: false, requiresAreaOverride: true, blockers, safeForControlledTest: false, result: 'order_not_found',
   }
   if (!loaded) { blockers.unshift('order_not_found'); return { ...base, result: blockers[0] } }
 
@@ -264,7 +278,9 @@ export async function assessMaaleTestReadiness(
     isDelivery: !has('not_delivery'),
     branchOk: !has('wrong_branch'),
     hasTestMarker: hasTestMarker(loaded.snapshot.order.customer_name),
-    paymentMethodCredit: !has('payment_method_not_allowed'),
+    paymentMethod: gates.paymentMethod,
+    paymentMethodAllowed: !has('payment_method_not_allowed'),
+    hypRequired: gates.hypRequired,
     addressComplete: !has('missing_delivery') && !has('invalid_city') && !has('missing_street') && !has('missing_house_number'),
     coordinatesPrecise: !has('invalid_lat') && !has('invalid_lng') && !has('coordinates_not_precise'),
     payloadValid: gates.payload.ok,
@@ -272,13 +288,13 @@ export async function assessMaaleTestReadiness(
     hypVerified: gates.paymentVerified,
     areaReady: gates.assessment.readiness === 'ready',
     areaReadiness: gates.assessment.readiness,
-    requiresPaymentOverride: !gates.paymentVerified,
+    requiresPaymentOverride: gates.hypRequired && !gates.paymentVerified,
     requiresAreaOverride: gates.assessment.readiness !== 'ready',
   }
   if (!r.isDelivery) blockers.push('not_delivery')
   if (!r.branchOk) blockers.push('wrong_branch')
   if (!r.hasTestMarker) blockers.push('test_order_marker_missing')
-  if (!r.paymentMethodCredit) blockers.push('payment_method_not_allowed')
+  if (!r.paymentMethodAllowed) blockers.push('payment_method_not_allowed')
   if (!r.addressComplete) blockers.push('address_incomplete')
   if (!r.coordinatesPrecise) blockers.push('coordinates_not_precise')
   if (!r.payloadValid) blockers.push('invalid_payload')

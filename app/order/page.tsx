@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { getBrowserSupabase } from '@/lib/supabaseBrowser'
 import {
-  DELIVERY_AREAS, DELIVERY_FEE_RANGE, DELIVERY_FIELD_LIMITS, DELIVERY_MEAL_SURCHARGE, MAX_CUSTOMER_NAME, MAX_ITEM_NOTES, MAX_LINE_QUANTITY, PAYMENT_METHOD_LABELS, PHONE_REGEX, getDeliveryFeeForArea,
+  ACTIVE_DELIVERY_AREAS, DELIVERY_FEE_RANGE, DELIVERY_FIELD_LIMITS, DELIVERY_MEAL_SURCHARGE, MAX_CUSTOMER_NAME, MAX_ITEM_NOTES, MAX_LINE_QUANTITY, PAYMENT_METHOD_LABELS, PHONE_REGEX, getDeliveryFeeForArea,
   SET_ADDON_FREE, SET_ADDONS_PAID, SET_DRINK_EXTRA, SET_DRINKS_FREE, SET_DRINKS_PAID,
   isDealCategory, isDeliveryBranch, isDrinkCategory, isOrderType, isPaymentMethod, isSidesCategory, isToppingAllowedForItem,
   allowedPaymentMethods, normalizePhone, resolvePaymentMethod, setAddonExtra, setDrinkExtra,
@@ -53,7 +53,7 @@ function loadSavedDeliveryForm(): DeliveryForm {
     if (!s || typeof s !== 'object') return EMPTY_DELIVERY_FORM
     const str = (v: unknown) => (typeof v === 'string' ? v : '')
     return {
-      city: DELIVERY_AREAS.includes(str(s.city)) ? str(s.city) : '',
+      city: ACTIVE_DELIVERY_AREAS.includes(str(s.city)) ? str(s.city) : '', // a remembered, now-unavailable area is dropped
       street: str(s.street), houseNumber: str(s.houseNumber), apartment: str(s.apartment),
       floor: str(s.floor), entrance: str(s.entrance), courierNotes: str(s.courierNotes),
     }
@@ -72,11 +72,12 @@ const ORDER_ERROR_MESSAGES: Partial<Record<OrderErrorCode, string>> = {
   invalid_quantity: 'כמות לא תקינה באחת המנות',
   delivery_not_available: 'משלוחים זמינים רק מסניף מישור אדומים',
   invalid_delivery_area: 'נא לבחור יישוב מהרשימה',
+  delivery_area_unavailable: 'המשלוח ליישוב זה אינו זמין כרגע',
   invalid_address: 'נא למלא רחוב ומספר בית',
   invalid_phone: 'מספר טלפון לא תקין',
   invalid_name: 'נא להזין שם מלא',
   empty_cart: 'הסל ריק',
-  payment_method_not_allowed: 'במשלוח ניתן לשלם באשראי בלבד',
+  payment_method_not_allowed: 'במשלוח ניתן לשלם במזומן או באשראי בלבד',
   address_not_verified: 'לא ניתן לאמת את הכתובת. נא לבחור כתובת מהרשימה',
 }
 const GENERIC_ORDER_ERROR = 'לא ניתן לשלוח את ההזמנה כרגע. נסו שוב בעוד רגע או התקשרו לסניף'
@@ -317,8 +318,8 @@ export default function Home() {
   const effectiveOrderType: OrderType | null = deliveryAvailable ? orderTypeChoice : 'pickup'
   // מחירים לתצוגה ללקוח: במשלוח — מחירי מנות כוללים +₪4 למנה מזכה; דמי המשלוח בנפרד.
   const displayType: OrderType = effectiveOrderType ?? 'pickup'
-  // Payment: delivery is credit-only (temporary until HYP). Derived, so switching modes never leaves a stale
-  // method: delivery always resolves to credit; back to pickup restores the full list and the earlier choice.
+  // Payment: delivery allows cash or credit (no Cibus / Bit). Derived, so switching modes never leaves a stale
+  // method: cash / credit are kept, Cibus / Bit fall back to credit; back to pickup restores the earlier choice.
   const paymentOptions = allowedPaymentMethods(displayType)
   const effectivePaymentMethod = resolvePaymentMethod(displayType, paymentMethod)
   const linePrice = (c: CartItem) => displayLineTotal(toPricingInput(c), displayType)
@@ -335,7 +336,7 @@ export default function Home() {
   const cartDisplay = computeDisplayTotals(pricingInputs, displayType, deliveryForm.city)   // what the customer sees (fee by area)
   const cartCount = cart.reduce((s, c) => s + c.quantity, 0)
 
-  const deliveryFormValid = !!deliveryForm.city && DELIVERY_AREAS.includes(deliveryForm.city)
+  const deliveryFormValid = !!deliveryForm.city && ACTIVE_DELIVERY_AREAS.includes(deliveryForm.city)
     && deliveryForm.street.trim().length > 0 && deliveryForm.houseNumber.trim().length > 0
     && (addressMode === 'manual' || isAddressSelectionValid({ ...addressPicker, city: deliveryForm.city }))
   const orderTypeReady = effectiveOrderType === 'pickup' || (effectiveOrderType === 'delivery' && deliveryFormValid)
@@ -850,7 +851,7 @@ export default function Home() {
               }}
               style={{ ...inputStyle(!!deliveryForm.city), appearance: 'auto', marginBottom: 12 }}>
               <option value="">בחרו יישוב</option>
-              {DELIVERY_AREAS.map(a => <option key={a} value={a}>{a} · משלוח ₪{getDeliveryFeeForArea(a)}</option>)}
+              {ACTIVE_DELIVERY_AREAS.map(a => <option key={a} value={a}>{a} · משלוח ₪{getDeliveryFeeForArea(a)}</option>)}
             </select>
             {addressMode === 'google' ? (
               <DeliveryAddressPicker

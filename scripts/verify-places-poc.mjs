@@ -30,7 +30,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ✓', na
 
 const KEY = 'test-key-not-real'
 const TOKEN = '123e4567-e89b-42d3-a456-426614174000'
-const MA = 'מעלה אדומים', MY = 'מצפה יריחו'
+const MA = 'מעלה אדומים', MY = 'מצפה יריחו', ALON = 'אלון', KFAR = 'כפר אדומים' // MY: temporarily unavailable (08D14)
 const jsonRes = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body })
 
 console.log('Google Places POC client')
@@ -182,10 +182,12 @@ await test("G2. valid Ma'ale Adumim street_address accepted; typed street/house 
   assert.deepEqual(geo(d), [31.773612, 35.298346, 'geocoder', 'street'])
 })
 
-await test('G3. valid Mitzpe Yericho street_address accepted', async () => {
-  const r = await submit(orderBody(MY, { google_place_id: 'PLACE_2' }), async () => gPlace(MY, { placeId: 'PLACE_2', street: 'היהלום', houseNumber: '3', lat: 31.85, lng: 35.41 }))
+await test('G3. valid Kfar Adumim street_address accepted; Mitzpe Yericho (unavailable) rejected before any Google lookup', async () => {
+  const r = await submit(orderBody(KFAR, { google_place_id: 'PLACE_2' }), async () => gPlace(KFAR, { placeId: 'PLACE_2', street: 'היהלום', houseNumber: '3', lat: 31.82, lng: 35.36 }))
   const d = r.rpcArgs.p_delivery
-  assert.deepEqual([d.street, d.house_number, d.geo_precision], ['היהלום', '3', 'street'])
+  assert.deepEqual([d.street, d.house_number, d.geo_precision, d.delivery_fee], ['היהלום', '3', 'street', 35])
+  const my = await submit(orderBody(MY, { google_place_id: 'PLACE_3' }), async () => gPlace(MY))
+  assert.equal(my.parsed.code, 'delivery_area_unavailable'); assert.equal(my.calls.lookup, 0)
 })
 
 await test('G4–6. locality-only / missing house number / city mismatch / bad coordinates rejected (400)', async () => {
@@ -281,8 +283,8 @@ await test('G15. client cannot inject coordinates / verification state / a malfo
 await test("G16. client cannot spoof city / locality (server compares Google's locality with the selected area)", async () => {
   const r1 = await submit(orderBody(MA, { google_place_id: 'P' }), async () => gPlace('ירושלים'))
   assert.equal(r1.resolved.detail, 'city_mismatch')
-  const r2 = await submit(orderBody(MY, { google_place_id: 'P' }), async () => gPlace(MA))
-  assert.equal(r2.resolved.detail, 'city_mismatch', "a Ma'ale Adumim place cannot be ordered as מצפה יריחו")
+  const r2 = await submit(orderBody(ALON, { google_place_id: 'P' }), async () => gPlace(MA))
+  assert.equal(r2.resolved.detail, 'city_mismatch', "a Ma'ale Adumim place (₪25) cannot be ordered as אלון (₪40)")
 })
 
 await test('G17. pickup unchanged (no Google lookup, no geocoder, cannot carry a place id)', async () => {
@@ -293,11 +295,13 @@ await test('G17. pickup unchanged (no Google lookup, no geocoder, cannot carry a
 })
 
 await test('G18–19. pricing and payment unchanged by the Google path', async () => {
-  const g = await submit(orderBody(MY, { google_place_id: 'P' }), async () => gPlace(MY))
-  const legacy = await submit(orderBody(MY), async () => null)
+  const g = await submit(orderBody(ALON, { google_place_id: 'P' }), async () => gPlace(ALON))
+  const legacy = await submit(orderBody(ALON), async () => null)
   assert.equal(g.rpcArgs.p_order.total_price, legacy.rpcArgs.p_order.total_price); assert.equal(g.rpcArgs.p_order.total_price, 60 + 12 + 40)
   assert.equal(g.rpcArgs.p_delivery.delivery_fee, 40)
-  assert.equal(parseCreateOrderRequest(orderBody(MY, { google_place_id: 'P' }, { paymentMethod: 'cash' })).code, 'payment_method_not_allowed')
+  const cash = await submit(orderBody(ALON, { google_place_id: 'P' }, { paymentMethod: 'cash' }), async () => gPlace(ALON))
+  assert.equal(cash.rpcArgs.p_order.payment_method, 'cash'); assert.equal(cash.rpcArgs.p_order.total_price, 60 + 12 + 40) // 08D14: cash delivery allowed
+  assert.equal(parseCreateOrderRequest(orderBody(ALON, { google_place_id: 'P' }, { paymentMethod: 'bit' })).code, 'payment_method_not_allowed')
 })
 
 await test('G20. no Maale call / dispatch rows in any Google-path module', async () => {
