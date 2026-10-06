@@ -64,9 +64,11 @@ export interface CreateOrderRequest {
   /**
    * SERVER-SET ONLY (never parsed from a client): result of server-side Google verification.
    * 'verified' → street / house number were replaced by Google's and coordinates are Google's.
+   * 'route_only' → Google's street + the customer's validated house number; NO Google coordinates (the route
+   *   centre is never used) — only accepted together with trusted device GPS.
    * 'unavailable' → Google could not be reached; the typed address is kept, coordinates stay unresolved.
    */
-  googleAddress?: { status: 'verified'; lat: number; lng: number } | { status: 'unavailable' }
+  googleAddress?: { status: 'verified'; lat: number; lng: number } | { status: 'route_only' } | { status: 'unavailable' }
 }
 
 export interface CreateOrderResponse {

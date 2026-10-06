@@ -26,7 +26,9 @@ export const defaultOrderGeoDeps = (): OrderGeoDeps => ({
  * Coordinate priority (the textual address is never changed here):
  *  1) trusted customer-confirmed device GPS (≤ 100 m) — navigation coordinates only
  *  2) server-verified Google place (resolveGoogleDeliveryAddress) → geocoder / street with Google's coordinates
- *  3) Google place selected but not verifiable (Google unavailable) → explicit unresolved, Mapbox NOT called
+ *  3) Google place selected but not verifiable (Google unavailable), or a route-only place without trusted GPS
+ *     (rejected earlier by resolveGoogleDeliveryAddress; defensive) → explicit unresolved, Mapbox NOT called,
+ *     the route centre is never used
  *  4) legacy requests without a Google place → server Mapbox geocoding → otherwise explicit unresolved
  */
 export async function attachDeliveryGeo(
@@ -44,6 +46,7 @@ export async function attachDeliveryGeo(
     const { lat, lng } = order.googleAddress
     return applyDeliveryGeo(built, { delivery_lat: lat, delivery_lng: lng, geo_source: 'geocoder', geo_precision: 'street' })
   }
+  if (order.googleAddress?.status === 'route_only') return applyDeliveryGeo(built, UNRESOLVED_DELIVERY_GEO) // no route centre
   if (order.googlePlaceId) return applyDeliveryGeo(built, UNRESOLVED_DELIVERY_GEO) // Google chosen: never Mapbox
 
   let result: GeocodeResult

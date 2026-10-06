@@ -216,3 +216,34 @@ export function verifyDeliveryPlace(d: PlaceDetailsDiagnostic, selectedCity: str
     },
   }
 }
+
+/* ─── Route-only places (08D14D) ─── */
+
+/**
+ * A Google place that identifies a STREET in the selected area but no house (place type `route`, a route
+ * component, no street_number) — e.g. autocomplete shows "רחוב הגעש 3" but Google only knows the street.
+ * Deliberately carries NO coordinates: a route centre is never a house location and must never be stored
+ * as street precision or reach dispatch. Precise coordinates must come from trusted device GPS instead.
+ */
+export interface VerifiedRoutePlace {
+  placeId: string
+  city: string            // the selected delivery area (verified against Google's locality)
+  street: string          // Google route
+  formattedAddress: string | null
+  types: string[]
+}
+
+export type ClassifiedDeliveryPlace =
+  | { ok: true; kind: 'address'; value: VerifiedDeliveryPlace }
+  | { ok: true; kind: 'route'; value: VerifiedRoutePlace }
+  | { ok: false; reason: PlaceVerificationReason }
+
+/** Full address → exactly verifyDeliveryPlace. Missing house number on a real route place → 'route'. */
+export function classifyDeliveryPlace(d: PlaceDetailsDiagnostic, selectedCity: string): ClassifiedDeliveryPlace {
+  const full = verifyDeliveryPlace(d, selectedCity)
+  if (full.ok) return { ok: true, kind: 'address', value: full.value }
+  if (full.reason !== 'missing_house_number' || !d.types.includes('route')) return full
+  const street = (d.street ?? '').trim() // non-empty: missing_street is checked before missing_house_number
+  if (street.length > DELIVERY_FIELD_LIMITS.street) return { ok: false, reason: 'invalid_address' }
+  return { ok: true, kind: 'route', value: { placeId: d.placeId, city: selectedCity, street, formattedAddress: d.formattedAddress, types: d.types } }
+}

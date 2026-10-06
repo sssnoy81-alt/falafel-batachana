@@ -15,7 +15,10 @@ import {
 import { getBusinessStatus } from '@/lib/hours'
 import { formatDeliveryAddress } from '@/lib/deliveryAddress'
 import DeliveryAddressPicker from './DeliveryAddressPicker'
-import { isAddressSelectionValid, withCity, type AddressPickerState } from '@/lib/deliveryAddressSelection'
+import {
+  isAddressSelectionValid, isDeliveryAddressReady, requiresPreciseLocation, ROUTE_ONLY_MESSAGES, selectionHouseNumber, withCity,
+  type AddressPickerState,
+} from '@/lib/deliveryAddressSelection'
 import {
   classifyGeolocationError, deliveryLocationWireFields, evaluateDevicePosition,
   type DeviceLocation, type LocationCaptureState,
@@ -171,13 +174,14 @@ export default function Home() {
   const [addressMode, setAddressMode] = useState<'google' | 'manual'>('google')
   const [addressPicker, setAddressPicker] = useState<AddressPickerState>(() => {
     const saved = loadSavedDeliveryForm() // a remembered address pre-fills the search text but must be re-selected
-    return { city: saved.city, query: [saved.street, saved.houseNumber].filter(Boolean).join(' '), selected: null }
+    return { city: saved.city, query: [saved.street, saved.houseNumber].filter(Boolean).join(' '), selected: null, manualHouseNumber: '' }
   })
   const switchToManualAddress = useCallback(() => setAddressMode('manual'), [])
   function handleAddressPickerChange(next: AddressPickerState) {
     setAddressPicker(next)
-    // street / house number come only from a verified selection (the server re-verifies the place on submit)
-    setDeliveryForm(f => ({ ...f, street: next.selected?.street ?? '', houseNumber: next.selected?.houseNumber ?? '' }))
+    // street / house number come only from a verified selection (the server re-verifies the place on submit);
+    // route-only selection: Google's street + the customer's validated house number
+    setDeliveryForm(f => ({ ...f, street: next.selected?.street ?? '', houseNumber: selectionHouseNumber(next) }))
   }
   // מיקום מכשיר למשלוח — רק אחרי לחיצה מפורשת; לא נשמר ב-localStorage ולא מוצג כקואורדינטות
   const [locationState, setLocationState] = useState<LocationCaptureState>('idle')
@@ -338,7 +342,11 @@ export default function Home() {
 
   const deliveryFormValid = !!deliveryForm.city && ACTIVE_DELIVERY_AREAS.includes(deliveryForm.city)
     && deliveryForm.street.trim().length > 0 && deliveryForm.houseNumber.trim().length > 0
-    && (addressMode === 'manual' || isAddressSelectionValid({ ...addressPicker, city: deliveryForm.city }))
+    && (addressMode === 'manual' || isDeliveryAddressReady({ ...addressPicker, city: deliveryForm.city }, deviceLocation !== null))
+  // Route-only Google selection: the textual address is complete but trusted device GPS is still required.
+  const routeOnlyAddress = addressMode === 'google' && requiresPreciseLocation({ ...addressPicker, city: deliveryForm.city })
+  const routeOnlyNeedsLocation = routeOnlyAddress && deviceLocation === null
+    && isAddressSelectionValid({ ...addressPicker, city: deliveryForm.city })
   const orderTypeReady = effectiveOrderType === 'pickup' || (effectiveOrderType === 'delivery' && deliveryFormValid)
   const canPlaceOrder = isOpen && isValidPhone(orderPhone) && cart.length > 0 && customerName.trim().length >= 2
     && orderTypeReady && !placingOrder
@@ -498,7 +506,9 @@ export default function Home() {
       const json = await res.json().catch(() => null)
       if (!res.ok || !json || typeof json.id !== 'string') {
         const code = json?.error as OrderErrorCode | undefined
-        setOrderError((code && ORDER_ERROR_MESSAGES[code]) || GENERIC_ORDER_ERROR)
+        setOrderError(code === 'address_not_verified' && json?.detail === 'precise_location_required'
+          ? ROUTE_ONLY_MESSAGES.needsLocation
+          : (code && ORDER_ERROR_MESSAGES[code]) || GENERIC_ORDER_ERROR)
         setPlacingOrder(false); return
       }
       result = json as CreateOrderResponse
@@ -890,25 +900,32 @@ export default function Home() {
             {/* מיקום למשלוח — משלים את הכתובת, לא מחליף אותה; ההזמנה אפשרית גם בלעדיו */}
             <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.border}` }}>
               <div style={{ fontWeight: 800, fontSize: 15, color: C.white, marginBottom: 6 }}>מיקום למשלוח</div>
-              <div style={{ fontSize: 13, color: C.gray, marginBottom: 10, lineHeight: 1.5 }}>
-                אם אתה נמצא עכשיו בכתובת המשלוח, המיקום יעזור לשליח להגיע אליך בדיוק.
-              </div>
+              {routeOnlyNeedsLocation ? (
+                <div style={{ fontSize: 14, color: C.gold, fontWeight: 700, marginBottom: 10, lineHeight: 1.5 }}>{ROUTE_ONLY_MESSAGES.needsLocation}</div>
+              ) : (
+                <div style={{ fontSize: 13, color: C.gray, marginBottom: 10, lineHeight: 1.5 }}>
+                  אם אתה נמצא עכשיו בכתובת המשלוח, המיקום יעזור לשליח להגיע אליך בדיוק.
+                </div>
+              )}
               {locationState === 'success' ? (
-                <div style={{ color: C.green, fontWeight: 700, fontSize: 15 }}>✅ המיקום נקלט</div>
+                <div style={{ color: C.green, fontWeight: 700, fontSize: 15 }}>{routeOnlyAddress ? ROUTE_ONLY_MESSAGES.ready : '✅ המיקום נקלט'}</div>
               ) : (
                 <button type="button" onClick={requestDeviceLocation} disabled={locationState === 'requesting'}
-                  style={{ width: '100%', padding: 14, border: `1px solid ${C.gold}`, borderRadius: 12, background: 'rgba(255,215,0,0.08)', color: C.gold, fontWeight: 700, fontSize: 15, cursor: locationState === 'requesting' ? 'default' : 'pointer', fontFamily: 'Heebo, sans-serif', opacity: locationState === 'requesting' ? 0.7 : 1 }}>
+                  style={{ width: '100%', padding: 14, border: `1px solid ${C.gold}`, borderRadius: 12, background: routeOnlyNeedsLocation ? C.gold : 'rgba(255,215,0,0.08)', color: routeOnlyNeedsLocation ? '#000' : C.gold, fontWeight: 700, fontSize: 15, cursor: locationState === 'requesting' ? 'default' : 'pointer', fontFamily: 'Heebo, sans-serif', opacity: locationState === 'requesting' ? 0.7 : 1 }}>
                   {locationState === 'requesting' ? 'מאתרים את המיקום...' : '📍 שלח את המיקום שלי'}
                 </button>
               )}
               {locationState === 'denied' && (
-                <div style={{ color: C.gray, fontSize: 13, marginTop: 8 }}>לא התקבלה הרשאת מיקום. אפשר להמשיך עם הכתובת.</div>
+                <div style={{ color: C.gray, fontSize: 13, marginTop: 8 }}>{routeOnlyAddress ? 'לא התקבלה הרשאת מיקום.' : 'לא התקבלה הרשאת מיקום. אפשר להמשיך עם הכתובת.'}</div>
               )}
               {locationState === 'unavailable' && (
-                <div style={{ color: C.gray, fontSize: 13, marginTop: 8 }}>לא הצלחנו לקבל מיקום. אפשר להמשיך עם הכתובת.</div>
+                <div style={{ color: C.gray, fontSize: 13, marginTop: 8 }}>{routeOnlyAddress ? 'לא הצלחנו לקבל מיקום.' : 'לא הצלחנו לקבל מיקום. אפשר להמשיך עם הכתובת.'}</div>
               )}
               {locationState === 'inaccurate' && (
-                <div style={{ color: C.gray, fontSize: 13, marginTop: 8 }}>המיקום שהתקבל לא מדויק מספיק. אפשר לנסות שוב או להמשיך עם הכתובת.</div>
+                <div style={{ color: C.gray, fontSize: 13, marginTop: 8 }}>{routeOnlyAddress ? 'המיקום שהתקבל לא מדויק מספיק. אפשר לנסות שוב.' : 'המיקום שהתקבל לא מדויק מספיק. אפשר לנסות שוב או להמשיך עם הכתובת.'}</div>
+              )}
+              {routeOnlyNeedsLocation && (
+                <div style={{ color: C.gray, fontSize: 13, marginTop: 8, lineHeight: 1.5 }}>{ROUTE_ONLY_MESSAGES.notAtAddress}</div>
               )}
             </div>
           </div>
@@ -966,6 +983,7 @@ export default function Home() {
           {!isOpen ? '🔒 המקום סגור כרגע'
             : placingOrder ? '⏳ שולח הזמנה...'
             : !effectiveOrderType ? '👆 בחרו איסוף עצמי או משלוח'
+            : effectiveOrderType === 'delivery' && routeOnlyNeedsLocation ? '📍 נא לשלוח מיקום מדויק למשלוח'
             : effectiveOrderType === 'delivery' && !deliveryFormValid ? '📍 נא להשלים כתובת למשלוח'
             : cartDisplay.total === null ? '✅ שלח הזמנה' : `✅ שלח הזמנה • ${fmt(cartDisplay.total)}`}
         </button>

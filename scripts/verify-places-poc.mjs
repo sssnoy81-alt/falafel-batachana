@@ -191,34 +191,37 @@ await test('G3. valid Kfar Adumim street_address accepted; Mitzpe Yericho (unava
 })
 
 await test('G4–6. locality-only / missing house number / city mismatch / bad coordinates rejected (400)', async () => {
+  // 08D14D: a route-only place still fails verifyDeliveryPlace (full-address rule unchanged); at order time it
+  // needs trusted GPS → without it the order is rejected with precise_location_required (see verify-route-only-address).
   const cases = [
-    [gPlace(MA, { street: null, houseNumber: null, types: ['locality', 'political'] }), 'missing_street'],
-    [gPlace(MA, { houseNumber: null, types: ['route'] }), 'missing_house_number'],
-    [gPlace(MA, { locality: 'ירושלים' }), 'city_mismatch'],
-    [gPlace(MA, { lat: null }), 'invalid_coordinates'],
+    [gPlace(MA, { street: null, houseNumber: null, types: ['locality', 'political'] }), 'missing_street', 'missing_street'],
+    [gPlace(MA, { houseNumber: null, types: ['route'] }), 'missing_house_number', 'precise_location_required'],
+    [gPlace(MA, { houseNumber: null, types: ['establishment'] }), 'missing_house_number', 'missing_house_number'],
+    [gPlace(MA, { locality: 'ירושלים' }), 'city_mismatch', 'city_mismatch'],
+    [gPlace(MA, { lat: null }), 'invalid_coordinates', 'invalid_coordinates'],
   ]
-  for (const [place, reason] of cases) {
+  for (const [place, reason, orderDetail] of cases) {
     assert.deepEqual(gp.verifyDeliveryPlace(place, MA), { ok: false, reason })
     const r = await submit(orderBody(MA, { google_place_id: 'PLACE_1' }), async () => place)
-    assert.deepEqual({ ok: r.resolved.ok, code: r.resolved.code, detail: r.resolved.detail }, { ok: false, code: 'address_not_verified', detail: reason })
+    assert.deepEqual({ ok: r.resolved.ok, code: r.resolved.code, detail: r.resolved.detail }, { ok: false, code: 'address_not_verified', detail: orderDetail })
   }
 })
 
 await test('G7. changing the delivery area clears the selection, the query and captured GPS', async () => {
-  const s0 = sel.withSelection({ city: MA, query: 'הגעש 6', selected: null }, { placeId: 'P', city: MA, street: 'הגעש', houseNumber: '6', formattedAddress: null })
+  const s0 = sel.withSelection({ city: MA, query: 'הגעש 6', selected: null, manualHouseNumber: '' }, { kind: 'address', placeId: 'P', city: MA, street: 'הגעש', houseNumber: '6', formattedAddress: null })
   assert.ok(sel.isAddressSelectionValid(s0)); assert.equal(sel.selectionLabel(s0.selected), `הגעש 6, ${MA}`)
   const s1 = sel.withCity(s0, MY)
-  assert.deepEqual(s1, { city: MY, query: '', selected: null }); assert.ok(!sel.isAddressSelectionValid(s1))
+  assert.deepEqual(s1, { city: MY, query: '', selected: null, manualHouseNumber: '' }); assert.ok(!sel.isAddressSelectionValid(s1))
   assert.ok(!sel.isAddressSelectionValid({ ...s0, city: MY }), 'a selection for another area is never valid')
   const page = readFileSync(join(ROOT, 'app', 'order', 'page.tsx'), 'utf8')
   assert.ok(/setAddressPicker\(p => withCity\(p, city\)\)[^\n]*\n\s*resetDeviceLocation\(\)/.test(page), 'city change also clears GPS')
 })
 
 await test('G8. editing the text after a selection invalidates it (unchanged text keeps it)', async () => {
-  const s0 = sel.withSelection({ city: MA, query: '', selected: null }, { placeId: 'P', city: MA, street: 'הגעש', houseNumber: '6', formattedAddress: null })
+  const s0 = sel.withSelection({ city: MA, query: '', selected: null, manualHouseNumber: '' }, { kind: 'address', placeId: 'P', city: MA, street: 'הגעש', houseNumber: '6', formattedAddress: null })
   assert.equal(sel.withQuery(s0, 'הגעש 6'), s0)
   const s1 = sel.withQuery(s0, 'הגעש 7'); assert.equal(s1.selected, null); assert.ok(!sel.isAddressSelectionValid(s1))
-  assert.equal(sel.withSelection({ city: MY, query: '', selected: null }, s0.selected).selected, null, 'selection for another area rejected')
+  assert.equal(sel.withSelection({ city: MY, query: '', selected: null, manualHouseNumber: '' }, s0.selected).selected, null, 'selection for another area rejected')
 })
 
 await test('G9. valid Google address alone (no device GPS) allows the order', async () => {
@@ -267,7 +270,9 @@ await test('G14. Google key never reaches the browser; UI routes return no coord
     assert.ok(!/from\s+['"]@\/lib\/(googlePlaces|orderAddress)['"]/.test(s), `${f} must not import server Google modules`)
   }
   const details = readFileSync(join(ROOT, 'app', 'api', 'places', 'details', 'route.ts'), 'utf8')
-  assert.ok(details.includes('place: { placeId, city, street, houseNumber, formattedAddress }'), 'details route returns no coordinates')
+  assert.ok(details.includes("place: { kind: 'address', placeId, city, street, houseNumber, formattedAddress }"), 'details route returns no coordinates')
+  assert.ok(details.includes("place: { kind: 'route', placeId, city, street, houseNumber: '', formattedAddress }"), 'route-only response has no coordinates')
+  assert.ok(!/\blat\b|\blng\b|location/.test(details.replace(/\/\/.*$/gm, '')), 'details route never mentions coordinates')
 })
 
 await test('G15. client cannot inject coordinates / verification state / a malformed place id', async () => {

@@ -5,13 +5,19 @@
 //
 // Outcomes:
 //  - verified            → order.delivery.street / houseNumber = Google's; googleAddress = { verified, lat, lng }
+//  - route only (08D14D) → Google knows the street, not the house. street = Google's route; house number = the
+//                          customer's, strictly validated; trusted device GPS is REQUIRED (it becomes the
+//                          coordinates). googleAddress = { route_only } — no coordinates: the route centre is
+//                          never stored or dispatched. Without trusted GPS the order is rejected.
 //  - rejected (400)      → place not found / wrong city / no street / no house number / bad coordinates
 //  - Google unavailable  → typed address kept (already validated text), googleAddress = { unavailable }:
 //                          the food order is not blocked by a Google outage; coordinates stay unresolved and
 //                          Mapbox is NOT called (the customer did pick a Google address).
 // Logs short codes only.
 
-import { getPlaceDetails, placesApiKey, PlacesError, verifyDeliveryPlace, type PlaceDetailsDiagnostic } from './googlePlaces'
+import { classifyDeliveryPlace, getPlaceDetails, placesApiKey, PlacesError, type PlaceDetailsDiagnostic } from './googlePlaces'
+import { isTrustedDeviceLocation } from './deliveryLocation'
+import { normalizeManualHouseNumber } from './houseNumber'
 import type { CreateOrderRequest, OrderErrorCode } from './orderRequest'
 
 export const PLACE_VERIFY_TIMEOUT_MS = 2500
@@ -60,14 +66,30 @@ export async function resolveGoogleDeliveryAddress(
     clearTimeout(timer)
   }
 
-  const v = verifyDeliveryPlace(details, city)
+  const v = classifyDeliveryPlace(details, city)
   if (!v.ok) return { ok: false, code: 'address_not_verified', detail: v.reason }
+  if (v.kind === 'address') {
+    return {
+      ok: true,
+      order: {
+        ...order,
+        delivery: { ...order.delivery, street: v.value.street, houseNumber: v.value.houseNumber },
+        googleAddress: { status: 'verified', lat: v.value.lat, lng: v.value.lng },
+      },
+    }
+  }
+
+  // Route only: Google's street + the customer's house number; precise coordinates only from trusted GPS.
+  const houseNumber = normalizeManualHouseNumber(order.delivery.houseNumber)
+  if (!houseNumber) return { ok: false, code: 'address_not_verified', detail: 'invalid_house_number' }
+  if (!order.deliveryLocation || !isTrustedDeviceLocation(order.deliveryLocation))
+    return { ok: false, code: 'address_not_verified', detail: 'precise_location_required' }
   return {
     ok: true,
     order: {
       ...order,
-      delivery: { ...order.delivery, street: v.value.street, houseNumber: v.value.houseNumber },
-      googleAddress: { status: 'verified', lat: v.value.lat, lng: v.value.lng },
+      delivery: { ...order.delivery, street: v.value.street, houseNumber },
+      googleAddress: { status: 'route_only' },
     },
   }
 }

@@ -2,12 +2,15 @@
 // Google-assisted delivery address selector (FALAFEL-SN-08D8).
 // Talks only to our own /api/places/* routes (the Google key stays on the server). The customer must pick a
 // suggestion; the pick is verified server-side for the selected area, and re-verified again on order submit.
+// Route-only pick (08D14D): Google knows the street but not the house → the customer types the house number;
+// the page then requires trusted device GPS before the order can be submitted.
 
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import {
-  ADDRESS_REJECTION_MESSAGES, selectionLabel, withQuery, withSelection,
+  ADDRESS_REJECTION_MESSAGES, ROUTE_ONLY_MESSAGES, selectionLabel, withManualHouseNumber, withQuery, withSelection,
   type AddressPickerState, type SelectedDeliveryAddress,
 } from '@/lib/deliveryAddressSelection'
+import { normalizeManualHouseNumber } from '@/lib/houseNumber'
 
 interface Suggestion { placeId: string; text: string; mainText: string | null; secondaryText: string | null }
 
@@ -72,6 +75,8 @@ export default function DeliveryAddressPicker({ state, onChange, onUnavailable, 
   }
 
   const selected = state.selected
+  const routeOnly = selected?.kind === 'route'
+  const manualValid = routeOnly && normalizeManualHouseNumber(state.manualHouseNumber) !== null
   const suggestions = !selected && results.key === `${state.city}|${state.query.trim()}` ? results.items : []
   return (
     <div style={{ marginBottom: 12 }}>
@@ -92,7 +97,21 @@ export default function DeliveryAddressPicker({ state, onChange, onUnavailable, 
         </div>
       )}
       {verifying && <div style={{ color: C.gray, fontSize: 13, marginTop: 6 }}>מאמתים את הכתובת...</div>}
-      {selected && (
+      {selected && routeOnly && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ color: C.green, fontWeight: 700, fontSize: 15 }}>{ROUTE_ONLY_MESSAGES.streetFound}</div>
+          <div style={{ color: C.gray, fontSize: 13 }}>{selectionLabel(selected)}</div>
+          <div style={{ color: C.gold, fontSize: 13, marginTop: 6 }}>{ROUTE_ONLY_MESSAGES.enterHouseNumber}</div>
+          <label style={{ ...labelStyle, marginTop: 8 }}>מספר בית *</label>
+          <input type="text" value={state.manualHouseNumber} dir="rtl" maxLength={6} inputMode="text" autoComplete="off"
+            onChange={e => onChange(withManualHouseNumber(state, e.target.value))}
+            style={inputStyle(manualValid)} />
+          {state.manualHouseNumber.trim() !== '' && !manualValid && (
+            <div style={{ color: C.red, fontSize: 13, marginTop: 6 }}>{ROUTE_ONLY_MESSAGES.invalidHouseNumber}</div>
+          )}
+        </div>
+      )}
+      {selected && !routeOnly && (
         <div style={{ marginTop: 8 }}>
           <div style={{ color: C.green, fontWeight: 700, fontSize: 15 }}>✅ הכתובת נמצאה</div>
           <div style={{ color: C.gray, fontSize: 13 }}>{selectionLabel(selected)}</div>
