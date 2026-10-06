@@ -175,7 +175,9 @@ customer → pickup|delivery → branch (pickup) / מישור אדומים (deli
 - DB steps for delivery are **applied** (deliveries migration + RLS lock-down + `create_order`). If `create_order` were
   ever missing, `/api/orders` returns 503 (no partial orders, no fallback writes).
 - ⚠️ **Deploy coupling:** the kitchen security work (auth + `/api/kitchen/*` + protected push + migrated kitchen UI)
-  must ship **together** and only with `KITCHEN_SESSION_SECRET` + `KITCHEN_USERS` (and the public Supabase vars) set.
+  must ship **together** and only with `KITCHEN_SESSION_SECRET` (and the public Supabase vars) set. Kitchen users live in
+  `public.kitchen_users` (FALAFEL-SN-08D15: server-only, RLS on / no policies, scrypt hashes; read via `lib/kitchenUsers.ts`).
+  The legacy `KITCHEN_USERS` env var is no longer read by the app (remove it from Vercel after validation).
 
 ---
 
@@ -205,7 +207,7 @@ put a server secret in a `NEXT_PUBLIC_*` variable. Privileged access belongs in 
 
 Environment variable names (names only):
 public: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_VAPID_PUBLIC_KEY` ·
-server-only: `SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_SERVICE_KEY`), `KITCHEN_SESSION_SECRET`, `KITCHEN_USERS`,
+server-only: `SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_SERVICE_KEY`), `KITCHEN_SESSION_SECRET` (`KITCHEN_USERS` is legacy/unused since 08D15),
 `VAPID_PRIVATE_KEY`, `VAPID_EMAIL` / `VAPID_SUBJECT`. Never print the values of `.env*` files or env settings.
 
 ---

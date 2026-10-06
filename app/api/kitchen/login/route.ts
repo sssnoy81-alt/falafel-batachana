@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import {
-  KitchenConfigError, authenticate, checkSameOriginJson, loadKitchenConfig, publicUser,
+  KitchenConfigError, KitchenUserStoreError, authenticateKitchenUser, checkSameOriginJson, loadSessionSecret, publicUser,
   sessionCookieHeader, shouldUseSecureCookie, signSession,
 } from '@/lib/kitchenAuth'
+import { supabaseKitchenUserStore } from '@/lib/kitchenUsers'
 
 // POST /api/kitchen/login — { username, password } → HttpOnly session cookie.
-// No DB access. Generic 401 (never reveals whether the username exists).
+// Users come from public.kitchen_users (server-only, service role). Generic 401 for unknown / inactive /
+// wrong-password (never reveals whether the username exists). DB / config problems → 500, never a login.
 
 const NO_STORE = { 'Cache-Control': 'no-store' }
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
@@ -27,9 +29,9 @@ export async function POST(req: NextRequest) {
     || username.length < 1 || username.length > 64 || password.length < 1 || password.length > 200)
     return json({ error: 'invalid_request' }, 400)
 
-  let config
+  let secret: string
   try {
-    config = loadKitchenConfig()
+    secret = loadSessionSecret()
   } catch (e) {
     if (e instanceof KitchenConfigError) {
       console.error('kitchen login: server config error —', e.message) // message never contains values
@@ -38,12 +40,21 @@ export async function POST(req: NextRequest) {
     throw e
   }
 
-  const user = authenticate(config.users, username, password)
+  let user
+  try {
+    user = await authenticateKitchenUser(supabaseKitchenUserStore, username, password)
+  } catch (e) {
+    if (e instanceof KitchenUserStoreError) {
+      console.error('kitchen login: user store unavailable —', e.message) // short code only
+      return json({ error: e.kind === 'config' ? 'server_config' : 'server_error' }, 500)
+    }
+    throw e
+  }
   if (!user) {
     await failDelay()
     return json({ error: 'unauthorized' }, 401)
   }
 
-  const token = signSession(user, config.secret)
+  const token = signSession(user, secret)
   return json({ user: publicUser(user) }, 200, { 'Set-Cookie': sessionCookieHeader(token, shouldUseSecureCookie(req.url)) })
 }

@@ -1,4 +1,4 @@
-// Generate a kitchen password hash for the server-only KITCHEN_USERS env var.
+// Generate a kitchen password hash for public.kitchen_users.password_hash (FALAFEL-SN-08D15; formerly the env JSON).
 //
 // Usage (interactive, input hidden):   node scripts/hash-kitchen-password.mjs
 // Usage (piped, e.g. from a password manager CLI):  <cmd> | node scripts/hash-kitchen-password.mjs

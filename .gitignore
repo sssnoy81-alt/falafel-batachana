@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# one-time SQL copies with real values (FALAFEL-SN-08D15) — never commit
+/db/local/

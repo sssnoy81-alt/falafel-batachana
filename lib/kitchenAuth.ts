@@ -1,7 +1,9 @@
-// SERVER-ONLY kitchen authentication (FALAFEL-SN-06B).
-// - Users + scrypt password hashes come from the server-only env var KITCHEN_USERS (JSON).
-// - Sessions are HMAC-SHA256-signed tokens (KITCHEN_SESSION_SECRET) in an HttpOnly cookie.
-// - Built-in node:crypto only. No Next.js imports, so the primitives are unit-testable.
+// SERVER-ONLY kitchen authentication (FALAFEL-SN-06B; users moved to Supabase in FALAFEL-SN-08D15).
+// - Users + scrypt password hashes live in the server-only table public.kitchen_users (RLS on, no anon /
+//   authenticated access). This module never talks to the database: it receives a KitchenUserStore
+//   (lib/kitchenUsers.ts provides the Supabase service-role one), so every rule here is unit-testable.
+// - Sessions are HMAC-SHA256-signed tokens (KITCHEN_SESSION_SECRET, server env) in an HttpOnly cookie.
+// - Built-in node:crypto only. No Next.js / Supabase imports.
 // Never import this module from a client component: node:crypto cannot be bundled for the browser
 // (build fails) and the runtime guard below throws.
 
@@ -23,8 +25,16 @@ export interface KitchenUser {
   label: string
 }
 
-interface KitchenUserRecord extends KitchenUser {
-  hash: string
+/** SERVER-INTERNAL account row (public.kitchen_users). Never serialize it: use publicUser(). */
+export interface KitchenUserRecord extends KitchenUser {
+  isActive: boolean
+  passwordHash: string
+}
+
+/** Where kitchen accounts come from. findByUsername gets a normalized username; returns inactive users too. */
+export interface KitchenUserStore {
+  /** null = no such (valid) user. Throws KitchenUserStoreError when the source is unavailable (fail closed). */
+  findByUsername(username: string): Promise<KitchenUserRecord | null>
 }
 
 export interface KitchenSession extends KitchenUser {
@@ -36,6 +46,14 @@ export class KitchenConfigError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'KitchenConfigError'
+  }
+}
+
+/** The user source could not be read (missing DB config / query failure). Message is a short code only. */
+export class KitchenUserStoreError extends Error {
+  constructor(public readonly kind: 'config' | 'query', code: string) {
+    super(code)
+    this.name = 'KitchenUserStoreError'
   }
 }
 
@@ -99,45 +117,41 @@ export function verifyPassword(password: string, hash: string): boolean {
 // Used when the username is unknown, so the response time does not reveal which usernames exist.
 const DUMMY_HASH = hashPassword(randomBytes(24).toString('base64url'))
 
-/* ─── KITCHEN_USERS parsing (strict) ─── */
+/* ─── kitchen_users rows (strict; malformed rows fail closed) ─── */
 
-function validateUserShape(username: string, v: unknown): KitchenUserRecord {
-  const fail = (why: string) => { throw new KitchenConfigError(`KITCHEN_USERS: invalid entry "${username}" (${why})`) }
-  if (!USERNAME_REGEX.test(username)) fail('username format')
-  if (typeof v !== 'object' || v === null || Array.isArray(v)) fail('not an object')
-  const o = v as Record<string, unknown>
-  const allowed = new Set(['hash', 'role', 'branchId', 'label'])
-  if (Object.keys(o).some(k => !allowed.has(k))) fail('unknown field')
-  if (typeof o.hash !== 'string' || !parsePasswordHash(o.hash)) fail('hash format')
-  if (typeof o.role !== 'string' || !(KITCHEN_ROLES as readonly string[]).includes(o.role)) fail('role')
-  if (typeof o.label !== 'string' || o.label.trim().length === 0 || o.label.length > 60) fail('label')
+/** Login / lookup normalization (unchanged from the env era): trimmed, lower-case, ^[a-z0-9_-]{2,32}$. */
+export function normalizeKitchenUsername(v: unknown): string | null {
+  if (typeof v !== 'string') return null
+  const name = v.trim().toLowerCase()
+  return USERNAME_REGEX.test(name) ? name : null
+}
+
+/**
+ * Maps a public.kitchen_users row (username, password_hash, role, branch_id, label, is_active) to a record.
+ * Returns null for ANY malformed row (bad username, hash format, role, branch, label, flag) — such an account
+ * can neither log in nor keep a session (fail closed). Mirrors the DB CHECK constraints.
+ */
+export function kitchenUserFromRow(row: unknown): KitchenUserRecord | null {
+  if (typeof row !== 'object' || row === null || Array.isArray(row)) return null
+  const o = row as Record<string, unknown>
+  if (typeof o.username !== 'string' || !USERNAME_REGEX.test(o.username)) return null
+  if (typeof o.password_hash !== 'string' || !parsePasswordHash(o.password_hash)) return null
+  if (typeof o.role !== 'string' || !(KITCHEN_ROLES as readonly string[]).includes(o.role)) return null
+  if (typeof o.label !== 'string' || o.label.trim().length === 0 || o.label.length > 60) return null
+  if (typeof o.is_active !== 'boolean') return null
   const role = o.role as KitchenRole
   let branchId: string | null = null
   if (role === 'admin') {
-    if (o.branchId !== null && o.branchId !== undefined) fail('admin must have branchId null')
+    if (o.branch_id !== null) return null
   } else {
-    if (typeof o.branchId !== 'string' || !UUID_REGEX.test(o.branchId) || !KITCHEN_BRANCH_IDS.includes(o.branchId))
-      fail('branch role requires a known branchId')
-    branchId = o.branchId as string
+    if (typeof o.branch_id !== 'string' || !UUID_REGEX.test(o.branch_id) || !KITCHEN_BRANCH_IDS.includes(o.branch_id)) return null
+    branchId = o.branch_id
   }
-  return { username, role, branchId, label: (o.label as string).trim(), hash: o.hash as string }
+  return { username: o.username, role, branchId, label: o.label.trim(), isActive: o.is_active, passwordHash: o.password_hash }
 }
 
-export function parseKitchenUsers(raw: string | undefined): Map<string, KitchenUserRecord> {
-  if (!raw || raw.trim() === '') throw new KitchenConfigError('KITCHEN_USERS is not set')
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    throw new KitchenConfigError('KITCHEN_USERS is not valid JSON')
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed))
-    throw new KitchenConfigError('KITCHEN_USERS must be a JSON object')
-  const users = new Map<string, KitchenUserRecord>()
-  for (const [username, value] of Object.entries(parsed)) users.set(username, validateUserShape(username, value))
-  if (users.size === 0) throw new KitchenConfigError('KITCHEN_USERS has no users')
-  return users
-}
+const toKitchenUser = (r: KitchenUserRecord): KitchenUser =>
+  ({ username: r.username, role: r.role, branchId: r.branchId, label: r.label })
 
 export function getSessionSecret(raw: string | undefined): string {
   if (!raw) throw new KitchenConfigError('KITCHEN_SESSION_SECRET is not set')
@@ -145,26 +159,28 @@ export function getSessionSecret(raw: string | undefined): string {
   return raw
 }
 
-/** Loads + validates both env values. Throws KitchenConfigError (never logs values). */
-export function loadKitchenConfig(env: Record<string, string | undefined> = process.env) {
-  return { users: parseKitchenUsers(env.KITCHEN_USERS), secret: getSessionSecret(env.KITCHEN_SESSION_SECRET) }
-}
+/** Session signing secret from the server env. Throws KitchenConfigError (never includes the value). */
+export const loadSessionSecret = (env: Record<string, string | undefined> = process.env): string =>
+  getSessionSecret(env.KITCHEN_SESSION_SECRET)
 
 /* ─── Credentials ─── */
 
-export function authenticate(users: Map<string, KitchenUserRecord>, username: unknown, password: unknown): KitchenUser | null {
-  if (typeof username !== 'string' || typeof password !== 'string') return null
-  const name = username.trim().toLowerCase()
-  if (!USERNAME_REGEX.test(name) || password.length < 1 || password.length > 200) {
+/**
+ * Password login against the store. Unknown, inactive, malformed and wrong-password logins are all
+ * indistinguishable (null, and a scrypt verification runs in every case). Throws KitchenUserStoreError
+ * when the store is unavailable — callers must fail closed (never fall back to another user source).
+ */
+export async function authenticateKitchenUser(store: KitchenUserStore, username: unknown, password: unknown): Promise<KitchenUser | null> {
+  const name = normalizeKitchenUsername(username)
+  if (!name || typeof password !== 'string' || password.length < 1 || password.length > 200) {
     verifyPassword(typeof password === 'string' ? password : '', DUMMY_HASH) // keep timing uniform
     return null
   }
-  const record = users.get(name)
-  const ok = verifyPassword(password, record ? record.hash : DUMMY_HASH)
-  if (!record || !ok) return null
-  const { hash: _hash, ...user } = record
-  void _hash
-  return user
+  const record = await store.findByUsername(name)
+  const usable = record && record.isActive && record.username === name ? record : null
+  const ok = verifyPassword(password, usable ? usable.passwordHash : DUMMY_HASH)
+  if (!usable || !ok) return null
+  return toKitchenUser(usable)
 }
 
 /* ─── Sessions: v1.<payload b64url>.<hmac b64url> ─── */
@@ -259,22 +275,36 @@ export function clearSessionCookieHeader(secure: boolean): string {
 
 export type AuthResult =
   | { ok: true; session: KitchenSession }
-  | { ok: false; status: 401 | 500; error: 'unauthorized' | 'server_config' }
+  | { ok: false; status: 401 | 500; error: 'unauthorized' | 'server_config' | 'server_error' }
 
-/** Verifies the cookie AND that the user still exists in KITCHEN_USERS with the same role/branch. */
-export function getKitchenSession(req: Request, env: Record<string, string | undefined> = process.env): AuthResult {
-  let config
+/**
+ * Verifies the cookie (signature + expiry) AND that the user still exists in the store, is active, and has
+ * the same role / branch as the session. Removed, deactivated or re-scoped users are revoked immediately.
+ * Order: secret (500) → cookie (401, no DB hit) → store lookup (500 if unavailable, never authorizes).
+ * Routes use getKitchenSession() from lib/kitchenUsers (this with the Supabase store) and MUST await it.
+ */
+export async function verifyKitchenRequest(
+  req: Request, deps: { store: KitchenUserStore; env?: Record<string, string | undefined> },
+): Promise<AuthResult> {
+  let secret: string
   try {
-    config = loadKitchenConfig(env)
+    secret = loadSessionSecret(deps.env ?? process.env)
   } catch (e) {
     if (e instanceof KitchenConfigError) return { ok: false, status: 500, error: 'server_config' }
     throw e
   }
-  const session = verifySession(readCookie(req.headers.get('cookie'), KITCHEN_SESSION_COOKIE), config.secret)
+  const session = verifySession(readCookie(req.headers.get('cookie'), KITCHEN_SESSION_COOKIE), secret)
   if (!session) return { ok: false, status: 401, error: 'unauthorized' }
-  const current = config.users.get(session.username)
-  if (!current || current.role !== session.role || current.branchId !== session.branchId)
-    return { ok: false, status: 401, error: 'unauthorized' } // removed/changed user → session revoked
+  let current: KitchenUserRecord | null
+  try {
+    current = await deps.store.findByUsername(session.username)
+  } catch (e) {
+    if (e instanceof KitchenUserStoreError) return { ok: false, status: 500, error: e.kind === 'config' ? 'server_config' : 'server_error' }
+    throw e
+  }
+  if (!current || !current.isActive || current.username !== session.username
+    || current.role !== session.role || current.branchId !== session.branchId)
+    return { ok: false, status: 401, error: 'unauthorized' } // removed / disabled / changed user → session revoked
   return { ok: true, session }
 }
 

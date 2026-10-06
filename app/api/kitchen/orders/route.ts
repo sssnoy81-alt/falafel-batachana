@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getKitchenSession } from '@/lib/kitchenAuth'
+import { getKitchenSession } from '@/lib/kitchenUsers'
 import { KITCHEN_ORDER_SELECT, normalizeKitchenOrders, resolveBranchScope } from '@/lib/kitchenOrders'
 import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
 import { israelDayBounds } from '@/lib/hours'
@@ -12,7 +12,7 @@ const NO_STORE = { 'Cache-Control': 'no-store' }
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: NO_STORE })
 
 export async function GET(req: NextRequest) {
-  const auth = getKitchenSession(req)
+  const auth = await getKitchenSession(req)
   if (!auth.ok) return json({ error: auth.error }, auth.status)
 
   const scope = resolveBranchScope(auth.session, req.nextUrl.searchParams.get('branch'))
