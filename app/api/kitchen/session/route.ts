@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getKitchenSession, KITCHEN_BRANCH_IDS, publicUser } from '@/lib/kitchenAuth'
+import { KITCHEN_BRANCH_IDS, publicUser } from '@/lib/kitchenAuth'
+import { getKitchenSession } from '@/lib/kitchenUsers'
 import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
 
 // GET /api/kitchen/session — returns the authenticated kitchen user, or 401.
@@ -10,7 +11,7 @@ const NO_STORE = { 'Cache-Control': 'no-store' }
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: NO_STORE })
 
 export async function GET(req: NextRequest) {
-  const auth = getKitchenSession(req)
+  const auth = await getKitchenSession(req)
   if (!auth.ok) return json({ error: auth.error }, auth.status)
 
   const base = { user: publicUser(auth.session), expiresAt: new Date(auth.session.exp * 1000).toISOString() }

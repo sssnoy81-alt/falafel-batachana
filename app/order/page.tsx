@@ -1,8 +1,8 @@
 'use client'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { getBrowserSupabase } from '@/lib/supabaseBrowser'
 import {
-  DELIVERY_AREAS, DELIVERY_FEE, DELIVERY_FIELD_LIMITS, DELIVERY_MEAL_SURCHARGE, MAX_CUSTOMER_NAME, MAX_ITEM_NOTES, MAX_LINE_QUANTITY, PAYMENT_METHOD_LABELS, PHONE_REGEX,
+  ACTIVE_DELIVERY_AREAS, DELIVERY_FEE_RANGE, DELIVERY_FIELD_LIMITS, DELIVERY_MEAL_SURCHARGE, MAX_CUSTOMER_NAME, MAX_ITEM_NOTES, MAX_LINE_QUANTITY, PAYMENT_METHOD_LABELS, PHONE_REGEX, getDeliveryFeeForArea,
   SET_ADDON_FREE, SET_ADDONS_PAID, SET_DRINK_EXTRA, SET_DRINKS_FREE, SET_DRINKS_PAID,
   isDealCategory, isDeliveryBranch, isDrinkCategory, isOrderType, isPaymentMethod, isSidesCategory, isToppingAllowedForItem,
   allowedPaymentMethods, normalizePhone, resolvePaymentMethod, setAddonExtra, setDrinkExtra,
@@ -14,6 +14,15 @@ import {
 } from '@/lib/pricing'
 import { getBusinessStatus } from '@/lib/hours'
 import { formatDeliveryAddress } from '@/lib/deliveryAddress'
+import DeliveryAddressPicker from './DeliveryAddressPicker'
+import {
+  isAddressSelectionValid, isDeliveryAddressReady, requiresPreciseLocation, ROUTE_ONLY_MESSAGES, selectionHouseNumber, withCity,
+  type AddressPickerState,
+} from '@/lib/deliveryAddressSelection'
+import {
+  classifyGeolocationError, deliveryLocationWireFields, evaluateDevicePosition,
+  type DeviceLocation, type LocationCaptureState,
+} from '@/lib/deliveryLocation'
 import type { CreateOrderRequest, CreateOrderResponse, OrderErrorCode } from '@/lib/orderRequest'
 
 
@@ -47,7 +56,7 @@ function loadSavedDeliveryForm(): DeliveryForm {
     if (!s || typeof s !== 'object') return EMPTY_DELIVERY_FORM
     const str = (v: unknown) => (typeof v === 'string' ? v : '')
     return {
-      city: DELIVERY_AREAS.includes(str(s.city)) ? str(s.city) : '',
+      city: ACTIVE_DELIVERY_AREAS.includes(str(s.city)) ? str(s.city) : '', // a remembered, now-unavailable area is dropped
       street: str(s.street), houseNumber: str(s.houseNumber), apartment: str(s.apartment),
       floor: str(s.floor), entrance: str(s.entrance), courierNotes: str(s.courierNotes),
     }
@@ -66,13 +75,17 @@ const ORDER_ERROR_MESSAGES: Partial<Record<OrderErrorCode, string>> = {
   invalid_quantity: 'כמות לא תקינה באחת המנות',
   delivery_not_available: 'משלוחים זמינים רק מסניף מישור אדומים',
   invalid_delivery_area: 'נא לבחור יישוב מהרשימה',
+  delivery_area_unavailable: 'המשלוח ליישוב זה אינו זמין כרגע',
   invalid_address: 'נא למלא רחוב ומספר בית',
   invalid_phone: 'מספר טלפון לא תקין',
   invalid_name: 'נא להזין שם מלא',
   empty_cart: 'הסל ריק',
-  payment_method_not_allowed: 'במשלוח ניתן לשלם באשראי בלבד',
+  payment_method_not_allowed: 'במשלוח ניתן לשלם במזומן או באשראי בלבד',
+  address_not_verified: 'לא ניתן לאמת את הכתובת. נא לבחור כתובת מהרשימה',
 }
 const GENERIC_ORDER_ERROR = 'לא ניתן לשלוח את ההזמנה כרגע. נסו שוב בעוד רגע או התקשרו לסניף'
+// Destination-based delivery fee (lib/orderConfig DELIVERY_FEES_BY_AREA); range shown until an area is chosen.
+const DELIVERY_FEE_LABEL = `דמי משלוח ₪${DELIVERY_FEE_RANGE.min}–₪${DELIVERY_FEE_RANGE.max} לפי יישוב`
 const DELIVERY_PRICE_NOTE = `מחירי המשלוח למנות כוללים תוספת של ${DELIVERY_MEAL_SURCHARGE} ₪ למנה.`
 
 const C = {
@@ -157,6 +170,22 @@ export default function Home() {
   // איסוף / משלוח — הצעד הראשון בהזמנה (לפני התפריט); נקבע מחדש בכל התחלת הזמנה
   const [orderTypeChoice, setOrderTypeChoice] = useState<OrderType | null>(null)
   const [deliveryForm, setDeliveryForm] = useState<DeliveryForm>(() => loadSavedDeliveryForm())
+  // כתובת משלוח בעזרת Google (ברירת המחדל). 'manual' = גיבוי כשחיפוש הכתובות אינו זמין.
+  const [addressMode, setAddressMode] = useState<'google' | 'manual'>('google')
+  const [addressPicker, setAddressPicker] = useState<AddressPickerState>(() => {
+    const saved = loadSavedDeliveryForm() // a remembered address pre-fills the search text but must be re-selected
+    return { city: saved.city, query: [saved.street, saved.houseNumber].filter(Boolean).join(' '), selected: null, manualHouseNumber: '' }
+  })
+  const switchToManualAddress = useCallback(() => setAddressMode('manual'), [])
+  function handleAddressPickerChange(next: AddressPickerState) {
+    setAddressPicker(next)
+    // street / house number come only from a verified selection (the server re-verifies the place on submit);
+    // route-only selection: Google's street + the customer's validated house number
+    setDeliveryForm(f => ({ ...f, street: next.selected?.street ?? '', houseNumber: selectionHouseNumber(next) }))
+  }
+  // מיקום מכשיר למשלוח — רק אחרי לחיצה מפורשת; לא נשמר ב-localStorage ולא מוצג כקואורדינטות
+  const [locationState, setLocationState] = useState<LocationCaptureState>('idle')
+  const [deviceLocation, setDeviceLocation] = useState<DeviceLocation | null>(null)
 
   // *** חדש: שמירת פירוט ההזמנה למסך מעקב ***
   const [orderCart, setOrderCart] = useState<CartItem[]>([])
@@ -293,8 +322,8 @@ export default function Home() {
   const effectiveOrderType: OrderType | null = deliveryAvailable ? orderTypeChoice : 'pickup'
   // מחירים לתצוגה ללקוח: במשלוח — מחירי מנות כוללים +₪4 למנה מזכה; דמי המשלוח בנפרד.
   const displayType: OrderType = effectiveOrderType ?? 'pickup'
-  // Payment: delivery is credit-only (temporary until HYP). Derived, so switching modes never leaves a stale
-  // method: delivery always resolves to credit; back to pickup restores the full list and the earlier choice.
+  // Payment: delivery allows cash or credit (no Cibus / Bit). Derived, so switching modes never leaves a stale
+  // method: cash / credit are kept, Cibus / Bit fall back to credit; back to pickup restores the earlier choice.
   const paymentOptions = allowedPaymentMethods(displayType)
   const effectivePaymentMethod = resolvePaymentMethod(displayType, paymentMethod)
   const linePrice = (c: CartItem) => displayLineTotal(toPricingInput(c), displayType)
@@ -308,11 +337,16 @@ export default function Home() {
   }
 
   const pricingInputs = cart.map(toPricingInput)
-  const cartDisplay = computeDisplayTotals(pricingInputs, displayType)   // what the customer sees
+  const cartDisplay = computeDisplayTotals(pricingInputs, displayType, deliveryForm.city)   // what the customer sees (fee by area)
   const cartCount = cart.reduce((s, c) => s + c.quantity, 0)
 
-  const deliveryFormValid = !!deliveryForm.city && DELIVERY_AREAS.includes(deliveryForm.city)
+  const deliveryFormValid = !!deliveryForm.city && ACTIVE_DELIVERY_AREAS.includes(deliveryForm.city)
     && deliveryForm.street.trim().length > 0 && deliveryForm.houseNumber.trim().length > 0
+    && (addressMode === 'manual' || isDeliveryAddressReady({ ...addressPicker, city: deliveryForm.city }, deviceLocation !== null))
+  // Route-only Google selection: the textual address is complete but trusted device GPS is still required.
+  const routeOnlyAddress = addressMode === 'google' && requiresPreciseLocation({ ...addressPicker, city: deliveryForm.city })
+  const routeOnlyNeedsLocation = routeOnlyAddress && deviceLocation === null
+    && isAddressSelectionValid({ ...addressPicker, city: deliveryForm.city })
   const orderTypeReady = effectiveOrderType === 'pickup' || (effectiveOrderType === 'delivery' && deliveryFormValid)
   const canPlaceOrder = isOpen && isValidPhone(orderPhone) && cart.length > 0 && customerName.trim().length >= 2
     && orderTypeReady && !placingOrder
@@ -393,6 +427,27 @@ export default function Home() {
     } catch (e) { console.error('Push subscribe error:', e) }
   }
 
+  // Device location: only on an explicit click. Only a fix that passes the server's accuracy rule is kept.
+  function requestDeviceLocation() {
+    if (locationState === 'requesting') return
+    setDeviceLocation(null)
+    if (typeof navigator === 'undefined' || !navigator.geolocation) { setLocationState('unavailable'); return }
+    setLocationState('requesting')
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        const r = evaluateDevicePosition(pos.coords)
+        setDeviceLocation(r.location)
+        setLocationState(r.state)
+      },
+      err => { setDeviceLocation(null); setLocationState(classifyGeolocationError(err.code)) },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
+    )
+  }
+  function resetDeviceLocation() {
+    setDeviceLocation(null)
+    setLocationState('idle')
+  }
+
   // Converts the cart (which stores option names) into the server contract (option IDs, no prices).
   function buildOrderRequest(branchId: string, type: OrderType): CreateOrderRequest | null {
     const idsOf = (names: string[], type: 'spread' | 'filling' | 'paid_addon') => {
@@ -429,6 +484,8 @@ export default function Home() {
         floor: deliveryForm.floor.trim() || undefined,
         entrance: deliveryForm.entrance.trim() || undefined,
         courierNotes: deliveryForm.courierNotes.trim() || undefined,
+        ...deliveryLocationWireFields(deviceLocation), // {} unless a trusted location was captured
+        ...(addressMode === 'google' && addressPicker.selected ? { google_place_id: addressPicker.selected.placeId } : {}),
       } : undefined,
     }
   }
@@ -449,7 +506,9 @@ export default function Home() {
       const json = await res.json().catch(() => null)
       if (!res.ok || !json || typeof json.id !== 'string') {
         const code = json?.error as OrderErrorCode | undefined
-        setOrderError((code && ORDER_ERROR_MESSAGES[code]) || GENERIC_ORDER_ERROR)
+        setOrderError(code === 'address_not_verified' && json?.detail === 'precise_location_required'
+          ? ROUTE_ONLY_MESSAGES.needsLocation
+          : (code && ORDER_ERROR_MESSAGES[code]) || GENERIC_ORDER_ERROR)
         setPlacingOrder(false); return
       }
       result = json as CreateOrderResponse
@@ -562,7 +621,7 @@ export default function Home() {
                 style={{ ...fulfillmentButtonStyle, border: `1px solid ${C.gold}` }}>
                 <span style={{ fontSize: 44 }}>🛵</span>
                 <span style={{ fontWeight: 900, fontSize: 19, color: C.gold }}>משלוח</span>
-                <span style={{ fontSize: 12, color: C.gray }}>מ{deliveryBranch.name} · דמי משלוח ₪{DELIVERY_FEE}</span>
+                <span style={{ fontSize: 12, color: C.gray }}>מ{deliveryBranch.name} · {DELIVERY_FEE_LABEL}</span>
               </button>
             )}
           </div>
@@ -777,7 +836,7 @@ export default function Home() {
           <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${effectiveOrderType ? C.border : C.gold}` }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>🚦 אופן קבלת ההזמנה</div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              {([['pickup', '🏃', 'איסוף עצמי', ''], ['delivery', '🛵', 'משלוח', `דמי משלוח ₪${DELIVERY_FEE}`]] as const).map(([v, icon, label, sub]) => (
+              {([['pickup', '🏃', 'איסוף עצמי', ''], ['delivery', '🛵', 'משלוח', DELIVERY_FEE_LABEL]] as const).map(([v, icon, label, sub]) => (
                 <button key={v} onClick={() => { setOrderTypeChoice(v); setOrderError('') }}
                   style={{ padding: '16px 10px', border: `2px solid ${effectiveOrderType === v ? C.gold : C.border}`, borderRadius: 14, background: effectiveOrderType === v ? 'rgba(255,215,0,0.1)' : C.bg, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
                   <span style={{ fontSize: 28 }}>{icon}</span>
@@ -794,23 +853,36 @@ export default function Home() {
           <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${C.border}` }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>📍 כתובת למשלוח</div>
             <label style={labelStyle}>יישוב *</label>
-            <select value={deliveryForm.city} onChange={e => setDeliveryForm(f => ({ ...f, city: e.target.value }))}
+            <select value={deliveryForm.city} onChange={e => {
+                const city = e.target.value
+                setDeliveryForm(f => ({ ...f, city, ...(addressMode === 'google' ? { street: '', houseNumber: '' } : {}) }))
+                setAddressPicker(p => withCity(p, city)) // new area → selection + Google coordinates cleared
+                resetDeviceLocation()
+              }}
               style={{ ...inputStyle(!!deliveryForm.city), appearance: 'auto', marginBottom: 12 }}>
               <option value="">בחרו יישוב</option>
-              {DELIVERY_AREAS.map(a => <option key={a} value={a}>{a}</option>)}
+              {ACTIVE_DELIVERY_AREAS.map(a => <option key={a} value={a}>{a} · משלוח ₪{getDeliveryFeeForArea(a)}</option>)}
             </select>
-            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10, marginBottom: 12 }}>
-              <div>
-                <label style={labelStyle}>רחוב *</label>
-                <input type="text" value={deliveryForm.street} maxLength={DELIVERY_FIELD_LIMITS.street} dir="rtl"
-                  onChange={e => setDeliveryForm(f => ({ ...f, street: e.target.value }))} style={inputStyle(deliveryForm.street.trim().length > 0)} />
+            {addressMode === 'google' ? (
+              <DeliveryAddressPicker
+                state={{ ...addressPicker, city: deliveryForm.city }}
+                onChange={handleAddressPickerChange}
+                onUnavailable={switchToManualAddress}
+                colors={C} labelStyle={labelStyle} inputStyle={inputStyle} />
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10, marginBottom: 12 }}>
+                <div>
+                  <label style={labelStyle}>רחוב *</label>
+                  <input type="text" value={deliveryForm.street} maxLength={DELIVERY_FIELD_LIMITS.street} dir="rtl"
+                    onChange={e => setDeliveryForm(f => ({ ...f, street: e.target.value }))} style={inputStyle(deliveryForm.street.trim().length > 0)} />
+                </div>
+                <div>
+                  <label style={labelStyle}>מספר בית *</label>
+                  <input type="text" value={deliveryForm.houseNumber} maxLength={DELIVERY_FIELD_LIMITS.houseNumber} dir="rtl"
+                    onChange={e => setDeliveryForm(f => ({ ...f, houseNumber: e.target.value }))} style={inputStyle(deliveryForm.houseNumber.trim().length > 0)} />
+                </div>
               </div>
-              <div>
-                <label style={labelStyle}>מספר בית *</label>
-                <input type="text" value={deliveryForm.houseNumber} maxLength={DELIVERY_FIELD_LIMITS.houseNumber} dir="rtl"
-                  onChange={e => setDeliveryForm(f => ({ ...f, houseNumber: e.target.value }))} style={inputStyle(deliveryForm.houseNumber.trim().length > 0)} />
-              </div>
-            </div>
+            )}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 12 }}>
               {([['entrance', 'כניסה'], ['floor', 'קומה'], ['apartment', 'דירה']] as const).map(([k, label]) => (
                 <div key={k}>
@@ -824,6 +896,38 @@ export default function Home() {
             <textarea value={deliveryForm.courierNotes} maxLength={DELIVERY_FIELD_LIMITS.courierNotes} dir="rtl"
               onChange={e => setDeliveryForm(f => ({ ...f, courierNotes: e.target.value }))} placeholder="קוד לשער, להתקשר כשמגיעים..."
               style={{ ...inputStyle(false), resize: 'none', height: 70, fontSize: 15 }} />
+
+            {/* מיקום למשלוח — משלים את הכתובת, לא מחליף אותה; ההזמנה אפשרית גם בלעדיו */}
+            <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.border}` }}>
+              <div style={{ fontWeight: 800, fontSize: 15, color: C.white, marginBottom: 6 }}>מיקום למשלוח</div>
+              {routeOnlyNeedsLocation ? (
+                <div style={{ fontSize: 14, color: C.gold, fontWeight: 700, marginBottom: 10, lineHeight: 1.5 }}>{ROUTE_ONLY_MESSAGES.needsLocation}</div>
+              ) : (
+                <div style={{ fontSize: 13, color: C.gray, marginBottom: 10, lineHeight: 1.5 }}>
+                  אם אתה נמצא עכשיו בכתובת המשלוח, המיקום יעזור לשליח להגיע אליך בדיוק.
+                </div>
+              )}
+              {locationState === 'success' ? (
+                <div style={{ color: C.green, fontWeight: 700, fontSize: 15 }}>{routeOnlyAddress ? ROUTE_ONLY_MESSAGES.ready : '✅ המיקום נקלט'}</div>
+              ) : (
+                <button type="button" onClick={requestDeviceLocation} disabled={locationState === 'requesting'}
+                  style={{ width: '100%', padding: 14, border: `1px solid ${C.gold}`, borderRadius: 12, background: routeOnlyNeedsLocation ? C.gold : 'rgba(255,215,0,0.08)', color: routeOnlyNeedsLocation ? '#000' : C.gold, fontWeight: 700, fontSize: 15, cursor: locationState === 'requesting' ? 'default' : 'pointer', fontFamily: 'Heebo, sans-serif', opacity: locationState === 'requesting' ? 0.7 : 1 }}>
+                  {locationState === 'requesting' ? 'מאתרים את המיקום...' : '📍 שלח את המיקום שלי'}
+                </button>
+              )}
+              {locationState === 'denied' && (
+                <div style={{ color: C.gray, fontSize: 13, marginTop: 8 }}>{routeOnlyAddress ? 'לא התקבלה הרשאת מיקום.' : 'לא התקבלה הרשאת מיקום. אפשר להמשיך עם הכתובת.'}</div>
+              )}
+              {locationState === 'unavailable' && (
+                <div style={{ color: C.gray, fontSize: 13, marginTop: 8 }}>{routeOnlyAddress ? 'לא הצלחנו לקבל מיקום.' : 'לא הצלחנו לקבל מיקום. אפשר להמשיך עם הכתובת.'}</div>
+              )}
+              {locationState === 'inaccurate' && (
+                <div style={{ color: C.gray, fontSize: 13, marginTop: 8 }}>{routeOnlyAddress ? 'המיקום שהתקבל לא מדויק מספיק. אפשר לנסות שוב.' : 'המיקום שהתקבל לא מדויק מספיק. אפשר לנסות שוב או להמשיך עם הכתובת.'}</div>
+              )}
+              {routeOnlyNeedsLocation && (
+                <div style={{ color: C.gray, fontSize: 13, marginTop: 8, lineHeight: 1.5 }}>{ROUTE_ONLY_MESSAGES.notAtAddress}</div>
+              )}
+            </div>
           </div>
         )}
         <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${C.border}` }}>
@@ -859,13 +963,13 @@ export default function Home() {
           {effectiveOrderType === 'delivery' && (
             <>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 6 }}>
-                <span style={{ color: C.gray }}>דמי משלוח</span><span style={{ color: C.gray }}>{fmt(cartDisplay.deliveryFee)}</span>
+                <span style={{ color: C.gray }}>דמי משלוח</span><span style={{ color: C.gray }}>{cartDisplay.deliveryFee === null ? 'בחרו יישוב' : fmt(cartDisplay.deliveryFee)}</span>
               </div>
               <div style={{ color: C.gray, fontSize: 12, marginBottom: 6 }}>{DELIVERY_PRICE_NOTE}</div>
             </>
           )}
           <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 10, marginTop: 4, borderTop: `1px solid ${C.border}`, fontWeight: 900, fontSize: 20 }}>
-            <span style={{ color: C.white }}>לתשלום</span><span style={{ color: C.gold }}>{fmt(cartDisplay.total)}</span>
+            <span style={{ color: C.white }}>לתשלום</span><span style={{ color: C.gold }}>{cartDisplay.total === null ? '—' : fmt(cartDisplay.total)}</span>
           </div>
         </div>
 
@@ -879,8 +983,9 @@ export default function Home() {
           {!isOpen ? '🔒 המקום סגור כרגע'
             : placingOrder ? '⏳ שולח הזמנה...'
             : !effectiveOrderType ? '👆 בחרו איסוף עצמי או משלוח'
+            : effectiveOrderType === 'delivery' && routeOnlyNeedsLocation ? '📍 נא לשלוח מיקום מדויק למשלוח'
             : effectiveOrderType === 'delivery' && !deliveryFormValid ? '📍 נא להשלים כתובת למשלוח'
-            : `✅ שלח הזמנה • ${fmt(cartDisplay.total)}`}
+            : cartDisplay.total === null ? '✅ שלח הזמנה' : `✅ שלח הזמנה • ${fmt(cartDisplay.total)}`}
         </button>
       </div>
     </div>

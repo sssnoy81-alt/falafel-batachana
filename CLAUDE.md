@@ -37,8 +37,20 @@ A Hebrew-first (RTL) online ordering system for a falafel business with multiple
   - **cart** with edit/remove and upsell prompt
   - **checkout**: delivery address (approved localities dropdown), name, phone, payment-method choice (labels only).
     **No discount** (the old 5% app discount was removed).
-  - **delivery pricing**: +₪4 per qualifying meal unit (category allowlist) + ₪20 fixed fee per delivery order.
-    Customer-facing prices for delivery are shown **inclusive** of the +₪4; the ₪20 fee is a separate line.
+  - **delivery pricing**: +₪4 per qualifying meal unit (category allowlist; drinks never surcharged) + a
+    **destination-based delivery fee** per order, from the single table `DELIVERY_FEES_BY_AREA` in `lib/orderConfig.ts`:
+    מעלה אדומים ₪25 · מישור אדומים ₪25 · כפר אדומים ₪35 · אלון ₪40 (Maale Express doc, 3 Oct 2026).
+    **נופי פרת and מצפה יריחו are temporarily unavailable** (no agreed Maale price): hidden from the selector
+    (`ACTIVE_DELIVERY_AREAS`) and rejected by the server for new orders (`delivery_area_unavailable`); they stay in
+    `DELIVERY_AREAS` for history / aliases / reactivation.
+    Customer-facing prices for delivery are shown **inclusive** of the +₪4; the area's fee is a separate line
+    (shown per area in the locality dropdown; "₪25–₪40 לפי יישוב" before an area is chosen).
+    **Delivery payment = cash or credit** (no Cibus / Bit; pickup keeps all four). Cash: the courier collects food +
+    delivery fee from the customer and pays the restaurant for the food. Credit: paid to Falafel in advance, the
+    courier collects nothing (future HYP). Payment never changes the price.
+    **Server-authoritative:** `POST /api/orders` computes the fee from the validated area (unknown area → rejected,
+    fail closed); client-sent fee/total fields are rejected or ignored, so the browser cannot override the fee.
+    The stored `deliveries.delivery_fee` is the server-computed fee for that order.
   - **order tracking** screen with status, order number, order details; name/phone/address remembered for next order
   - business-hours gating (closed popup, order button disabled when closed)
 
@@ -115,7 +127,7 @@ Public PWA assets: `public/manifest.json` (customer app, start `/order`), `publi
 - **Inline styles are common**; Tailwind is present but lightly used.
 - `next.config.ts` is empty (no headers, redirects, or image config). Images use plain `<img>`.
 - Next.js 16: route protection middleware file is `proxy.ts` (not `middleware.ts`). None exists yet.
-- Hardcoded business values live in code (`lib/orderConfig.ts`, `lib/hours.ts`, `lib/kitchenAuth.ts`): branch IDs, the hidden branch, meal/drink category IDs, delivery areas, ₪4/₪20 delivery charges, business hours, meal-deal extra prices.
+- Hardcoded business values live in code (`lib/orderConfig.ts`, `lib/hours.ts`, `lib/kitchenAuth.ts`): branch IDs, the hidden branch, meal/drink category IDs, delivery areas, ₪4 meal surcharge + per-area delivery fees, business hours, meal-deal extra prices.
 
 ---
 
@@ -163,7 +175,9 @@ customer → pickup|delivery → branch (pickup) / מישור אדומים (deli
 - DB steps for delivery are **applied** (deliveries migration + RLS lock-down + `create_order`). If `create_order` were
   ever missing, `/api/orders` returns 503 (no partial orders, no fallback writes).
 - ⚠️ **Deploy coupling:** the kitchen security work (auth + `/api/kitchen/*` + protected push + migrated kitchen UI)
-  must ship **together** and only with `KITCHEN_SESSION_SECRET` + `KITCHEN_USERS` (and the public Supabase vars) set.
+  must ship **together** and only with `KITCHEN_SESSION_SECRET` (and the public Supabase vars) set. Kitchen users live in
+  `public.kitchen_users` (FALAFEL-SN-08D15: server-only, RLS on / no policies, scrypt hashes; read via `lib/kitchenUsers.ts`).
+  The legacy `KITCHEN_USERS` env var is no longer read by the app (remove it from Vercel after validation).
 
 ---
 
@@ -193,7 +207,7 @@ put a server secret in a `NEXT_PUBLIC_*` variable. Privileged access belongs in 
 
 Environment variable names (names only):
 public: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_VAPID_PUBLIC_KEY` ·
-server-only: `SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_SERVICE_KEY`), `KITCHEN_SESSION_SECRET`, `KITCHEN_USERS`,
+server-only: `SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_SERVICE_KEY`), `KITCHEN_SESSION_SECRET` (`KITCHEN_USERS` is legacy/unused since 08D15),
 `VAPID_PRIVATE_KEY`, `VAPID_EMAIL` / `VAPID_SUBJECT`. Never print the values of `.env*` files or env settings.
 
 ---

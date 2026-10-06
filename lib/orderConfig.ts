@@ -42,6 +42,8 @@ export const isSidesCategory = (categoryId: string | null | undefined): boolean 
   categoryId === SIDES_CATEGORY_ID
 
 /* ─── Delivery ─── */
+// Every delivery area the system knows (kept for historical orders, locality aliases, geo config and future
+// reactivation). New customer orders may only use ACTIVE_DELIVERY_AREAS.
 export const DELIVERY_AREAS: readonly string[] = [
   'מעלה אדומים',
   'מישור אדומים',
@@ -51,7 +53,39 @@ export const DELIVERY_AREAS: readonly string[] = [
   'מצפה יריחו',
 ]
 
-export const DELIVERY_FEE = 20            // ₪ per delivery order
+// Temporarily unavailable (Maale Express doc, 3 Oct 2026: no agreed price yet). Hidden from the customer
+// selector and rejected by the server for NEW orders (delivery_area_unavailable). Not deleted — reactivate by
+// moving the area back into ACTIVE_DELIVERY_AREAS and giving it a fee.
+export const UNAVAILABLE_DELIVERY_AREAS: readonly string[] = ['נופי פרת', 'מצפה יריחו']
+
+/** Areas a customer can order delivery to right now (selector order). */
+export const ACTIVE_DELIVERY_AREAS: readonly string[] = DELIVERY_AREAS.filter(a => !UNAVAILABLE_DELIVERY_AREAS.includes(a))
+
+export const isActiveDeliveryArea = (city: unknown): city is string =>
+  typeof city === 'string' && ACTIVE_DELIVERY_AREAS.includes(city)
+
+// Destination-based delivery fee (₪ per delivery order) — the ONLY source of delivery fees (Maale doc 3 Oct 2026).
+// Server-authoritative: the fee is always derived from the validated area, never accepted from a client.
+// Only ACTIVE areas have a fee.
+export const DELIVERY_FEES_BY_AREA: Readonly<Record<string, number>> = Object.freeze({
+  'מעלה אדומים': 25,
+  'מישור אדומים': 25,
+  'כפר אדומים': 35,
+  'אלון': 40,
+})
+
+/** Fee for an ACTIVE delivery area; null for anything else, incl. unavailable areas (callers must fail closed). */
+export const getDeliveryFeeForArea = (city: unknown): number | null =>
+  isActiveDeliveryArea(city) && Object.prototype.hasOwnProperty.call(DELIVERY_FEES_BY_AREA, city)
+    ? DELIVERY_FEES_BY_AREA[city]
+    : null
+
+/** Lowest / highest active fee (for the "₪25–₪40" label before an area is chosen). */
+export const DELIVERY_FEE_RANGE = Object.freeze({
+  min: Math.min(...ACTIVE_DELIVERY_AREAS.map(a => DELIVERY_FEES_BY_AREA[a])),
+  max: Math.max(...ACTIVE_DELIVERY_AREAS.map(a => DELIVERY_FEES_BY_AREA[a])),
+})
+
 export const DELIVERY_MEAL_SURCHARGE = 4  // ₪ per qualifying meal unit
 
 // Must match the DB CHECK constraints on public.deliveries.
@@ -88,9 +122,11 @@ export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
 export const isPaymentMethod = (v: unknown): v is PaymentMethod =>
   typeof v === 'string' && (PAYMENT_METHODS as readonly string[]).includes(v)
 
-// Temporary business rule (until HYP): delivery orders can only be paid by credit card.
-// Pickup keeps every method. Payment method never affects price.
-export const DELIVERY_PAYMENT_METHODS: readonly PaymentMethod[] = ['credit']
+// Delivery: cash (customer pays the courier — food + delivery fee) or credit (paid to Falafel in advance; the
+// courier collects nothing). No Cibus / Bit for delivery. Pickup keeps every method. Payment never affects price.
+export const DELIVERY_PAYMENT_METHODS: readonly PaymentMethod[] = ['cash', 'credit']
+/** Used when the customer's current choice is not allowed for delivery (e.g. Cibus / Bit chosen for pickup). */
+export const DELIVERY_FALLBACK_PAYMENT_METHOD: PaymentMethod = 'credit'
 
 export const allowedPaymentMethods = (type: OrderType): readonly PaymentMethod[] =>
   type === 'delivery' ? DELIVERY_PAYMENT_METHODS : PAYMENT_METHODS
@@ -98,9 +134,11 @@ export const allowedPaymentMethods = (type: OrderType): readonly PaymentMethod[]
 export const isPaymentMethodAllowed = (type: OrderType, method: unknown): method is PaymentMethod =>
   isPaymentMethod(method) && allowedPaymentMethods(type).includes(method)
 
-/** The method actually used for an order type: the customer's choice if allowed, else the first allowed one. */
+/** The method actually used for an order type: the customer's choice if allowed, else a safe default
+ *  (credit for delivery). The customer's original choice is not overwritten, so going back restores it. */
 export const resolvePaymentMethod = (type: OrderType, chosen: PaymentMethod): PaymentMethod =>
-  isPaymentMethodAllowed(type, chosen) ? chosen : allowedPaymentMethods(type)[0]
+  isPaymentMethodAllowed(type, chosen) ? chosen
+    : type === 'delivery' ? DELIVERY_FALLBACK_PAYMENT_METHOD : allowedPaymentMethods(type)[0]
 
 // Plain-text label (no emoji) for exports; unknown/legacy values are shown as-is.
 export function paymentMethodText(v: string | null | undefined): string {

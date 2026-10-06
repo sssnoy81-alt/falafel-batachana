@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { checkSameOriginJson, getKitchenSession } from '@/lib/kitchenAuth'
+import { checkSameOriginJson } from '@/lib/kitchenAuth'
+import { getKitchenSession } from '@/lib/kitchenUsers'
 import { isBranchInScope, isUuid } from '@/lib/kitchenMutations'
 import { sendReadyPush } from '@/lib/push'
 import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
@@ -14,7 +15,7 @@ const json = (body: unknown, status = 200) => NextResponse.json(body, { status, 
 
 export async function POST(req: NextRequest) {
   if (!checkSameOriginJson(req)) return json({ error: 'invalid_request' }, 400)
-  const auth = getKitchenSession(req)
+  const auth = await getKitchenSession(req)
   if (!auth.ok) return json({ error: auth.error }, auth.status)
 
   let body: unknown

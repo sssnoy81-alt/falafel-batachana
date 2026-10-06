@@ -2,8 +2,8 @@
 // No Supabase, no network, no browser APIs. The server result is always the one that is stored.
 
 import {
-  DELIVERY_FEE,
   DELIVERY_MEAL_SURCHARGE,
+  getDeliveryFeeForArea,
   isMealCategory,
   setAddonExtra,
   setDrinkExtra,
@@ -55,7 +55,7 @@ export function priceLine(line: PricingLineInput): PricedLine {
 
 /* ─── Customer-facing DISPLAY prices ───
  * For delivery, the customer sees qualifying items with the +₪4/unit already included
- * ("inclusive" prices) and only the fixed fee as a separate line. This is presentation only:
+ * ("inclusive" prices) and only the destination delivery fee as a separate line. This is presentation only:
  * internally (server, DB, kitchen) the breakdown stays subtotal + mealSurcharge + deliveryFee.
  * Invariant: displayItemsTotal + deliveryFee === computeOrderTotals(...).total
  */
@@ -75,28 +75,46 @@ export function displayLineTotal(line: PricingLineInput, type: OrderType): numbe
 }
 
 export interface DisplayTotals {
-  itemsTotal: number    // "מחיר המנות" — inclusive of the per-meal delivery surcharge
-  deliveryFee: number   // shown separately (₪20 for delivery, 0 for pickup)
-  total: number         // identical to the authoritative total
+  itemsTotal: number          // "מחיר המנות" — inclusive of the per-meal delivery surcharge
+  deliveryFee: number | null  // destination fee for delivery (null until a supported area is chosen), 0 for pickup
+  total: number | null        // identical to the authoritative total; null while the delivery fee is unknown
 }
 
-export function computeDisplayTotals(lines: PricingLineInput[], type: OrderType): DisplayTotals {
-  const t = computeOrderTotals(lines, type)
+/** Display totals. For delivery without a supported area yet, the fee and total are null — never guessed. */
+export function computeDisplayTotals(lines: PricingLineInput[], type: OrderType, deliveryCity?: string | null): DisplayTotals {
+  if (type === 'delivery' && getDeliveryFeeForArea(deliveryCity) === null) {
+    const t = totalsWithFee(lines, type, 0)
+    return { itemsTotal: roundMoney(t.subtotal + t.mealSurcharge), deliveryFee: null, total: null }
+  }
+  const t = computeOrderTotals(lines, type, deliveryCity)
   return { itemsTotal: roundMoney(t.subtotal + t.mealSurcharge), deliveryFee: t.deliveryFee, total: t.total }
 }
 
 /**
  * pickup:   total = subtotal
- * delivery: total = subtotal + mealQuantity × DELIVERY_MEAL_SURCHARGE + DELIVERY_FEE
+ * delivery: total = subtotal + mealQuantity × DELIVERY_MEAL_SURCHARGE + fee of the selected delivery area
+ * The fee comes only from DELIVERY_FEES_BY_AREA (a missing / unsupported area throws — fail closed).
  * Payment method never affects price. Discount is always 0.
  */
-export function computeOrderTotals(lines: PricingLineInput[], type: OrderType): OrderTotals {
+export function computeOrderTotals(lines: PricingLineInput[], type: OrderType, deliveryCity?: string | null): OrderTotals {
+  if (type !== 'delivery') return totalsWithFee(lines, type, 0)
+  const fee = getDeliveryFeeForArea(deliveryCity)
+  if (fee === null) throw new Error('unknown_delivery_area')
+  return totalsWithFee(lines, type, fee)
+}
+
+/** Future Maale Express payload: food total without the delivery fee (subtotal + meal surcharge), in agorot.
+ *  PENDING Maale confirmation of the food_total_agorot definition — not used by any network call yet. */
+export const foodTotalAgorot = (totals: Pick<PricingBreakdown, 'total' | 'deliveryFee'>): number =>
+  Math.round(roundMoney(totals.total - totals.deliveryFee) * 100)
+
+function totalsWithFee(lines: PricingLineInput[], type: OrderType, fee: number): OrderTotals {
   const priced = lines.map(priceLine)
   const subtotal = roundMoney(priced.reduce((s, l) => s + l.lineTotal, 0))
   const mealQuantity = priced.reduce((s, l) => s + (l.qualifiesMeal ? l.quantity : 0), 0)
   const isDelivery = type === 'delivery'
   const mealSurcharge = isDelivery ? roundMoney(mealQuantity * DELIVERY_MEAL_SURCHARGE) : 0
-  const deliveryFee = isDelivery ? DELIVERY_FEE : 0
+  const deliveryFee = isDelivery ? fee : 0
   return {
     lines: priced,
     subtotal,

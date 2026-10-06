@@ -5,6 +5,8 @@ import {
   CUSTOMER_HIDDEN_BRANCH_IDS,
   DELIVERY_AREAS,
   DELIVERY_FIELD_LIMITS,
+  getDeliveryFeeForArea,
+  isActiveDeliveryArea,
   MAX_CART_LINES,
   MAX_CUSTOMER_NAME,
   MAX_ITEM_NOTES,
@@ -27,6 +29,11 @@ import {
 } from './orderConfig'
 import { computeOrderTotals, type PricingBreakdown, type PricingLineInput } from './pricing'
 import { formatDeliveryAddress, type DeliveryAddress } from './deliveryAddress'
+import { UNRESOLVED_DELIVERY_GEO, type DeliveryGeoFields } from './geocoding'
+import { LOCATION_INPUT_KEYS, parseDeviceLocationInput, type DeliveryLocationWire, type DeviceLocation } from './deliveryLocation'
+
+// Google Places place id format (same rule as lib/googlePlaces; duplicated here to keep this module client-type-safe).
+const PLACE_ID_REGEX = /^[A-Za-z0-9_-]{1,300}$/
 
 /* ─── Public contract ─── */
 
@@ -48,7 +55,20 @@ export interface CreateOrderRequest {
   phone: string
   paymentMethod: PaymentMethod
   items: OrderItemRequest[]
-  delivery?: DeliveryAddress
+  /** Wire: the address plus optional customer device-location inputs (location_*). Parsed: address only. */
+  delivery?: DeliveryAddress & Partial<DeliveryLocationWire> & { google_place_id?: string }
+  /** Parsed server-side only: validated device location (trust / accuracy decided later by the server). */
+  deliveryLocation?: DeviceLocation
+  /** Parsed: the Google place the customer selected (format-checked only — verified server-side later). */
+  googlePlaceId?: string
+  /**
+   * SERVER-SET ONLY (never parsed from a client): result of server-side Google verification.
+   * 'verified' → street / house number were replaced by Google's and coordinates are Google's.
+   * 'route_only' → Google's street + the customer's validated house number; NO Google coordinates (the route
+   *   centre is never used) — only accepted together with trusted device GPS.
+   * 'unavailable' → Google could not be reached; the typed address is kept, coordinates stay unresolved.
+   */
+  googleAddress?: { status: 'verified'; lat: number; lng: number } | { status: 'route_only' } | { status: 'unavailable' }
 }
 
 export interface CreateOrderResponse {
@@ -67,11 +87,13 @@ export type OrderErrorCode =
   | 'invalid_type'
   | 'delivery_not_available'
   | 'invalid_delivery_area'
+  | 'delivery_area_unavailable'
   | 'invalid_address'
   | 'invalid_name'
   | 'invalid_phone'
   | 'invalid_payment_method'
   | 'payment_method_not_allowed'
+  | 'address_not_verified'
   | 'empty_cart'
   | 'invalid_quantity'
   | 'item_unavailable'
@@ -95,6 +117,9 @@ export const isUuid = (v: unknown): v is string => typeof v === 'string' && UUID
 const FORBIDDEN_ORDER_KEYS = ['total', 'totalPrice', 'total_price', 'subtotal', 'deliveryFee', 'delivery_fee',
   'mealSurcharge', 'meal_surcharge', 'mealQuantity', 'meal_quantity', 'discount', 'breakdown']
 const FORBIDDEN_ITEM_KEYS = ['price', 'unitPrice', 'unit_price', 'lineTotal', 'basePrice', 'setDrinkExtra', 'setAddonExtra']
+// Coordinates are geocoded by the server only. Presence of any of these keys (top level or in `delivery`) is rejected.
+const FORBIDDEN_GEO_KEYS = ['lat', 'lng', 'lon', 'latitude', 'longitude', 'coordinates', 'location',
+  'delivery_lat', 'delivery_lng', 'deliveryLat', 'deliveryLng', 'geo_source', 'geoSource', 'geo_precision', 'geoPrecision']
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const hasAnyKey = (o: Record<string, unknown>, keys: string[]) => keys.some(k => Object.prototype.hasOwnProperty.call(o, k))
@@ -118,6 +143,11 @@ function uuidList(v: unknown): string[] | null {
 export function parseCreateOrderRequest(body: unknown): Result<CreateOrderRequest> {
   if (!isRecord(body)) return fail('invalid_request')
   if (hasAnyKey(body, FORBIDDEN_ORDER_KEYS)) return fail('client_prices_not_accepted')
+  if (hasAnyKey(body, FORBIDDEN_GEO_KEYS)) return fail('invalid_request', 'client_geo_not_accepted')
+  // Device-location inputs are only accepted inside `delivery` (so never on pickup).
+  if (hasAnyKey(body, [...LOCATION_INPUT_KEYS])) return fail('invalid_request', 'client_geo_not_accepted')
+  // Google place / server verification state are only accepted as delivery.google_place_id.
+  if (hasAnyKey(body, ['google_place_id', 'googlePlaceId', 'googleAddress', 'verifiedPlace'])) return fail('invalid_request', 'client_geo_not_accepted')
 
   const { branchId, type, customerName, phone, paymentMethod, items, delivery } = body
 
@@ -159,12 +189,17 @@ export function parseCreateOrderRequest(body: unknown): Result<CreateOrderReques
   }
 
   let parsedDelivery: DeliveryAddress | undefined
+  let parsedLocation: DeviceLocation | undefined
+  let parsedPlaceId: string | undefined
   if (type === 'pickup') {
     if (delivery !== undefined && delivery !== null) return fail('invalid_request', 'pickup_with_delivery')
   } else {
     if (!isDeliveryBranch(branchId)) return fail('delivery_not_available')
     if (!isRecord(delivery)) return fail('invalid_address')
+    if (hasAnyKey(delivery, FORBIDDEN_GEO_KEYS)) return fail('invalid_request', 'client_geo_not_accepted')
     if (typeof delivery.city !== 'string' || !DELIVERY_AREAS.includes(delivery.city)) return fail('invalid_delivery_area')
+    // Known but temporarily unavailable (no agreed Maale price): never accepted for a NEW order.
+    if (!isActiveDeliveryArea(delivery.city)) return fail('delivery_area_unavailable')
     const street = optionalText(delivery.street, DELIVERY_FIELD_LIMITS.street)
     const houseNumber = optionalText(delivery.houseNumber, DELIVERY_FIELD_LIMITS.houseNumber)
     const apartment = optionalText(delivery.apartment, DELIVERY_FIELD_LIMITS.apartment)
@@ -174,6 +209,14 @@ export function parseCreateOrderRequest(body: unknown): Result<CreateOrderReques
     if (!street || !houseNumber) return fail('invalid_address')
     if (apartment === null || floor === null || entrance === null || courierNotes === null) return fail('invalid_address')
     parsedDelivery = { city: delivery.city, street, houseNumber, apartment, floor, entrance, courierNotes }
+    const location = parseDeviceLocationInput(delivery)
+    if (!location.ok) return fail('invalid_request', 'invalid_location')
+    parsedLocation = location.value
+    if (Object.prototype.hasOwnProperty.call(delivery, 'google_place_id')) {
+      if (typeof delivery.google_place_id !== 'string' || !PLACE_ID_REGEX.test(delivery.google_place_id))
+        return fail('invalid_request', 'invalid_place_id')
+      parsedPlaceId = delivery.google_place_id
+    }
   }
 
   return {
@@ -181,6 +224,8 @@ export function parseCreateOrderRequest(body: unknown): Result<CreateOrderReques
     value: {
       branchId, type, customerName: name, phone: normalizedPhone, paymentMethod,
       items: parsedItems, delivery: parsedDelivery,
+      ...(parsedLocation ? { deliveryLocation: parsedLocation } : {}),
+      ...(parsedPlaceId ? { googlePlaceId: parsedPlaceId } : {}),
     },
   }
 }
@@ -215,7 +260,7 @@ export interface CreateOrderRpcArgs {
     total_price: number
   }
   p_items: { item_id: string; quantity: number; unit_price: number; notes: string | null }[]
-  p_delivery: null | {
+  p_delivery: null | (DeliveryGeoFields & {
     address: string
     city: string
     street: string
@@ -227,7 +272,7 @@ export interface CreateOrderRpcArgs {
     delivery_fee: number
     meal_surcharge: number
     meal_quantity: number
-  }
+  })
 }
 
 export interface BuiltOrder {
@@ -306,7 +351,9 @@ export function buildOrderFromCatalog(req: CreateOrderRequest, catalog: OrderCat
     })
   }
 
-  const totals = computeOrderTotals(pricingInputs, req.type)
+  // Delivery fee comes only from the server's destination table for the validated area (fail closed).
+  if (req.type === 'delivery' && getDeliveryFeeForArea(req.delivery?.city) === null) return fail('invalid_delivery_area')
+  const totals = computeOrderTotals(pricingInputs, req.type, req.delivery?.city)
 
   let p_delivery: CreateOrderRpcArgs['p_delivery'] = null
   if (req.type === 'delivery') {
@@ -326,6 +373,8 @@ export function buildOrderFromCatalog(req: CreateOrderRequest, catalog: OrderCat
       delivery_fee: totals.deliveryFee,
       meal_surcharge: totals.mealSurcharge,
       meal_quantity: totals.mealQuantity,
+      // Explicit unresolved state; POST /api/orders replaces it with the server geocoding result (applyDeliveryGeo).
+      ...UNRESOLVED_DELIVERY_GEO,
     }
   }
 
@@ -348,5 +397,16 @@ export function buildOrderFromCatalog(req: CreateOrderRequest, catalog: OrderCat
       breakdown,
       lines: lines.map(l => ({ unitPrice: l.unitPrice, lineTotal: l.lineTotal })),
     },
+  }
+}
+
+/** Returns a copy with the trusted server geo fields on p_delivery. Pickup (no p_delivery) is returned unchanged. */
+export function applyDeliveryGeo(built: BuiltOrder, geo: DeliveryGeoFields): BuiltOrder {
+  const d = built.rpcArgs.p_delivery
+  if (!d) return built
+  const { delivery_lat, delivery_lng, geo_source, geo_precision } = geo
+  return {
+    ...built,
+    rpcArgs: { ...built.rpcArgs, p_delivery: { ...d, delivery_lat, delivery_lng, geo_source, geo_precision } },
   }
 }
