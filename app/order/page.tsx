@@ -15,6 +15,8 @@ import {
 import { getBusinessStatus } from '@/lib/hours'
 import { formatDeliveryAddress } from '@/lib/deliveryAddress'
 import DeliveryAddressPicker from './DeliveryAddressPicker'
+import Link from 'next/link'
+import LegalFooter from '../_components/LegalFooter'
 import {
   isAddressSelectionValid, isDeliveryAddressReady, requiresPreciseLocation, ROUTE_ONLY_MESSAGES, selectionHouseNumber, withCity,
   type AddressPickerState,
@@ -600,7 +602,7 @@ export default function Home() {
 
   /* ── BRANCH SCREEN ── */
   if (screen === 'branch') return (
-    <div style={{ minHeight: '100vh', background: C.bg, fontFamily: 'Heebo, sans-serif', direction: 'rtl' }}>
+    <div style={{ minHeight: '100vh', background: C.bg, fontFamily: 'Heebo, sans-serif', direction: 'rtl', paddingBottom: showInstallBanner ? 96 : 0 }}>
       <div style={{ padding: '56px 24px 44px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', borderBottom: `1px solid ${C.border}` }}>
         <img src={LOGO} alt="פלאפל בתחנה" style={{ width: 150, height: 150, objectFit: 'contain', marginBottom: 16 }} />
         <h1 style={{ color: C.white, fontSize: 28, fontWeight: 900, margin: '0 0 6px' }}>פלאפל בתחנה</h1>
@@ -658,6 +660,7 @@ export default function Home() {
           </button>
         )}
       </div>
+      <LegalFooter newTab />
       {showInstallBanner && (
         <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 999, background: '#1A1A1A', borderTop: '1px solid #FFD700', padding: '14px 16px', direction: 'rtl', display: 'flex', alignItems: 'center', gap: 12 }}>
           <img src={LOGO} alt="" style={{ width: 44, height: 44, objectFit: 'contain', borderRadius: 10, flexShrink: 0 }} />
@@ -987,7 +990,14 @@ export default function Home() {
             : effectiveOrderType === 'delivery' && !deliveryFormValid ? '📍 נא להשלים כתובת למשלוח'
             : cartDisplay.total === null ? '✅ שלח הזמנה' : `✅ שלח הזמנה • ${fmt(cartDisplay.total)}`}
         </button>
+        {/* Informational only (FALAFEL-SN-08D16): no checkbox, does not affect canPlaceOrder */}
+        <p style={{ color: C.gray, fontSize: 12, lineHeight: 1.6, textAlign: 'center', margin: '10px 0 0' }}>
+          בביצוע ההזמנה אני מאשר/ת את{' '}
+          <Link href="/terms" target="_blank" rel="noopener noreferrer" style={{ color: C.gray, textDecoration: 'underline' }}>תקנון האתר</Link>
+          {' '}ו<Link href="/privacy" target="_blank" rel="noopener noreferrer" style={{ color: C.gray, textDecoration: 'underline' }}>מדיניות הפרטיות</Link>.
+        </p>
       </div>
+      <LegalFooter newTab />
     </div>
   )
 
@@ -1074,6 +1084,8 @@ export default function Home() {
           )
         })}
       </div>
+
+      <LegalFooter newTab />
 
       {cartCount > 0 && (
         <div style={{ position: 'fixed', bottom: 16, left: 16, right: 16, zIndex: 300, maxWidth: 608, margin: '0 auto', display: 'flex', gap: 10 }}>

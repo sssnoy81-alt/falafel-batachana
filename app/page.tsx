@@ -1,14 +1,16 @@
 ﻿'use client'
 
 import Image from 'next/image'
+import LegalFooter from './_components/LegalFooter'
+import { CUSTOMER_CONTACT } from './_components/contact'
 
 const ASSET_PATH = '/falafel-landing'
 
 export default function Home() {
   const orderUrl = '/order'
-  const phoneUrl = 'tel:0585505014'
-  const whatsappUrl = 'https://wa.me/972585505014'
-  const emailUrl = 'mailto:falafel.b001@gmail.com'
+  const phoneUrl = CUSTOMER_CONTACT.phoneUrl
+  const whatsappUrl = CUSTOMER_CONTACT.whatsappUrl
+  const emailUrl = CUSTOMER_CONTACT.emailUrl
   const wazeUrl = 'https://waze.com/ul?q=%D7%93%D7%99%20%D7%96%D7%94%D7%91%207%20%D7%9E%D7%AA%D7%97%D7%9D%20%D7%92%D7%90%D7%9E%D7%95%D7%A1&navigate=yes'
   const facebookUrl = 'https://www.facebook.com/share/1HkhSQXYAo/'
   const instagramUrl = 'https://www.instagram.com/falafelbatahana?igsh=MWprbTlvanRmNDBiZw'
@@ -153,6 +155,8 @@ export default function Home() {
         <a href={instagramUrl} target="_blank" rel="noopener noreferrer" className="page-hotspot bottom-instagram" aria-label="אינסטגרם" />
         <a href={facebookUrl} target="_blank" rel="noopener noreferrer" className="page-hotspot bottom-facebook" aria-label="פייסבוק" />
       </section>
+
+      <LegalFooter />
 
       <style jsx global>{`
         * {
