@@ -44,11 +44,12 @@ export const KITCHEN_ORDER_SELECT = [
   'branches(name)',
   'order_items(id, quantity, notes, menu_items(name_he))',
   'deliveries(address, notes, meal_quantity, meal_surcharge, delivery_fee)',
+  'parcel_requests(status, tracking_ref, carrier)', // GATE 03H — kitchen only (service role; RLS blocks anon)
 ].join(', ')
 
 /* ─── Response contract (types live in lib/kitchenTypes.ts, shared with the kitchen UI) ─── */
 
-export type { KitchenDelivery, KitchenOrder, KitchenOrderItem } from './kitchenTypes'
+export type { KitchenDelivery, KitchenOrder, KitchenOrderItem, KitchenParcel } from './kitchenTypes'
 
 /* ─── Normalization (explicit field-by-field; raw rows are never passed through) ─── */
 
@@ -70,6 +71,7 @@ export function normalizeKitchenOrder(raw: unknown): KitchenOrder | null {
 
   const type: 'pickup' | 'delivery' = raw.type === 'delivery' ? 'delivery' : 'pickup' // legacy NULL → pickup
   const d = type === 'delivery' ? one(raw.deliveries) : null
+  const p = type === 'delivery' ? one(raw.parcel_requests) : null // parcels exist only on delivery orders
 
   return {
     id,
@@ -100,6 +102,14 @@ export function normalizeKitchenOrder(raw: unknown): KitchenOrder | null {
           mealQuantity: num(d.meal_quantity),
           mealSurcharge: num(d.meal_surcharge),
           deliveryFee: num(d.delivery_fee),
+        }
+      : null,
+    // A malformed parcel row still shows up (status 'invalid'), so the kitchen never treats it as "no parcel".
+    parcel: p
+      ? {
+          status: str(p.status) ?? 'invalid',
+          trackingRef: str(p.tracking_ref) ?? '',
+          carrier: str(p.carrier),
         }
       : null,
   }

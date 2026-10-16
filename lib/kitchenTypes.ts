@@ -29,6 +29,13 @@ export interface KitchenDelivery {
   deliveryFee: number
 }
 
+/** Parcel attached to a delivery order (GATE 03H). Kitchen-only: never part of any customer-facing response. */
+export interface KitchenParcel {
+  status: string          // parcel_requests.status (independent of the food order status)
+  trackingRef: string     // as entered by the customer — shown to authorized kitchen staff only
+  carrier: string | null
+}
+
 /** One element of GET /api/kitchen/orders → { orders: KitchenOrder[] } */
 export interface KitchenOrder {
   id: string
@@ -44,4 +51,5 @@ export interface KitchenOrder {
   branchName: string | null
   items: KitchenOrderItem[]
   delivery: KitchenDelivery | null
+  parcel: KitchenParcel | null // delivery orders only; null when no parcel was requested
 }

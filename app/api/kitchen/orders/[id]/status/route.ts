@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { checkSameOriginJson } from '@/lib/kitchenAuth'
 import { getKitchenSession } from '@/lib/kitchenUsers'
-import { changeOrderStatus, isUuid, parseStatusBody, type OrderStatusValue } from '@/lib/kitchenMutations'
+import { changeOrderStatus, isUuid, ParcelNotReadyError, parseStatusBody, type OrderStatusValue } from '@/lib/kitchenMutations'
+import { parcelStatusFromEmbed } from '@/lib/parcelRequest'
 import { sendReadyPush } from '@/lib/push'
 import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
 
@@ -9,6 +10,9 @@ import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
 // Kitchen session + same-origin JSON. Branch scope from the session only. Locked transition table,
 // conditional update (id AND current status) against concurrent tablets. On 'ready' the server sends
 // the push itself; a push failure never rolls back the status change.
+// Parcel gate (GATE 03H): the order's parcel status is loaded with the order; leaving 'received' (other than
+// by cancellation) requires the parcel to be found or cancelled → 409 parcel_not_ready. A database refusal
+// with 'parcel_not_ready' (Migration 03 gate trigger, once installed) maps to the same 409.
 // Timestamps: current production code only writes `status` (confirmed_at/ready_at/delivered_at are not
 // maintained by the app or by an active trigger) — this route preserves that behavior exactly.
 
@@ -34,14 +38,20 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     const supabase = getServerSupabase()
     const result = await changeOrderStatus({
       async loadOrder(orderId) {
-        const { data, error } = await supabase.from('orders').select('id, status, branch_id').eq('id', orderId).maybeSingle()
+        const { data, error } = await supabase.from('orders').select('id, status, branch_id, parcel_requests(status)')
+          .eq('id', orderId).maybeSingle()
         if (error) throw new Error(`load ${error.code}`)
-        return data as { id: string; status: string; branch_id: string | null } | null
+        if (!data) return null
+        const row = data as { id: string; status: string; branch_id: string | null; parcel_requests?: unknown }
+        return { id: row.id, status: row.status, branch_id: row.branch_id, parcel_status: parcelStatusFromEmbed(row.parcel_requests) }
       },
       async updateStatusIfCurrent(orderId, from, to: OrderStatusValue) {
         const { data, error } = await supabase.from('orders').update({ status: to })
           .eq('id', orderId).eq('status', from).select('id')
-        if (error) throw new Error(`update ${error.code}`)
+        if (error) {
+          if (error.code === 'P0001' && error.message === 'parcel_not_ready') throw new ParcelNotReadyError()
+          throw new Error(`update ${error.code}`)
+        }
         return Array.isArray(data) && data.length === 1
       },
       sendReadyPush,

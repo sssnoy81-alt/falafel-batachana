@@ -98,7 +98,8 @@ test('9. pickup → delivery = null even if a deliveries row came back; delivery
 })
 test('10. no extra/sensitive fields in output (exact key sets)', () => {
   const o = R.normalizeKitchenOrder(deliveryRow)
-  assert.deepEqual(Object.keys(o).sort(), ['branchId', 'branchName', 'createdAt', 'customerName', 'dailyNumber', 'delivery', 'id', 'items', 'paymentMethod', 'phone', 'status', 'totalPrice', 'type'])
+  assert.deepEqual(Object.keys(o).sort(), ['branchId', 'branchName', 'createdAt', 'customerName', 'dailyNumber', 'delivery', 'id', 'items', 'parcel', 'paymentMethod', 'phone', 'status', 'totalPrice', 'type'])
+  assert.equal(o.parcel, null) // this fixture has no parcel_requests embed (GATE 03H)
   assert.deepEqual(Object.keys(o.items[0]).sort(), ['id', 'name', 'notes', 'quantity'])
   assert.deepEqual(Object.keys(o.delivery).sort(), ['address', 'courierNotes', 'deliveryFee', 'mealQuantity', 'mealSurcharge'])
   const s = JSON.stringify(o)

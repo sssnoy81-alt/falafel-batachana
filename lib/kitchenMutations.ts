@@ -3,6 +3,7 @@
 // Server-side use only — imports lib/kitchenAuth (node:crypto).
 
 import { KITCHEN_BRANCH_IDS, type KitchenSession } from './kitchenAuth'
+import { isOrderCancellationAllowedForParcel, isParcelReadyForAcceptance, PARCEL_ORDER_CANCEL_ENABLED } from './parcelRequest'
 
 /* ─── Status model ─── */
 
@@ -63,7 +64,10 @@ export function parseNotesBody(body: unknown): string | null | undefined {
 
 /* ─── Results ─── */
 
-export type MutationError = 'invalid_request' | 'not_found' | 'invalid_transition' | 'invalid_state' | 'conflict'
+export type MutationError =
+  | 'invalid_request' | 'not_found' | 'invalid_transition' | 'invalid_state' | 'conflict'
+  | 'parcel_not_ready'           // the order has a parcel that is not found / cancelled yet (GATE 03H)
+  | 'parcel_cancel_unavailable'  // full cancellation of a parcel order — disabled until Migration 03
 export type MutationResult<T> =
   | { ok: true; value: T }
   | { ok: false; status: 400 | 404 | 409; error: MutationError }
@@ -73,10 +77,22 @@ const err = (status: 400 | 404 | 409, error: MutationError) => ({ ok: false as c
 /* ─── Status change ─── */
 
 export interface StatusDeps {
-  loadOrder(id: string): Promise<{ id: string; status: string; branch_id: string | null } | null>
-  /** Conditional update: WHERE id = :id AND status = :from. Returns true when exactly the row was updated. */
+  /**
+   * parcel_status: status of the order's parcel request (public.parcel_requests), null when the order has none.
+   * Omitted (undefined) is treated like null — the production route always loads it (GATE 03H).
+   */
+  loadOrder(id: string): Promise<{ id: string; status: string; branch_id: string | null; parcel_status?: string | null } | null>
+  /**
+   * Conditional update: WHERE id = :id AND status = :from. Returns true when exactly the row was updated.
+   * Throws ParcelNotReadyError when the database refuses with 'parcel_not_ready' (Migration 03 gate trigger).
+   */
   updateStatusIfCurrent(id: string, from: string, to: OrderStatusValue): Promise<boolean>
   sendReadyPush(id: string): Promise<{ sent: number }>
+}
+
+/** Raised by the data layer when the DB acceptance gate (Migration 03) rejects an order transition. */
+export class ParcelNotReadyError extends Error {
+  constructor() { super('parcel_not_ready'); this.name = 'ParcelNotReadyError' }
 }
 
 export async function changeOrderStatus(
@@ -91,9 +107,33 @@ export async function changeOrderStatus(
   if (!order || !isBranchInScope(session, order.branch_id)) return err(404, 'not_found')
 
   if (order.status === target) return err(409, 'conflict') // someone else already did it
-  if (!isAllowedTransition(order.status, target)) return err(409, 'invalid_transition')
 
-  const updated = await deps.updateStatusIfCurrent(orderId, order.status, target)
+  const parcelStatus = order.parcel_status ?? null
+  // Full cancellation of an order whose parcel is still in the store (awaiting_search / found / not_found) is
+  // DISABLED until Migration 03: only its trigger cancels the parcel atomically with the order (no non-atomic
+  // workaround). Orders without a parcel, or whose parcel is already handed over / closed, are unaffected.
+  if (target === 'cancelled' && !isOrderCancellationAllowedForParcel(parcelStatus)) return err(409, 'parcel_cancel_unavailable')
+
+  // received → cancelled exists ONLY for a parcel order whose parcel was not found (agreed workflow, Migration 03).
+  let parcelOrderCancel = false
+  if (order.status === 'received') {
+    if (target === 'cancelled') {
+      // Food-only orders: unchanged (received → cancelled stays an invalid kitchen transition).
+      if (parcelStatus === 'not_found' && PARCEL_ORDER_CANCEL_ENABLED) parcelOrderCancel = true
+    } else if (!isParcelReadyForAcceptance(parcelStatus)) {
+      // Every non-cancellation exit from 'received' requires the parcel to be found (or cancelled → food only).
+      return err(409, 'parcel_not_ready')
+    }
+  }
+  if (!parcelOrderCancel && !isAllowedTransition(order.status, target)) return err(409, 'invalid_transition')
+
+  let updated: boolean
+  try {
+    updated = await deps.updateStatusIfCurrent(orderId, order.status, target)
+  } catch (e) {
+    if (e instanceof ParcelNotReadyError) return err(409, 'parcel_not_ready') // DB gate (Migration 03)
+    throw e
+  }
   if (!updated) return err(409, 'conflict') // another tablet changed it in between
 
   if (target !== 'ready') return { ok: true, value: { id: orderId, status: target } }

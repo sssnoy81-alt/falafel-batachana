@@ -7,6 +7,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { DELIVERY_MEAL_SURCHARGE, ORDER_TYPE_LABELS, PAYMENT_METHOD_LABELS, isPaymentMethod, paymentMethodText } from '@/lib/orderConfig'
 import type { KitchenBranch, KitchenOrder, KitchenOrderItem, KitchenPublicUser, KitchenSessionResponse } from '@/lib/kitchenTypes'
+import {
+  availableParcelActions, isOrderCancellationAllowedForParcel, isParcelReadyForAcceptance, isParcelStatus, PARCEL_ACTION_LABELS, PARCEL_ORDER_CANCEL_ENABLED,
+  PARCEL_STATUS_LABELS, type ParcelAction,
+} from '@/lib/parcelRequest'
 
 /* ─── API helpers (same-origin; the session cookie is sent automatically) ─── */
 class UnauthorizedError extends Error {}
@@ -168,6 +172,78 @@ function DeliveryDetails({ order, large }: { order: Order; large?: boolean }) {
   )
 }
 
+/* ─── Parcel (GATE 03H): own lifecycle, independent of the food status. The server re-validates every action. ─── */
+const PARCEL_COLOR = '#A78BFA'
+const isParcelBlockingAcceptance = (order: Order) =>
+  order.status === 'received' && order.parcel !== null && !isParcelReadyForAcceptance(order.parcel.status)
+
+const PARCEL_BUTTON_STYLE: Record<ParcelAction, { bg: string; fg: string; border: string }> = {
+  found:             { bg: '#4ADE80', fg: '#000', border: '#4ADE80' },
+  not_found:         { bg: 'transparent', fg: '#FF6B6B', border: '#FF6B6B' },
+  reset:             { bg: 'transparent', fg: '#9CA3AF', border: '#4B5563' },
+  food_only:         { bg: 'transparent', fg: '#FFD700', border: '#FFD700' },
+  handed_to_courier: { bg: PARCEL_COLOR, fg: '#000', border: PARCEL_COLOR },
+  carrier_verified:  { bg: 'transparent', fg: '#4ADE80', border: '#4ADE80' },
+  delivery_problem:  { bg: 'transparent', fg: '#FF6B6B', border: '#FF6B6B' },
+  returned_to_store: { bg: 'transparent', fg: '#9CA3AF', border: '#4B5563' },
+}
+
+function ParcelPanel({ order, busy, onAction, large }: {
+  order: Order; busy?: boolean; onAction?: (orderId: string, action: ParcelAction) => void; large?: boolean
+}) {
+  const p = order.parcel
+  if (!p) return null
+  const statusLabel = isParcelStatus(p.status) ? PARCEL_STATUS_LABELS[p.status] : 'מצב חבילה לא תקין — פנו למנהל'
+  const actions = onAction ? availableParcelActions(p.status, order.status) : []
+  const blocking = isParcelBlockingAcceptance(order)
+  const fs = large ? 18 : 12
+  const run = (e: React.MouseEvent, action: ParcelAction) => {
+    e.stopPropagation()
+    if (!onAction || busy) return
+    if (action === 'food_only' && !confirm('אוכל בלבד: החבילה תבוטל וההזמנה תמשיך כהזמנת אוכל רגילה. להמשיך?')) return
+    if (action === 'returned_to_store' && !confirm('לסמן שהחבילה הוחזרה לחנות?')) return
+    onAction(order.id, action)
+  }
+  return (
+    <div onClick={e => e.stopPropagation()} style={{ background: 'rgba(167,139,250,0.08)', border: `${large ? 2 : 1}px solid rgba(167,139,250,0.6)`, borderRadius: large ? 16 : 8, padding: large ? '14px 18px' : '6px 8px', marginBottom: large ? 16 : 6, cursor: 'default' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <span style={{ color: PARCEL_COLOR, fontWeight: 900, fontSize: large ? 22 : 13 }}>📦 חבילה</span>
+        <span style={{ background: 'rgba(167,139,250,0.18)', color: PARCEL_COLOR, borderRadius: 6, padding: '1px 8px', fontSize: large ? 15 : 11, fontWeight: 800 }}>{statusLabel}</span>
+      </div>
+      <div style={{ color: '#fff', fontWeight: 800, fontSize: fs + 1, marginTop: 4, direction: 'ltr', textAlign: 'right', fontFamily: 'monospace', letterSpacing: 0.5 }}>{p.trackingRef || '—'}</div>
+      {p.carrier && <div style={{ color: '#C4B5FD', fontSize: fs - 1, marginTop: 2 }}>🏷️ {p.carrier}</div>}
+      {blocking && (
+        <div style={{ color: '#FED7AA', fontSize: fs - 1, marginTop: 4, fontWeight: 700 }}>יש לאתר את החבילה לפני אישור ההזמנה</div>
+      )}
+      {actions.length > 0 && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+          {actions.map(a => {
+            const s = PARCEL_BUTTON_STYLE[a]
+            return (
+              <button key={a} type="button" disabled={busy} onClick={e => run(e, a)}
+                style={{ background: s.bg, color: s.fg, border: `1px solid ${s.border}`, borderRadius: 6, padding: a === 'found' ? '5px 12px' : '4px 8px', fontWeight: a === 'found' ? 900 : 700, fontSize: a === 'found' ? 13 : 11, cursor: busy ? 'wait' : 'pointer', opacity: busy ? 0.6 : 1, fontFamily: 'Heebo, sans-serif', whiteSpace: 'nowrap' }}>
+                {busy ? '…' : PARCEL_ACTION_LABELS[a]}
+              </button>
+            )
+          })}
+        </div>
+      )}
+      {onAction && order.status === 'received' && p.status === 'not_found' && (
+        <div style={{ marginTop: 6, color: '#9CA3AF', fontSize: 11, lineHeight: 1.5 }}>
+          <div>„אוכל בלבד” מבטל רק את החבילה — ההזמנה ממשיכה לאישור כרגיל.</div>
+          {!PARCEL_ORDER_CANCEL_ENABLED && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+              <button type="button" disabled title="יופעל לאחר התקנת שלב 03 בבסיס הנתונים"
+                style={{ background: 'transparent', color: '#6B7280', border: '1px dashed #4B5563', borderRadius: 6, padding: '3px 8px', fontSize: 11, fontWeight: 700, cursor: 'not-allowed', fontFamily: 'Heebo, sans-serif' }}>✕ ביטול הזמנה מלא</button>
+              <span>זמין לאחר הפעלת שלב 03 — בינתיים צרו קשר עם הלקוח</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function csvDeliveryFields(o: Order) {
   const d = isDeliveryOrder(o) ? o.delivery : null
   return {
@@ -247,6 +323,7 @@ function KitchenModal({ order, onClose, onDone }: {
           <button onClick={onClose} style={{ background: '#1A1A1A', border: '1px solid #333', color: '#9CA3AF', borderRadius: 50, width: 48, height: 48, fontSize: 22, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
         </div>
         {isDeliveryOrder(order) && <DeliveryDetails order={order} large />}
+        {order.parcel && <ParcelPanel order={order} large />}
         {(() => {
           const mains  = order.items.filter(oi => getItemType(oi.name) === 'main')
           const addons = order.items.filter(oi => getItemType(oi.name) === 'addon')
@@ -324,11 +401,14 @@ function KitchenModal({ order, onClose, onDone }: {
   )
 }
 
-function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
+function OrderCard({ order, onAdvance, onKitchenOpen, onEdit, onParcelAction, parcelBusy }: {
   order: Order; onAdvance: (id: string, next: OrderStatus) => void
   onKitchenOpen?: (order: Order) => void; onEdit?: (order: Order) => void
+  onParcelAction?: (orderId: string, action: ParcelAction) => void; parcelBusy?: boolean
 }) {
   const cfg = STATUS_CONFIG[order.status]
+  const parcelBlocks = isParcelBlockingAcceptance(order)
+  const cancelBlockedByParcel = order.parcel !== null && !isOrderCancellationAllowedForParcel(order.parcel.status)
   const isNew = order.status === 'received'
   const isPreparing = order.status === 'preparing'
   const num = order.dailyNumber ? String(order.dailyNumber).padStart(4, '0') : order.id.slice(-4).toUpperCase()
@@ -353,6 +433,7 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
         </div>
       </div>
       {isDeliveryOrder(order) && <DeliveryDetails order={order} />}
+      {order.parcel && <ParcelPanel order={order} busy={parcelBusy} onAction={onParcelAction} />}
       <div style={{ marginBottom: 10 }}>
         {(() => {
           const mains  = order.items.filter(oi => getItemType(oi.name) === 'main')
@@ -426,10 +507,16 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit }: {
           {(order.status === 'confirmed' || order.status === 'preparing') && onEdit && (
             <button onClick={e => { e.stopPropagation(); onEdit(order) }} style={{ background: 'transparent', color: '#FFD700', border: '1px solid #FFD700', borderRadius: 6, padding: '4px 8px', fontWeight: 700, fontSize: 11, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', whiteSpace: 'nowrap' }}>✏️</button>
           )}
-          {(order.status === 'confirmed' || order.status === 'preparing') && (
+          {(order.status === 'confirmed' || order.status === 'preparing') && !cancelBlockedByParcel && (
             <button onClick={e => { e.stopPropagation(); if(confirm('לבטל הזמנה #' + num + '?')) onAdvance(order.id, 'cancelled') }} style={{ background: 'transparent', color: '#FF6B6B', border: '1px solid #FF6B6B', borderRadius: 6, padding: '4px 8px', fontWeight: 700, fontSize: 11, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', whiteSpace: 'nowrap' }}>✕</button>
           )}
-          {cfg.next && (
+          {(order.status === 'confirmed' || order.status === 'preparing') && cancelBlockedByParcel && (
+            <button disabled title="ביטול הזמנה עם חבילה יתאפשר לאחר הפעלת שלב 03 בבסיס הנתונים" onClick={e => e.stopPropagation()} style={{ background: 'transparent', color: '#6B7280', border: '1px dashed #4B5563', borderRadius: 6, padding: '4px 8px', fontWeight: 700, fontSize: 11, cursor: 'not-allowed', fontFamily: 'Heebo, sans-serif', whiteSpace: 'nowrap' }}>✕</button>
+          )}
+          {cfg.next && parcelBlocks && (
+            <button disabled title="יש לאתר את החבילה לפני אישור ההזמנה" onClick={e => e.stopPropagation()} style={{ background: '#2A2A2A', color: '#9CA3AF', border: `1px dashed ${PARCEL_COLOR}`, borderRadius: 8, padding: '6px 10px', fontWeight: 700, fontSize: 12, cursor: 'not-allowed', fontFamily: 'Heebo, sans-serif' }}>📦 יש לאתר חבילה</button>
+          )}
+          {cfg.next && !parcelBlocks && (
             <button onClick={e => { e.stopPropagation(); onAdvance(order.id, cfg.next!) }} style={{ background: cfg.color, color: '#000', border: 'none', borderRadius: 8, padding: '6px 14px', fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>{cfg.nextLabel}</button>
           )}
         </div>
@@ -633,9 +720,36 @@ function Dashboard({ user, branches, onLogout, onUnauthorized }: {
     } catch (e) {
       if (e instanceof UnauthorizedError) { onUnauthorized(); return }
       const code = (e as { code?: string }).code
-      setActionError(code === 'conflict' || code === 'invalid_transition' || code === 'not_found'
-        ? 'ההזמנה עודכנה במכשיר אחר — הרשימה רועננה'
-        : 'הפעולה נכשלה. נסו שוב')
+      setActionError(
+        code === 'parcel_not_ready' ? 'יש לאתר את החבילה (או לבחור „אוכל בלבד”) לפני אישור ההזמנה'
+        : code === 'parcel_cancel_unavailable' ? 'ביטול הזמנה עם חבילה יתאפשר רק לאחר הפעלת שלב 03 — בחרו „אוכל בלבד” או צרו קשר עם הלקוח'
+        : code === 'conflict' || code === 'invalid_transition' || code === 'not_found'
+          ? 'ההזמנה עודכנה במכשיר אחר — הרשימה רועננה'
+          : 'הפעולה נכשלה. נסו שוב')
+      fetchOrders()
+    }
+  }
+
+  // Parcel status change (GATE 03H) through the secure API. One request at a time; the server validates the
+  // transition, scope and current state, and updates conditionally (no overwrite across tablets).
+  const [parcelBusyId, setParcelBusyId] = useState<string | null>(null)
+  const handleParcelAction = async (orderId: string, action: ParcelAction) => {
+    if (parcelBusyId) return
+    setActionError('')
+    setParcelBusyId(orderId)
+    try {
+      const res = await kitchenFetch<{ orderId: string; parcelStatus: string }>(
+        `/api/kitchen/parcels/${encodeURIComponent(orderId)}`, { method: 'PATCH', body: { action } })
+      setOrders(prev => prev.map(o => (o.id === orderId && o.parcel ? { ...o, parcel: { ...o.parcel, status: res.parcelStatus } } : o)))
+    } catch (e) {
+      if (e instanceof UnauthorizedError) { onUnauthorized(); return }
+      const code = (e as { code?: string }).code
+      setActionError(
+        code === 'conflict' || code === 'not_found' ? 'החבילה עודכנה במכשיר אחר — הרשימה רועננה'
+        : code === 'invalid_transition' || code === 'invalid_state' ? 'לא ניתן לבצע פעולה זו על החבילה במצב הנוכחי של ההזמנה'
+        : 'עדכון החבילה נכשל. נסו שוב')
+    } finally {
+      setParcelBusyId(null)
       fetchOrders()
     }
   }
@@ -839,7 +953,8 @@ function Dashboard({ user, branches, onLogout, onUnauthorized }: {
                     {colOrders.length === 0
                       ? <div style={{ color: '#374151', textAlign: 'center', fontSize: 12, padding: '20px 0' }}>אין הזמנות</div>
                       : colOrders.map(order => (
-                        <OrderCard key={order.id} order={order} onAdvance={handleAdvance} onKitchenOpen={status === 'preparing' ? setKitchenOrder : undefined} onEdit={setEditOrder} />
+                        <OrderCard key={order.id} order={order} onAdvance={handleAdvance} onKitchenOpen={status === 'preparing' ? setKitchenOrder : undefined} onEdit={setEditOrder}
+                          onParcelAction={handleParcelAction} parcelBusy={parcelBusyId === order.id} />
                       ))}
                   </div>
                 </div>
