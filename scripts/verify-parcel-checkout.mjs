@@ -313,7 +313,9 @@ await test('no tracking number / carrier in any log statement; no customer UI ch
     for (const line of src(f).split('\n').filter(l => /console\./.test(l)))
       assert.ok(!/trackingRef|tracking_ref|carrier|parcel\.|p_parcel|details/.test(line), `${f}: ${line.trim()}`)
   }
-  assert.ok(!/parcel/i.test(src('app/order/page.tsx')), 'customer UI unchanged (no parcel UI yet)')
+  // Customer UI (S4-B) may offer a parcel, but only through the S4-A contract: never a raw RPC payload, never the flag
+  const page = src('app/order/page.tsx')
+  assert.ok(!/p_parcel|tracking_ref|PARCEL_CHECKOUT_ENABLED|create_order_with_parcel/.test(page), 'page uses only the public `parcel` contract')
   const code = s => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
   for (const f of ['lib/parcelCheckout.ts', 'lib/createOrder.ts']) assert.ok(!/maale|hyp|pricing|DELIVERY_FEES/i.test(code(src(f))), f)
 })

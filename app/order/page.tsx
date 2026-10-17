@@ -26,6 +26,10 @@ import {
   type DeviceLocation, type LocationCaptureState,
 } from '@/lib/deliveryLocation'
 import type { CreateOrderRequest, CreateOrderResponse, OrderErrorCode } from '@/lib/orderRequest'
+import {
+  buildParcelWire, EMPTY_PARCEL_FORM, isParcelSectionVisible, parcelFormError, PARCEL_ORDER_ERROR_MESSAGES,
+  type ParcelFormState,
+} from '@/lib/parcelCheckoutForm'
 
 
 type Branch = { id: string; name: string; address: string }
@@ -84,6 +88,7 @@ const ORDER_ERROR_MESSAGES: Partial<Record<OrderErrorCode, string>> = {
   empty_cart: 'הסל ריק',
   payment_method_not_allowed: 'במשלוח ניתן לשלם במזומן או באשראי בלבד',
   address_not_verified: 'לא ניתן לאמת את הכתובת. נא לבחור כתובת מהרשימה',
+  ...PARCEL_ORDER_ERROR_MESSAGES, // parcel_checkout_disabled / invalid_parcel / parcel_duplicate (GATE S4-B)
 }
 const GENERIC_ORDER_ERROR = 'לא ניתן לשלוח את ההזמנה כרגע. נסו שוב בעוד רגע או התקשרו לסניף'
 // Destination-based delivery fee (lib/orderConfig DELIVERY_FEES_BY_AREA); range shown until an area is chosen.
@@ -188,6 +193,22 @@ export default function Home() {
   // מיקום מכשיר למשלוח — רק אחרי לחיצה מפורשת; לא נשמר ב-localStorage ולא מוצג כקואורדינטות
   const [locationState, setLocationState] = useState<LocationCaptureState>('idle')
   const [deviceLocation, setDeviceLocation] = useState<DeviceLocation | null>(null)
+  // חבילה מצורפת למשלוח (GATE S4-B) — מוצג רק כשהשרת מאשר (ברירת מחדל: כבוי). מספר המעקב לא נשמר ב-localStorage.
+  const [parcelCheckoutEnabled, setParcelCheckoutEnabled] = useState(false)
+  const [parcelSelected, setParcelSelected] = useState<boolean>(EMPTY_PARCEL_FORM.selected)
+  const [parcelTrackingRef, setParcelTrackingRef] = useState<string>(EMPTY_PARCEL_FORM.trackingRef)
+  const [parcelCarrier, setParcelCarrier] = useState<string>(EMPTY_PARCEL_FORM.carrier)
+  function clearParcelForm() {
+    setParcelSelected(EMPTY_PARCEL_FORM.selected); setParcelTrackingRef(EMPTY_PARCEL_FORM.trackingRef); setParcelCarrier(EMPTY_PARCEL_FORM.carrier)
+  }
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/checkout/config', { cache: 'no-store' })
+      .then(r => (r.ok ? r.json() : null))
+      .then(j => { if (!cancelled) setParcelCheckoutEnabled(j?.parcelCheckout === true) }) // anything else → off
+      .catch(() => { if (!cancelled) setParcelCheckoutEnabled(false) })
+    return () => { cancelled = true }
+  }, [])
 
   // *** חדש: שמירת פירוט ההזמנה למסך מעקב ***
   const [orderCart, setOrderCart] = useState<CartItem[]>([])
@@ -350,8 +371,20 @@ export default function Home() {
   const routeOnlyNeedsLocation = routeOnlyAddress && deviceLocation === null
     && isAddressSelectionValid({ ...addressPicker, city: deliveryForm.city })
   const orderTypeReady = effectiveOrderType === 'pickup' || (effectiveOrderType === 'delivery' && deliveryFormValid)
+  // Parcel (GATE S4-B): only with the server flag on and a delivery order; otherwise nothing changes.
+  const parcelForm: ParcelFormState = {
+    enabled: parcelCheckoutEnabled, orderType: effectiveOrderType,
+    selected: parcelSelected, trackingRef: parcelTrackingRef, carrier: parcelCarrier,
+  }
+  const parcelSectionVisible = isParcelSectionVisible(parcelForm)
+  const parcelError = parcelFormError(parcelForm)
   const canPlaceOrder = isOpen && isValidPhone(orderPhone) && cart.length > 0 && customerName.trim().length >= 2
-    && orderTypeReady && !placingOrder
+    && orderTypeReady && parcelError === null && !placingOrder
+
+  // Leaving delivery (pickup, back to the start) or the flag going off clears the parcel — no stale data is sent.
+  useEffect(() => {
+    if (!parcelSectionVisible) clearParcelForm()
+  }, [parcelSectionVisible])
 
   useEffect(() => {
     if (screen === 'branch' || screen === 'tracking') return
@@ -489,7 +522,12 @@ export default function Home() {
         ...deliveryLocationWireFields(deviceLocation), // {} unless a trusted location was captured
         ...(addressMode === 'google' && addressPicker.selected ? { google_place_id: addressPicker.selected.placeId } : {}),
       } : undefined,
+      ...parcelWireFor(type), // {} unless a valid parcel is attached to a delivery order (GATE S4-B)
     }
+  }
+  function parcelWireFor(type: OrderType): Pick<CreateOrderRequest, 'parcel'> {
+    const parcel = buildParcelWire({ ...parcelForm, orderType: type })
+    return parcel ? { parcel } : {}
   }
 
   async function placeOrder() {
@@ -508,6 +546,9 @@ export default function Home() {
       const json = await res.json().catch(() => null)
       if (!res.ok || !json || typeof json.id !== 'string') {
         const code = json?.error as OrderErrorCode | undefined
+        // The server is authoritative: if it reports parcel checkout as off, hide the section (the parcel is cleared)
+        // so the customer can send the same order without a parcel.
+        if (code === 'parcel_checkout_disabled') setParcelCheckoutEnabled(false)
         setOrderError(code === 'address_not_verified' && json?.detail === 'precise_location_required'
           ? ROUTE_ONLY_MESSAGES.needsLocation
           : (code && ORDER_ERROR_MESSAGES[code]) || GENERIC_ORDER_ERROR)
@@ -545,7 +586,7 @@ export default function Home() {
     setOrderLineTotals(lineTotals)
     setOrderAddress(address)
     setOrderId(result.id); setOrderStatus('received'); setOrderDailyNumber(result.dailyNumber)
-    setCart([]); setPlacingOrder(false); setScreen('tracking')
+    setCart([]); clearParcelForm(); setPlacingOrder(false); setScreen('tracking')
     subscribeToPush(normalizePhone(orderPhone), result.id)
   }
 
@@ -933,6 +974,37 @@ export default function Home() {
             </div>
           </div>
         )}
+
+        {/* חבילה מצורפת למשלוח (GATE S4-B) — רק כשהשרת מאשר ורק במשלוח; ללא סימון נשלחת הזמנת אוכל רגילה */}
+        {parcelSectionVisible && (
+          <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${parcelSelected ? C.gold : C.border}` }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontWeight: 800, fontSize: 16, color: C.white }}>
+              <input type="checkbox" checked={parcelSelected}
+                onChange={e => { setParcelSelected(e.target.checked); setOrderError(''); if (!e.target.checked) { setParcelTrackingRef(''); setParcelCarrier('') } }}
+                style={{ width: 22, height: 22, accentColor: C.gold, flexShrink: 0 }} />
+              📦 יש לי חבילה לצרף למשלוח
+            </label>
+            {parcelSelected && (
+              <div style={{ marginTop: 14 }}>
+                <div style={{ fontSize: 13, color: C.gray, marginBottom: 12, lineHeight: 1.5 }}>
+                  החבילה תאותר בסניף ותצורף למשלוח יחד עם ההזמנה.
+                </div>
+                <label style={labelStyle}>מספר מעקב של החבילה *</label>
+                <input type="text" value={parcelTrackingRef} maxLength={40} dir="ltr" inputMode="text" autoComplete="off"
+                  autoCapitalize="characters" spellCheck={false} placeholder="RR123456789IL"
+                  onChange={e => { setParcelTrackingRef(e.target.value); setOrderError('') }}
+                  style={{ ...inputStyle(parcelTrackingRef.trim().length > 0 && parcelError === null), marginBottom: 12, textAlign: 'left' }} />
+                <label style={labelStyle}>חברת שילוח (לא חובה)</label>
+                <input type="text" value={parcelCarrier} maxLength={40} dir="rtl" autoComplete="off" placeholder="דואר ישראל, UPS, DHL..."
+                  onChange={e => { setParcelCarrier(e.target.value); setOrderError('') }}
+                  style={inputStyle(false)} />
+                {parcelError && (parcelTrackingRef.length > 0 || parcelCarrier.length > 0) && (
+                  <div style={{ color: C.red, fontSize: 13, marginTop: 8, lineHeight: 1.5 }}>{parcelError}</div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
         <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${C.border}` }}>
           <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>👤 שם מלא</div>
           <input type="text" value={customerName} maxLength={MAX_CUSTOMER_NAME} onChange={e => setCustomerName(e.target.value)} placeholder="שם ושם משפחה" dir="rtl"
@@ -988,6 +1060,7 @@ export default function Home() {
             : !effectiveOrderType ? '👆 בחרו איסוף עצמי או משלוח'
             : effectiveOrderType === 'delivery' && routeOnlyNeedsLocation ? '📍 נא לשלוח מיקום מדויק למשלוח'
             : effectiveOrderType === 'delivery' && !deliveryFormValid ? '📍 נא להשלים כתובת למשלוח'
+            : parcelError !== null ? '📦 נא להשלים את פרטי החבילה'
             : cartDisplay.total === null ? '✅ שלח הזמנה' : `✅ שלח הזמנה • ${fmt(cartDisplay.total)}`}
         </button>
         {/* Informational only (FALAFEL-SN-08D16): no checkbox, does not affect canPlaceOrder */}
