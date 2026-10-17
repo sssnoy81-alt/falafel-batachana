@@ -8,7 +8,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { DELIVERY_MEAL_SURCHARGE, ORDER_TYPE_LABELS, PAYMENT_METHOD_LABELS, isPaymentMethod, paymentMethodText } from '@/lib/orderConfig'
 import type { KitchenBranch, KitchenOrder, KitchenOrderItem, KitchenPublicUser, KitchenSessionResponse } from '@/lib/kitchenTypes'
 import {
-  availableParcelActions, isOrderCancellationAllowedForParcel, isParcelReadyForAcceptance, isParcelStatus, PARCEL_ACTION_LABELS, PARCEL_ORDER_CANCEL_ENABLED,
+  availableParcelActions, isOrderCancellationAllowedForParcel, isParcelReadyForAcceptance, isParcelStatus, isParcelSyncedOnCancel, PARCEL_ACTION_LABELS, PARCEL_ORDER_CANCEL_ENABLED,
   PARCEL_STATUS_LABELS, type ParcelAction,
 } from '@/lib/parcelRequest'
 
@@ -188,8 +188,18 @@ const PARCEL_BUTTON_STYLE: Record<ParcelAction, { bg: string; fg: string; border
   returned_to_store: { bg: 'transparent', fg: '#9CA3AF', border: '#4B5563' },
 }
 
-function ParcelPanel({ order, busy, onAction, large }: {
-  order: Order; busy?: boolean; onAction?: (orderId: string, action: ParcelAction) => void; large?: boolean
+/** Confirmation text for a full order cancellation, telling the kitchen what happens to the parcel (GATE S2b). */
+function cancelConfirmText(order: Order, num: string): string {
+  const p = order.parcel
+  if (!p) return 'לבטל הזמנה #' + num + '?'
+  if (isParcelSyncedOnCancel(p.status)) return 'לבטל הזמנה #' + num + '?\nהחבילה עדיין בחנות ותבוטל יחד עם ההזמנה.'
+  if (p.status === 'cancelled') return 'לבטל הזמנה #' + num + '?'
+  return 'לבטל הזמנה #' + num + '?\nשימו לב: החבילה כבר יצאה מהחנות ולא תבוטל אוטומטית — יש לטפל בה ידנית מול השליח / הלקוח.'
+}
+
+function ParcelPanel({ order, busy, onAction, onCancelOrder, large }: {
+  order: Order; busy?: boolean; onAction?: (orderId: string, action: ParcelAction) => void
+  onCancelOrder?: () => void; large?: boolean
 }) {
   const p = order.parcel
   if (!p) return null
@@ -231,11 +241,19 @@ function ParcelPanel({ order, busy, onAction, large }: {
       {onAction && order.status === 'received' && p.status === 'not_found' && (
         <div style={{ marginTop: 6, color: '#9CA3AF', fontSize: 11, lineHeight: 1.5 }}>
           <div>„אוכל בלבד” מבטל רק את החבילה — ההזמנה ממשיכה לאישור כרגיל.</div>
+          {PARCEL_ORDER_CANCEL_ENABLED && onCancelOrder && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+              <button type="button" disabled={busy}
+                onClick={e => { e.stopPropagation(); if (busy) return; if (confirm('ביטול הזמנה מלא: ההזמנה והחבילה יבוטלו יחד. להמשיך?')) onCancelOrder() }}
+                style={{ background: 'transparent', color: '#FF6B6B', border: '1px solid #FF6B6B', borderRadius: 6, padding: '3px 8px', fontSize: 11, fontWeight: 700, cursor: busy ? 'wait' : 'pointer', opacity: busy ? 0.6 : 1, fontFamily: 'Heebo, sans-serif' }}>✕ ביטול הזמנה מלא</button>
+              <span>מבטל את ההזמנה ואת החבילה יחד</span>
+            </div>
+          )}
           {!PARCEL_ORDER_CANCEL_ENABLED && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
-              <button type="button" disabled title="יופעל לאחר התקנת שלב 03 בבסיס הנתונים"
+              <button type="button" disabled title="ביטול הזמנה מלא אינו זמין כרגע"
                 style={{ background: 'transparent', color: '#6B7280', border: '1px dashed #4B5563', borderRadius: 6, padding: '3px 8px', fontSize: 11, fontWeight: 700, cursor: 'not-allowed', fontFamily: 'Heebo, sans-serif' }}>✕ ביטול הזמנה מלא</button>
-              <span>זמין לאחר הפעלת שלב 03 — בינתיים צרו קשר עם הלקוח</span>
+              <span>ביטול מלא אינו זמין כרגע — צרו קשר עם הלקוח</span>
             </div>
           )}
         </div>
@@ -433,7 +451,7 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit, onParcelAction, pa
         </div>
       </div>
       {isDeliveryOrder(order) && <DeliveryDetails order={order} />}
-      {order.parcel && <ParcelPanel order={order} busy={parcelBusy} onAction={onParcelAction} />}
+      {order.parcel && <ParcelPanel order={order} busy={parcelBusy} onAction={onParcelAction} onCancelOrder={() => onAdvance(order.id, 'cancelled')} />}
       <div style={{ marginBottom: 10 }}>
         {(() => {
           const mains  = order.items.filter(oi => getItemType(oi.name) === 'main')
@@ -508,10 +526,10 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit, onParcelAction, pa
             <button onClick={e => { e.stopPropagation(); onEdit(order) }} style={{ background: 'transparent', color: '#FFD700', border: '1px solid #FFD700', borderRadius: 6, padding: '4px 8px', fontWeight: 700, fontSize: 11, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', whiteSpace: 'nowrap' }}>✏️</button>
           )}
           {(order.status === 'confirmed' || order.status === 'preparing') && !cancelBlockedByParcel && (
-            <button onClick={e => { e.stopPropagation(); if(confirm('לבטל הזמנה #' + num + '?')) onAdvance(order.id, 'cancelled') }} style={{ background: 'transparent', color: '#FF6B6B', border: '1px solid #FF6B6B', borderRadius: 6, padding: '4px 8px', fontWeight: 700, fontSize: 11, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', whiteSpace: 'nowrap' }}>✕</button>
+            <button onClick={e => { e.stopPropagation(); if(confirm(cancelConfirmText(order, num))) onAdvance(order.id, 'cancelled') }} style={{ background: 'transparent', color: '#FF6B6B', border: '1px solid #FF6B6B', borderRadius: 6, padding: '4px 8px', fontWeight: 700, fontSize: 11, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', whiteSpace: 'nowrap' }}>✕</button>
           )}
           {(order.status === 'confirmed' || order.status === 'preparing') && cancelBlockedByParcel && (
-            <button disabled title="ביטול הזמנה עם חבילה יתאפשר לאחר הפעלת שלב 03 בבסיס הנתונים" onClick={e => e.stopPropagation()} style={{ background: 'transparent', color: '#6B7280', border: '1px dashed #4B5563', borderRadius: 6, padding: '4px 8px', fontWeight: 700, fontSize: 11, cursor: 'not-allowed', fontFamily: 'Heebo, sans-serif', whiteSpace: 'nowrap' }}>✕</button>
+            <button disabled title="ביטול הזמנה עם חבילה בחנות אינו זמין כרגע" onClick={e => e.stopPropagation()} style={{ background: 'transparent', color: '#6B7280', border: '1px dashed #4B5563', borderRadius: 6, padding: '4px 8px', fontWeight: 700, fontSize: 11, cursor: 'not-allowed', fontFamily: 'Heebo, sans-serif', whiteSpace: 'nowrap' }}>✕</button>
           )}
           {cfg.next && parcelBlocks && (
             <button disabled title="יש לאתר את החבילה לפני אישור ההזמנה" onClick={e => e.stopPropagation()} style={{ background: '#2A2A2A', color: '#9CA3AF', border: `1px dashed ${PARCEL_COLOR}`, borderRadius: 8, padding: '6px 10px', fontWeight: 700, fontSize: 12, cursor: 'not-allowed', fontFamily: 'Heebo, sans-serif' }}>📦 יש לאתר חבילה</button>
@@ -717,12 +735,15 @@ function Dashboard({ user, branches, onLogout, onUnauthorized }: {
     try {
       await kitchenFetch(`/api/kitchen/orders/${encodeURIComponent(orderId)}/status`, { method: 'PATCH', body: { status: nextStatus } })
       setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: nextStatus } : o)) // only after server success
+      // A cancellation may also have cancelled the parcel in the database (Migration 03 sync) → reload its status
+      if (nextStatus === 'cancelled') fetchOrders()
     } catch (e) {
       if (e instanceof UnauthorizedError) { onUnauthorized(); return }
       const code = (e as { code?: string }).code
       setActionError(
         code === 'parcel_not_ready' ? 'יש לאתר את החבילה (או לבחור „אוכל בלבד”) לפני אישור ההזמנה'
-        : code === 'parcel_cancel_unavailable' ? 'ביטול הזמנה עם חבילה יתאפשר רק לאחר הפעלת שלב 03 — בחרו „אוכל בלבד” או צרו קשר עם הלקוח'
+        : code === 'parcel_cancel_unavailable' ? 'ביטול הזמנה עם חבילה אינו זמין כרגע — בחרו „אוכל בלבד” או צרו קשר עם הלקוח'
+        : code === 'invalid_state' ? 'לא ניתן לבטל את ההזמנה במצב הנוכחי של החבילה — הרשימה רועננה'
         : code === 'conflict' || code === 'invalid_transition' || code === 'not_found'
           ? 'ההזמנה עודכנה במכשיר אחר — הרשימה רועננה'
           : 'הפעולה נכשלה. נסו שוב')

@@ -48,7 +48,8 @@ function dbParcelRule(old, next, closeReason, orderStatus) {
 }
 
 /* ─── Fake service-role Supabase client ─── */
-const db = { kitchen_users: [], orders: new Map(), parcels: new Map(), events: [], queries: [], dbGate: false, failUpdate: null, hooks: {} }
+const db = { kitchen_users: [], orders: new Map(), parcels: new Map(), events: [], queries: [], dbGate: false, dbSync: true, syncRule: null, failUpdate: null, hooks: {} }
+const IN_STORE = ['awaiting_search', 'not_found', 'found']
 class ServerConfigError extends Error { constructor(m) { super(m); this.name = 'ServerConfigError' } }
 const tick = () => new Promise(r => setImmediate(r))
 function query(table) {
@@ -79,6 +80,16 @@ function query(table) {
       // Migration 03 gate emulation (only when switched on): every exit from received except cancellation
       if (db.dbGate && o.status === 'received' && q.patch.status !== 'cancelled' && p && !['found', 'cancelled'].includes(p.status))
         return { data: null, error: { code: 'P0001', message: 'parcel_not_ready' } }
+      // Migration 03 cancel-sync emulation (installed in Production → on by default): same statement, same
+      // transaction. A parcel still in the store becomes cancelled / order_cancelled / system actor (validated by the
+      // parcel trigger rules, one event); any other parcel is untouched. A rule rejection rolls back the whole update.
+      if (db.dbSync && q.patch.status === 'cancelled' && o.status !== 'cancelled' && p && IN_STORE.includes(p.status)) {
+        const rule = db.syncRule ?? dbParcelRule(p.status, 'cancelled', 'order_cancelled', 'cancelled')
+        if (rule) return { data: null, error: { code: '22023', message: rule } }
+        const from = p.status
+        Object.assign(p, { status: 'cancelled', close_reason: 'order_cancelled', last_actor: 'system:order_cancelled' })
+        db.events.push({ parcel_order: o.id, from_status: from, to_status: 'cancelled', actor: 'system:order_cancelled' })
+      }
       o.status = q.patch.status
       return { data: [{ id: o.id }], error: null }
     }
@@ -157,7 +168,7 @@ function reset({ orders = [], parcels = [] } = {}) {
   db.kitchen_users = [userRow('adumim', 'branch', ADUMIM), userRow('mikhmas', 'branch', MIKHMAS), userRow('boss', 'admin', null)]
   db.orders = new Map(orders.map(o => [o.id, { type: 'delivery', branch_id: ADUMIM, daily_number: 1, ...o }]))
   db.parcels = new Map(parcels.map(p => [p.order_id, { tracking_ref: 'RR123456789IL', carrier: 'דואר ישראל', last_actor: 'customer_checkout', ...p }]))
-  db.events = []; db.queries = []; db.dbGate = false; db.failUpdate = null; db.hooks = {}
+  db.events = []; db.queries = []; db.dbGate = false; db.dbSync = true; db.syncRule = null; db.failUpdate = null; db.hooks = {}
 }
 const patchReq = (path, body, { session = SESS.adumim, origin = ORIGIN, contentType = 'application/json' } = {}) =>
   new NextRequest(`${ORIGIN}${path}`, {
@@ -211,13 +222,12 @@ await test('parcelStatusFromEmbed: none → null; one row → status; malformed 
     assert.equal(P.parcelStatusFromEmbed(bad), 'invalid', JSON.stringify(bad))
 })
 
-await test('full order cancellation flag is OFF until Migration 03; cancellation guard covers exactly the in-store states', () => {
-  assert.equal(P.PARCEL_ORDER_CANCEL_ENABLED, false)
+await test('S2b: full order cancellation flag is ON (Migration 03 installed); sync scope == exactly the in-store states', () => {
+  assert.equal(P.PARCEL_ORDER_CANCEL_ENABLED, true)
   assert.deepEqual([...P.PARCEL_STATUSES_REQUIRING_CANCEL_SYNC], ['awaiting_search', 'found', 'not_found']) // = parcel_03 cancel-sync scope
-  assert.equal(P.isOrderCancellationAllowedForParcel(null), true)
-  for (const s of ['awaiting_search', 'found', 'not_found']) assert.equal(P.isOrderCancellationAllowedForParcel(s), false, s)
-  for (const s of ['handed_to_courier', 'delivery_problem', 'cancelled', 'carrier_verified', 'returned_to_store'])
-    assert.equal(P.isOrderCancellationAllowedForParcel(s), true, s)
+  for (const s of [null, ...PARCEL_STATUSES, 'invalid']) assert.equal(P.isOrderCancellationAllowedForParcel(s), true, String(s))
+  for (const s of PARCEL_STATUSES) assert.equal(P.isParcelSyncedOnCancel(s), IN_STORE.includes(s), s)
+  assert.equal(P.isParcelSyncedOnCancel(null), false)
   assert.match(src('db/migrations/parcel_03_orders_gate.sql'), /AND pr\.status IN \('awaiting_search', 'not_found', 'found'\)/)
 })
 
@@ -313,22 +323,108 @@ await test('other DB errors on the order update stay generic 500 (no detail leak
 })
 
 /* ═══ 4. Cancellation workflow ═══ */
-console.log('Not-found workflow: food only / full cancellation disabled')
+console.log('Cancellation workflow (S2b): food only / full cancellation via the Migration 03 sync')
 
-await test('received + not_found → full cancellation refused with 409 parcel_cancel_unavailable; nothing changes', async () => {
+const expectSynced = (oid, from) => {
+  assert.deepEqual({ ...db.parcels.get(oid), tracking_ref: undefined, carrier: undefined, order_id: undefined },
+    { status: 'cancelled', close_reason: 'order_cancelled', last_actor: 'system:order_cancelled', tracking_ref: undefined, carrier: undefined, order_id: undefined })
+  assert.deepEqual(db.events, [{ parcel_order: oid, from_status: from, to_status: 'cancelled', actor: 'system:order_cancelled' }])
+  assert.equal(parcelUpdates().length, 0)   // the application never writes the parcel — only the DB trigger does
+  assert.equal(orderUpdates().length, 1)
+}
+
+await test('received + not_found → full cancellation 200; parcel cancelled atomically by the DB sync (order_cancelled, system actor, one event)', async () => {
   reset({ orders: [{ id: id(12), status: 'received' }], parcels: [{ order_id: id(12), status: 'not_found' }] })
-  assert.deepEqual(await setStatus(id(12), 'cancelled'), { status: 409, body: { error: 'parcel_cancel_unavailable' } })
-  assert.deepEqual([db.orders.get(id(12)).status, db.parcels.get(id(12)).status], ['received', 'not_found'])
-  assert.equal(orderUpdates().length + parcelUpdates().length, 0)
+  assert.deepEqual(await setStatus(id(12), 'cancelled'), { status: 200, body: { id: id(12), status: 'cancelled' } })
+  assert.equal(db.orders.get(id(12)).status, 'cancelled')
+  expectSynced(id(12), 'not_found')
 })
 
-await test('full cancellation of ANY order with a parcel still in the store is disabled until Migration 03 (no orphaned active parcel)', async () => {
-  for (const os of ['received', 'confirmed', 'preparing']) for (const ps of ['awaiting_search', 'found', 'not_found']) {
-    reset({ orders: [{ id: id(30), status: os }], parcels: [{ order_id: id(30), status: ps }] })
-    assert.deepEqual(await setStatus(id(30), 'cancelled'), { status: 409, body: { error: 'parcel_cancel_unavailable' } }, `${os}/${ps}`)
-    assert.deepEqual([db.orders.get(id(30)).status, db.parcels.get(id(30)).status], [os, ps])
-    assert.equal(orderUpdates().length, 0)
+await test('received + awaiting_search / found → still 409 invalid_transition (agreed workflow: cancel from received only when not found)', async () => {
+  for (const ps of ['awaiting_search', 'found']) {
+    reset({ orders: [{ id: id(30), status: 'received' }], parcels: [{ order_id: id(30), status: ps }] })
+    assert.deepEqual(await setStatus(id(30), 'cancelled'), { status: 409, body: { error: 'invalid_transition' } }, ps)
+    assert.deepEqual([db.orders.get(id(30)).status, db.parcels.get(id(30)).status], ['received', ps])
+    assert.equal(orderUpdates().length + db.events.length, 0)
   }
+})
+
+await test('confirmed / preparing × every in-store parcel state → 200; parcel synced to cancelled in the same statement', async () => {
+  for (const os of ['confirmed', 'preparing']) for (const ps of IN_STORE) {
+    reset({ orders: [{ id: id(33), status: os }], parcels: [{ order_id: id(33), status: ps }] })
+    assert.equal((await setStatus(id(33), 'cancelled')).status, 200, `${os}/${ps}`)
+    assert.equal(db.orders.get(id(33)).status, 'cancelled')
+    expectSynced(id(33), ps)
+  }
+})
+
+await test('ready / delivered orders still cannot be cancelled by the kitchen (transition table unchanged), parcel untouched', async () => {
+  for (const os of ['ready', 'delivered']) for (const ps of ['found', 'handed_to_courier']) {
+    reset({ orders: [{ id: id(34), status: os }], parcels: [{ order_id: id(34), status: ps }] })
+    assert.deepEqual(await setStatus(id(34), 'cancelled'), { status: 409, body: { error: 'invalid_transition' } }, `${os}/${ps}`)
+    assert.deepEqual([db.orders.get(id(34)).status, db.parcels.get(id(34)).status], [os, ps])
+  }
+})
+
+await test('DB parcel rule rejecting the sync (22023 parcel_*) → 409 invalid_state; order unchanged; no tracking number in logs', async () => {
+  reset({ orders: [{ id: id(35), status: 'confirmed' }], parcels: [{ order_id: id(35), status: 'found' }] })
+  db.syncRule = 'parcel_order_not_cancelled'
+  const logged = []; const orig = console.error; console.error = (...a) => logged.push(a.join(' '))
+  try { assert.deepEqual(await setStatus(id(35), 'cancelled'), { status: 409, body: { error: 'invalid_state' } }) } finally { console.error = orig }
+  assert.deepEqual([db.orders.get(id(35)).status, db.parcels.get(id(35)).status], ['confirmed', 'found'])
+  assert.equal(db.events.length, 0)
+  assert.ok(!logged.join('\n').includes('RR123456789IL'))
+  // a non-parcel 22023 / other code stays a generic 500 without details
+  reset({ orders: [{ id: id(35), status: 'confirmed' }], parcels: [{ order_id: id(35), status: 'found' }] })
+  db.failUpdate = { code: '22023', message: 'something else' }
+  assert.deepEqual(await setStatus(id(35), 'cancelled'), { status: 500, body: { error: 'server_error' } })
+})
+
+await test('race: parcel handed to the courier between load and cancel → order cancelled, parcel NOT touched (no event)', async () => {
+  reset({ orders: [{ id: id(36), status: 'confirmed' }], parcels: [{ order_id: id(36), status: 'found' }] })
+  db.hooks.afterOrderLoad = oid => { Object.assign(db.parcels.get(oid), { status: 'handed_to_courier' }) }
+  assert.equal((await setStatus(id(36), 'cancelled')).status, 200)
+  assert.deepEqual([db.orders.get(id(36)).status, db.parcels.get(id(36)).status], ['cancelled', 'handed_to_courier'])
+  assert.equal(db.events.length, 0)
+})
+
+await test('race: concurrent cancel and handoff on the same order → never "cancelled order + active in-store parcel"', async () => {
+  for (let i = 0; i < 6; i++) {
+    reset({ orders: [{ id: id(37), status: 'confirmed' }], parcels: [{ order_id: id(37), status: 'found' }] })
+    const [c, h] = await Promise.all([setStatus(id(37), 'cancelled'), parcelAction(id(37), 'handed_to_courier')])
+    const o = db.orders.get(id(37)).status, p = db.parcels.get(id(37)).status
+    assert.ok(!(o === 'cancelled' && IN_STORE.includes(p)), `${o}/${p}`)
+    assert.ok([200].includes(c.status) && [200, 409].includes(h.status), `${c.status}/${h.status}`)
+    if (h.status === 409) assert.deepEqual([o, p], ['cancelled', 'cancelled'])           // cancel won → handoff refused
+    else assert.deepEqual([o, p], ['cancelled', 'handed_to_courier'])                   // handoff won → parcel untouched
+  }
+})
+
+await test('race: concurrent cancel and "found" on received + not_found → consistent, at most one cancellation event', async () => {
+  for (let i = 0; i < 6; i++) {
+    reset({ orders: [{ id: id(38), status: 'received' }], parcels: [{ order_id: id(38), status: 'not_found' }] })
+    await Promise.all([setStatus(id(38), 'cancelled'), parcelAction(id(38), 'found')])
+    const o = db.orders.get(id(38)).status, p = db.parcels.get(id(38)).status
+    assert.ok(!(o === 'cancelled' && IN_STORE.includes(p)), `${o}/${p}`)
+    assert.ok(db.events.filter(e => e.to_status === 'cancelled').length <= 1)
+  }
+})
+
+await test('two tablets cancel the same parcel order at once → one 200, one 409 conflict, exactly one sync event', async () => {
+  reset({ orders: [{ id: id(39), status: 'preparing' }], parcels: [{ order_id: id(39), status: 'found' }] })
+  const both = await Promise.all([setStatus(id(39), 'cancelled'), setStatus(id(39), 'cancelled')])
+  assert.deepEqual(both.map(r => r.status).sort(), [200, 409])
+  assert.equal(db.events.length, 1)
+})
+
+await test('cancel path keeps auth: CSRF 400, no session 401, other branch 404 (nothing changes), admin allowed', async () => {
+  const fresh = () => reset({ orders: [{ id: id(40), status: 'confirmed' }], parcels: [{ order_id: id(40), status: 'found' }] })
+  fresh(); assert.equal((await setStatus(id(40), 'cancelled', { origin: 'https://evil.example' })).status, 400)
+  fresh(); assert.equal((await setStatus(id(40), 'cancelled', { session: null })).status, 401)
+  fresh(); assert.deepEqual(await setStatus(id(40), 'cancelled', { session: SESS.mikhmas }), { status: 404, body: { error: 'not_found' } })
+  assert.deepEqual([db.orders.get(id(40)).status, db.parcels.get(id(40)).status, db.events.length], ['confirmed', 'found', 0])
+  fresh(); assert.equal((await setStatus(id(40), 'cancelled', { session: SESS.admin })).status, 200)
+  assert.equal(db.parcels.get(id(40)).status, 'cancelled')
 })
 
 await test('cancellation stays as before when the parcel is out of the store or closed, and for food-only orders', async () => {
@@ -503,13 +599,19 @@ await test('no courier dispatch, no signing links, no orders.status writes from 
     'conditional parcel update (order_id AND current status)')
 })
 
-await test('status route loads the parcel with the order and maps the DB gate; UI never offers full cancellation yet', () => {
+await test('status route maps the DB gate and the cancel-sync rule; UI offers full cancellation only behind the flag, with a confirm', () => {
   const s = src('app/api/kitchen/orders/[id]/status/route.ts')
   assert.match(s, /select\('id, status, branch_id, parcel_requests\(status\)'\)/)
   assert.match(s, /error\.code === 'P0001' && error\.message === 'parcel_not_ready'/)
+  assert.match(s, /error\.code === '22023' && \/\^parcel_\[a-z_\]\+\$\/\.test\(error\.message\)\) throw new ParcelStateRejectedError\(\)/)
+  assert.ok(!/from\('parcel_requests'\)/.test(s), 'status route never writes parcels itself (DB trigger only)')
   const ui = src('app/dashboard/orders/page.tsx')
-  assert.match(ui, /PARCEL_ORDER_CANCEL_ENABLED/)
-  assert.ok(!/onAdvance\(order\.id, 'cancelled'\)[^\n]*not_found/.test(ui))
+  assert.match(ui, /\{PARCEL_ORDER_CANCEL_ENABLED && onCancelOrder && \(/)
+  assert.match(ui, /confirm\('ביטול הזמנה מלא: ההזמנה והחבילה יבוטלו יחד\. להמשיך\?'\)/)
+  assert.match(ui, /onCancelOrder=\{\(\) => onAdvance\(order\.id, 'cancelled'\)\}/)
+  assert.match(ui, /confirm\(cancelConfirmText\(order, num\)\)/)
+  assert.match(ui, /החבילה כבר יצאה מהחנות ולא תבוטל אוטומטית/)
+  assert.match(ui, /if \(nextStatus === 'cancelled'\) fetchOrders\(\)/)
   assert.match(ui, /disabled title="יש לאתר את החבילה לפני אישור ההזמנה"/)
 })
 

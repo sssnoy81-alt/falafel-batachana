@@ -49,19 +49,29 @@ const ACTION_TARGET: Readonly<Record<ParcelAction, ParcelStatus>> = {
 const ACCEPTED_ORDER_STATUSES: readonly string[] = ['confirmed', 'preparing', 'ready', 'delivered']
 
 /**
- * Full order cancellation for a parcel order (received + parcel not_found) stays DISABLED until Migration 03 is
- * installed: only its database trigger cancels the parcel atomically with the order. Do not enable without it.
+ * Full order cancellation for parcel orders (GATE S2b). ENABLED because Migration 03 is installed and verified in
+ * Production: its trigger public.orders_parcel_cancel_sync() cancels a parcel that is still in the store
+ * (awaiting_search / found / not_found) in the SAME transaction as the order (close_reason 'order_cancelled',
+ * actor 'system:order_cancelled'), and never touches a parcel that is already with the courier or later.
+ * Setting this back to false restores the S2 behaviour (cancellation refused while the parcel is in the store).
  */
-export const PARCEL_ORDER_CANCEL_ENABLED = false
+export const PARCEL_ORDER_CANCEL_ENABLED = true
 
 /**
- * Parcel states that still require the parcel to be closed together with a cancelled order (the parcel is in the
- * store and its tracking number is still "active"). Mirrors the Migration 03 cancel-sync scope. Until Migration 03
- * is installed, a food order carrying such a parcel cannot be cancelled at all (no non-atomic workaround).
+ * Parcel states that are closed together with a cancelled order (the parcel is in the store and its tracking number
+ * is still "active"). Mirrors the Migration 03 cancel-sync scope exactly. With PARCEL_ORDER_CANCEL_ENABLED off, a
+ * food order carrying such a parcel cannot be cancelled at all (no non-atomic workaround in the application).
  */
 export const PARCEL_STATUSES_REQUIRING_CANCEL_SYNC: readonly string[] = ['awaiting_search', 'found', 'not_found']
 
-/** May the kitchen fully cancel a food order that carries this parcel right now? (null = no parcel → unchanged.) */
+/** Will cancelling the order also cancel this parcel (Migration 03 sync)? false = parcel stays as it is. */
+export const isParcelSyncedOnCancel = (parcelStatus: unknown): boolean =>
+  PARCEL_STATUSES_REQUIRING_CANCEL_SYNC.includes(parcelStatus as string)
+
+/**
+ * May the kitchen fully cancel a food order that carries this parcel right now? (null = no parcel → unchanged.)
+ * Only decides the parcel side; the order transition table (kitchenMutations) still applies on top.
+ */
 export const isOrderCancellationAllowedForParcel = (parcelStatus: unknown): boolean =>
   parcelStatus === null || PARCEL_ORDER_CANCEL_ENABLED || !PARCEL_STATUSES_REQUIRING_CANCEL_SYNC.includes(parcelStatus as string)
 

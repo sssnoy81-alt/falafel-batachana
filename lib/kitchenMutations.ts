@@ -67,7 +67,7 @@ export function parseNotesBody(body: unknown): string | null | undefined {
 export type MutationError =
   | 'invalid_request' | 'not_found' | 'invalid_transition' | 'invalid_state' | 'conflict'
   | 'parcel_not_ready'           // the order has a parcel that is not found / cancelled yet (GATE 03H)
-  | 'parcel_cancel_unavailable'  // full cancellation of a parcel order — disabled until Migration 03
+  | 'parcel_cancel_unavailable'  // full cancellation of a parcel order while PARCEL_ORDER_CANCEL_ENABLED is off
 export type MutationResult<T> =
   | { ok: true; value: T }
   | { ok: false; status: 400 | 404 | 409; error: MutationError }
@@ -84,7 +84,8 @@ export interface StatusDeps {
   loadOrder(id: string): Promise<{ id: string; status: string; branch_id: string | null; parcel_status?: string | null } | null>
   /**
    * Conditional update: WHERE id = :id AND status = :from. Returns true when exactly the row was updated.
-   * Throws ParcelNotReadyError when the database refuses with 'parcel_not_ready' (Migration 03 gate trigger).
+   * Throws ParcelNotReadyError when the database refuses with 'parcel_not_ready' (Migration 03 gate trigger), and
+   * ParcelStateRejectedError when a parcel rule (22023 parcel_*) rejects the Migration 03 cancellation sync.
    */
   updateStatusIfCurrent(id: string, from: string, to: OrderStatusValue): Promise<boolean>
   sendReadyPush(id: string): Promise<{ sent: number }>
@@ -93,6 +94,14 @@ export interface StatusDeps {
 /** Raised by the data layer when the DB acceptance gate (Migration 03) rejects an order transition. */
 export class ParcelNotReadyError extends Error {
   constructor() { super('parcel_not_ready'); this.name = 'ParcelNotReadyError' }
+}
+
+/**
+ * Raised by the data layer when a parcel rule of parcel_requests_before_write() (22023 parcel_*) rejects the parcel
+ * change made by the Migration 03 cancellation sync. The whole statement is rolled back, so the order is unchanged.
+ */
+export class ParcelStateRejectedError extends Error {
+  constructor() { super('parcel_state_rejected'); this.name = 'ParcelStateRejectedError' }
 }
 
 export async function changeOrderStatus(
@@ -109,9 +118,10 @@ export async function changeOrderStatus(
   if (order.status === target) return err(409, 'conflict') // someone else already did it
 
   const parcelStatus = order.parcel_status ?? null
-  // Full cancellation of an order whose parcel is still in the store (awaiting_search / found / not_found) is
-  // DISABLED until Migration 03: only its trigger cancels the parcel atomically with the order (no non-atomic
-  // workaround). Orders without a parcel, or whose parcel is already handed over / closed, are unaffected.
+  // Full cancellation of an order whose parcel is still in the store (awaiting_search / found / not_found) relies on
+  // the Migration 03 trigger, which cancels that parcel atomically with the order. The application never writes the
+  // parcel itself (no non-atomic workaround). With PARCEL_ORDER_CANCEL_ENABLED off this is refused as in S2.
+  // Orders without a parcel, or whose parcel is already handed over / closed, are unaffected either way.
   if (target === 'cancelled' && !isOrderCancellationAllowedForParcel(parcelStatus)) return err(409, 'parcel_cancel_unavailable')
 
   // received → cancelled exists ONLY for a parcel order whose parcel was not found (agreed workflow, Migration 03).
@@ -132,6 +142,7 @@ export async function changeOrderStatus(
     updated = await deps.updateStatusIfCurrent(orderId, order.status, target)
   } catch (e) {
     if (e instanceof ParcelNotReadyError) return err(409, 'parcel_not_ready') // DB gate (Migration 03)
+    if (e instanceof ParcelStateRejectedError) return err(409, 'invalid_state') // DB parcel rule on the cancel sync
     throw e
   }
   if (!updated) return err(409, 'conflict') // another tablet changed it in between

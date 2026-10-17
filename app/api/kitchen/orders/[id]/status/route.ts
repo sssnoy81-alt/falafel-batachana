@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { checkSameOriginJson } from '@/lib/kitchenAuth'
 import { getKitchenSession } from '@/lib/kitchenUsers'
-import { changeOrderStatus, isUuid, ParcelNotReadyError, parseStatusBody, type OrderStatusValue } from '@/lib/kitchenMutations'
+import { changeOrderStatus, isUuid, ParcelNotReadyError, ParcelStateRejectedError, parseStatusBody, type OrderStatusValue } from '@/lib/kitchenMutations'
 import { parcelStatusFromEmbed } from '@/lib/parcelRequest'
 import { sendReadyPush } from '@/lib/push'
 import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
@@ -12,7 +12,9 @@ import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
 // the push itself; a push failure never rolls back the status change.
 // Parcel gate (GATE 03H): the order's parcel status is loaded with the order; leaving 'received' (other than
 // by cancellation) requires the parcel to be found or cancelled → 409 parcel_not_ready. A database refusal
-// with 'parcel_not_ready' (Migration 03 gate trigger, once installed) maps to the same 409.
+// with 'parcel_not_ready' (Migration 03 gate trigger) maps to the same 409. Cancelling an order whose parcel is
+// still in the store is completed by the Migration 03 sync trigger in the same transaction (GATE S2b); a parcel
+// rule rejecting that sync (22023 parcel_*) maps to 409 invalid_state and leaves the order unchanged.
 // Timestamps: current production code only writes `status` (confirmed_at/ready_at/delivered_at are not
 // maintained by the app or by an active trigger) — this route preserves that behavior exactly.
 
@@ -50,6 +52,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
           .eq('id', orderId).eq('status', from).select('id')
         if (error) {
           if (error.code === 'P0001' && error.message === 'parcel_not_ready') throw new ParcelNotReadyError()
+          // Migration 03 cancel sync: a parcel rule of parcel_requests_before_write() rejected the parcel change
+          if (error.code === '22023' && /^parcel_[a-z_]+$/.test(error.message)) throw new ParcelStateRejectedError()
           throw new Error(`update ${error.code}`)
         }
         return Array.isArray(data) && data.length === 1
