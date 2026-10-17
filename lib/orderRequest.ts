@@ -31,6 +31,7 @@ import { computeOrderTotals, type PricingBreakdown, type PricingLineInput } from
 import { formatDeliveryAddress, type DeliveryAddress } from './deliveryAddress'
 import { UNRESOLVED_DELIVERY_GEO, type DeliveryGeoFields } from './geocoding'
 import { LOCATION_INPUT_KEYS, parseDeviceLocationInput, type DeliveryLocationWire, type DeviceLocation } from './deliveryLocation'
+import { parseParcelCheckout, type ParcelCheckoutInput } from './parcelCheckout'
 
 // Google Places place id format (same rule as lib/googlePlaces; duplicated here to keep this module client-type-safe).
 const PLACE_ID_REGEX = /^[A-Za-z0-9_-]{1,300}$/
@@ -69,6 +70,11 @@ export interface CreateOrderRequest {
    * 'unavailable' → Google could not be reached; the typed address is kept, coordinates stay unresolved.
    */
   googleAddress?: { status: 'verified'; lat: number; lng: number } | { status: 'route_only' } | { status: 'unavailable' }
+  /**
+   * Optional parcel (GATE S4-A), delivery orders only. Wire: { trackingRef, carrier? }. Parsed: normalized values.
+   * Accepted only when the server-side flag PARCEL_CHECKOUT_ENABLED is on; otherwise the request is rejected.
+   */
+  parcel?: ParcelCheckoutInput
 }
 
 export interface CreateOrderResponse {
@@ -99,6 +105,9 @@ export type OrderErrorCode =
   | 'item_unavailable'
   | 'invalid_option'
   | 'closed'
+  | 'parcel_checkout_disabled' // a parcel was sent while PARCEL_CHECKOUT_ENABLED is off
+  | 'invalid_parcel'           // malformed parcel, parcel on a pickup order, or rejected by the database rules
+  | 'parcel_duplicate'         // the same tracking number is already active for this branch
   | 'server_config'
   | 'order_creation_unavailable'
   | 'server_error'
@@ -140,8 +149,22 @@ function uuidList(v: unknown): string[] | null {
   return v as string[]
 }
 
-export function parseCreateOrderRequest(body: unknown): Result<CreateOrderRequest> {
+// Parcel details are only accepted inside `parcel` (never as loose top-level fields or a raw RPC payload).
+const FORBIDDEN_PARCEL_KEYS = ['p_parcel', 'tracking_ref', 'trackingRef', 'tracking_key', 'carrier']
+
+export interface ParseOrderOptions {
+  /** Server-side PARCEL_CHECKOUT_ENABLED. Default false: any parcel in the request is rejected. */
+  parcelCheckoutEnabled?: boolean
+}
+
+export function parseCreateOrderRequest(body: unknown, opts: ParseOrderOptions = {}): Result<CreateOrderRequest> {
   if (!isRecord(body)) return fail('invalid_request')
+  // Feature flag first: with parcel checkout off, a parcel is rejected before anything else is looked at.
+  const hasParcel = body.parcel !== undefined && body.parcel !== null
+  if (hasParcel && opts.parcelCheckoutEnabled !== true) return fail('parcel_checkout_disabled')
+  // (Only with the flag on: with it off, unknown top-level keys keep being ignored exactly as before.)
+  if (opts.parcelCheckoutEnabled === true && hasAnyKey(body, FORBIDDEN_PARCEL_KEYS))
+    return fail('invalid_request', 'parcel_fields_outside_parcel')
   if (hasAnyKey(body, FORBIDDEN_ORDER_KEYS)) return fail('client_prices_not_accepted')
   if (hasAnyKey(body, FORBIDDEN_GEO_KEYS)) return fail('invalid_request', 'client_geo_not_accepted')
   // Device-location inputs are only accepted inside `delivery` (so never on pickup).
@@ -219,6 +242,15 @@ export function parseCreateOrderRequest(body: unknown): Result<CreateOrderReques
     }
   }
 
+  let parsedParcel: ParcelCheckoutInput | undefined
+  if (hasParcel) {
+    // The database accepts a parcel only for a delivery order (create_order_with_parcel + parcel trigger).
+    if (type !== 'delivery') return fail('invalid_parcel', 'parcel_requires_delivery')
+    const p = parseParcelCheckout(body.parcel)
+    if (!p.ok) return fail('invalid_parcel', p.detail)
+    parsedParcel = p.value
+  }
+
   return {
     ok: true,
     value: {
@@ -226,6 +258,7 @@ export function parseCreateOrderRequest(body: unknown): Result<CreateOrderReques
       items: parsedItems, delivery: parsedDelivery,
       ...(parsedLocation ? { deliveryLocation: parsedLocation } : {}),
       ...(parsedPlaceId ? { googlePlaceId: parsedPlaceId } : {}),
+      ...(parsedParcel ? { parcel: parsedParcel } : {}),
     },
   }
 }

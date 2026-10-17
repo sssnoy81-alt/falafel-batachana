@@ -86,7 +86,7 @@ test('defensive invariant: buildOrderFromCatalog rejects delivery + cibus/bit ev
 })
 test('route rejects before any DB access (parse runs before getServerSupabase)', () => {
   const src = readFileSync(join(ROOT, 'app', 'api', 'orders', 'route.ts'), 'utf8')
-  const parseAt = src.indexOf('parseCreateOrderRequest(body)'), rejectAt = src.indexOf('if (!parsed.ok) return errorResponse(400')
+  const parseAt = src.indexOf('parseCreateOrderRequest(body'), rejectAt = src.indexOf('if (!parsed.ok) return errorResponse(400')
   const dbAt = src.indexOf('getServerSupabase()')
   assert.ok(parseAt > 0 && rejectAt > parseAt && dbAt > rejectAt)
 })

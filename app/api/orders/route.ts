@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
-import { createOrderAtomic, OrderCreationUnavailableError } from '@/lib/createOrder'
+import {
+  createOrderAtomic,
+  createOrderWithParcelAtomic,
+  OrderCreationUnavailableError,
+  ParcelDuplicateError,
+  ParcelRejectedError,
+} from '@/lib/createOrder'
+import { isParcelCheckoutEnabled } from '@/lib/parcelCheckout'
 import { isShopOpen } from '@/lib/hours'
 import { attachDeliveryGeo } from '@/lib/orderGeo'
 import { resolveGoogleDeliveryAddress } from '@/lib/orderAddress'
@@ -18,6 +25,9 @@ import {
 // POST /api/orders — the only customer order-creation path.
 // The request is untrusted: it carries order intent only (IDs, quantities, options, delivery address).
 // All money is computed here from the database catalog via lib/pricing.
+// Optional parcel (GATE S4-A): accepted only for delivery and only when the server flag PARCEL_CHECKOUT_ENABLED is
+// 'true' (default OFF → 400 parcel_checkout_disabled). With a parcel the same priced payload goes to the atomic
+// create_order_with_parcel; without one, the create_order path is exactly as before. Tracking numbers are never logged.
 
 const NO_STORE = { 'Cache-Control': 'no-store' }
 
@@ -33,7 +43,7 @@ export async function POST(req: NextRequest) {
     return errorResponse(400, 'invalid_request')
   }
 
-  const parsed = parseCreateOrderRequest(body)
+  const parsed = parseCreateOrderRequest(body, { parcelCheckoutEnabled: isParcelCheckoutEnabled(process.env) })
   if (!parsed.ok) return errorResponse(400, parsed.code, parsed.detail)
 
   if (!isShopOpen()) return errorResponse(409, 'closed')
@@ -79,7 +89,9 @@ export async function POST(req: NextRequest) {
     // it is created with the explicit unresolved geo state. Pickup never calls the geocoder.
     const toCreate = await attachDeliveryGeo(order, built.value)
 
-    const created = await createOrderAtomic(toCreate.rpcArgs)
+    const created = order.parcel
+      ? await createOrderWithParcelAtomic(toCreate.rpcArgs, order.parcel)
+      : await createOrderAtomic(toCreate.rpcArgs)
 
     const response: CreateOrderResponse = {
       id: created.orderId,
@@ -98,6 +110,14 @@ export async function POST(req: NextRequest) {
     if (e instanceof OrderCreationUnavailableError) {
       console.error('orders: create_order RPC not available yet')
       return errorResponse(503, 'order_creation_unavailable')
+    }
+    if (e instanceof ParcelDuplicateError) {
+      console.error('orders: parcel rejected — duplicate active tracking number') // never the number itself
+      return errorResponse(409, 'parcel_duplicate')
+    }
+    if (e instanceof ParcelRejectedError) {
+      console.error('orders: parcel rejected by database rule', e.reason) // rule / constraint name only
+      return errorResponse(400, 'invalid_parcel')
     }
     console.error('orders: unexpected error —', e instanceof Error ? e.message : e)
     return errorResponse(500, 'server_error')
