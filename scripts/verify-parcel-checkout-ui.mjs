@@ -100,11 +100,39 @@ await test('ticked: tracking number is required (Hebrew message); order blocked 
   }
 })
 await test('invalid tracking number / carrier → Hebrew message, nothing sent (same rules as the server)', () => {
-  for (const t of ['AB', 'RR123:456', 'עברית1234', 'A'.repeat(41), '#### A'])
+  for (const t of ['AB', 'RR123:456', 'עברית1234', '#### A'])
     assert.equal(F.parcelFormError(st({ trackingRef: t })), F.PARCEL_FORM_MESSAGES.trackingInvalid, t)
-  for (const c of ['http://x.com', 'www.x.com', 'x'.repeat(41), 'a\u0007b'])
+  for (const c of ['http://x.com', 'www.x.com', 'a\u0007b'])
     assert.equal(F.parcelFormError(st({ carrier: c })), F.PARCEL_FORM_MESSAGES.carrierInvalid, c)
   assert.equal(F.buildParcelWire(st({ carrier: 'http://x' })), undefined)
+})
+await test('tracking length 39 / 40 valid; 41 / 45 / 60 / 100 → "too long" message, nothing sent, server rejects', () => {
+  const ref = n => ('RR' + '1234567890'.repeat(10)).slice(0, n - 2) + 'IL'
+  for (const n of [39, 40, 41, 45, 60, 100]) {
+    const t = ref(n), wire = F.buildParcelWire(st({ trackingRef: t }))
+    assert.equal(t.length, n)
+    if (n <= 40) { assert.equal(F.parcelFormError(st({ trackingRef: t })), null, n); assert.equal(wire.trackingRef, t) }
+    else {
+      assert.equal(F.parcelFormError(st({ trackingRef: t })), F.PARCEL_FORM_MESSAGES.trackingTooLong, n)
+      assert.equal(wire, undefined, n)
+      const body = { branchId: '8fed141d-0e7c-46c1-803b-88d3d811c1f8', type: 'delivery', customerName: 'ישראל', phone: '0501234567',
+        paymentMethod: 'cash', items: [{ itemId: '11111111-1111-4111-8111-111111111111', quantity: 1 }],
+        delivery: { city: 'מעלה אדומים', street: 'הדקל', houseNumber: '12' }, parcel: { trackingRef: t, carrier: null } }
+      assert.equal(OR.parseCreateOrderRequest(body, { parcelCheckoutEnabled: true }).code, 'invalid_parcel', n)  // rule unchanged
+    }
+  }
+  // length is judged after the parser's own normalization (trim + single spaces), so padding never triggers it
+  assert.equal(F.parcelFormError(st({ trackingRef: '   ' + ref(40) + '   ' })), null)
+  assert.equal(F.parcelFormError(st({ trackingRef: 'RR12  34567890' })), null)
+  assert.match(F.PARCEL_FORM_MESSAGES.trackingTooLong, /40/)
+})
+await test('carrier length 40 valid; 41 / 100 → "too long" message, nothing sent', () => {
+  assert.equal(F.parcelFormError(st({ carrier: 'x'.repeat(40) })), null)
+  for (const n of [41, 100]) {
+    assert.equal(F.parcelFormError(st({ carrier: 'x'.repeat(n) })), F.PARCEL_FORM_MESSAGES.carrierTooLong, n)
+    assert.equal(F.buildParcelWire(st({ carrier: 'x'.repeat(n) })), undefined, n)
+  }
+  assert.equal(F.parcelFormError(st({ carrier: 'http://' + 'x'.repeat(40) })), F.PARCEL_FORM_MESSAGES.carrierTooLong) // either message blocks
 })
 await test('valid: wire is exactly the S4-A contract { trackingRef, carrier } — normalized, carrier null when empty', () => {
   assert.deepEqual(F.buildParcelWire(st({ trackingRef: '  ' + REF + ' ' })), { trackingRef: REF, carrier: null })
@@ -164,10 +192,12 @@ await test('tracking number is never persisted or logged by the page', () => {
   assert.ok(!/parcel/i.test(/localStorage\.setItem\('falafel_session', JSON\.stringify\(\{[\s\S]*?\}\)\)/.exec(PAGE.slice(PAGE.indexOf('async function placeOrder')))?.[0] ?? ''))
   assert.ok(!/console\./.test(src('lib/parcelCheckoutForm.ts').replace(/\/\/.*$/gm, '')))
 })
-await test('tracking input is LTR, ≤ 40 chars, no autocomplete / spellcheck; carrier ≤ 40 chars', () => {
-  assert.match(PAGE, /value=\{parcelTrackingRef\} maxLength=\{40\} dir="ltr" inputMode="text" autoComplete="off"/)
+await test('tracking input is LTR, no autocomplete / spellcheck; inputs never cut at 40 (no silent truncation on paste)', () => {
+  assert.match(PAGE, /value=\{parcelTrackingRef\} maxLength=\{PARCEL_INPUT_MAX_LENGTH\} dir="ltr" inputMode="text" autoComplete="off"/)
   assert.match(PAGE, /spellCheck=\{false\}/)
-  assert.match(PAGE, /value=\{parcelCarrier\} maxLength=\{40\} dir="rtl" autoComplete="off"/)
+  assert.match(PAGE, /value=\{parcelCarrier\} maxLength=\{PARCEL_INPUT_MAX_LENGTH\} dir="rtl" autoComplete="off"/)
+  assert.equal(F.PARCEL_INPUT_MAX_LENGTH, 200)              // far above the 40 rule; = the parser's raw-input bound
+  assert.doesNotMatch(PAGE, /maxLength=\{40\}/)
 })
 await test('no pricing / Maale / HYP code in the new modules', () => {
   for (const f of ['lib/parcelCheckoutForm.ts', 'app/api/checkout/config/route.ts'])

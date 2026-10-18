@@ -3,7 +3,9 @@
 // off); this module only decides what the UI shows and what it may send. Validation reuses lib/parcelCheckout so the
 // browser and the server can never disagree on the rules. Never log or persist the tracking number.
 
-import { parseParcelCheckout, type ParcelCheckoutInput } from './parcelCheckout'
+import {
+  MAX_PARCEL_CARRIER, MAX_PARCEL_TRACKING_REF, MAX_RAW_PARCEL_FIELD, parseParcelCheckout, type ParcelCheckoutInput,
+} from './parcelCheckout'
 import type { OrderType } from './orderConfig'
 import type { OrderErrorCode } from './orderRequest'
 
@@ -19,6 +21,13 @@ export interface ParcelFormState {
 
 export const EMPTY_PARCEL_FORM = { selected: false, trackingRef: '', carrier: '' } as const
 
+/**
+ * maxLength for the parcel inputs. Deliberately far above the 40-character rule: a browser silently cuts a pasted
+ * value at maxLength, and a cut tracking number can still look valid. Over-long input must stay visible and fail
+ * validation instead. Same bound as the parser's raw-input limit.
+ */
+export const PARCEL_INPUT_MAX_LENGTH = MAX_RAW_PARCEL_FIELD
+
 /** Is the parcel section shown at all? Only with the flag on AND a delivery order. */
 export const isParcelSectionVisible = (s: Pick<ParcelFormState, 'enabled' | 'orderType'>): boolean =>
   s.enabled === true && s.orderType === 'delivery'
@@ -29,16 +38,21 @@ export const isParcelActive = (s: ParcelFormState): boolean => isParcelSectionVi
 export const PARCEL_FORM_MESSAGES = {
   trackingRequired: 'נא להזין את מספר המעקב של החבילה',
   trackingInvalid: 'מספר המעקב יכול להכיל אותיות באנגלית, ספרות, רווח ו-‎. _ / # -‎ (4–40 תווים)',
+  trackingTooLong: 'מספר המעקב ארוך מדי — מותר עד 40 תווים. נא לבדוק שהמספר הודבק נכון',
   carrierInvalid: 'שם חברת השילוח אינו תקין (עד 40 תווים, ללא קישורים)',
+  carrierTooLong: 'שם חברת השילוח ארוך מדי — מותר עד 40 תווים',
 } as const
 
 /** Hebrew validation message for the parcel fields, or null when they are valid / not in use. */
 export function parcelFormError(s: ParcelFormState): string | null {
   if (!isParcelActive(s)) return null
   if (s.trackingRef.trim() === '') return PARCEL_FORM_MESSAGES.trackingRequired
+  // Same normalization as parseParcelCheckout — only picks the clearer message; the parser below stays the rule.
+  if (s.trackingRef.trim().replace(/ {2,}/g, ' ').length > MAX_PARCEL_TRACKING_REF) return PARCEL_FORM_MESSAGES.trackingTooLong
   const p = parseParcelCheckout({ trackingRef: s.trackingRef, carrier: s.carrier })
   if (p.ok) return null
-  return p.detail === 'invalid_carrier' ? PARCEL_FORM_MESSAGES.carrierInvalid : PARCEL_FORM_MESSAGES.trackingInvalid
+  if (p.detail !== 'invalid_carrier') return PARCEL_FORM_MESSAGES.trackingInvalid
+  return s.carrier.trim().length > MAX_PARCEL_CARRIER ? PARCEL_FORM_MESSAGES.carrierTooLong : PARCEL_FORM_MESSAGES.carrierInvalid
 }
 
 /**

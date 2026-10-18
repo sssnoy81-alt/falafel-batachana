@@ -27,8 +27,8 @@ import {
 } from '@/lib/deliveryLocation'
 import type { CreateOrderRequest, CreateOrderResponse, OrderErrorCode } from '@/lib/orderRequest'
 import {
-  buildParcelWire, EMPTY_PARCEL_FORM, isParcelSectionVisible, parcelFormError, PARCEL_ORDER_ERROR_MESSAGES,
-  type ParcelFormState,
+  buildParcelWire, EMPTY_PARCEL_FORM, isParcelSectionVisible, PARCEL_INPUT_MAX_LENGTH, parcelFormError,
+  PARCEL_ORDER_ERROR_MESSAGES, type ParcelFormState,
 } from '@/lib/parcelCheckoutForm'
 
 
@@ -990,12 +990,12 @@ export default function Home() {
                   החבילה תאותר בסניף ותצורף למשלוח יחד עם ההזמנה.
                 </div>
                 <label style={labelStyle}>מספר מעקב של החבילה *</label>
-                <input type="text" value={parcelTrackingRef} maxLength={40} dir="ltr" inputMode="text" autoComplete="off"
+                <input type="text" value={parcelTrackingRef} maxLength={PARCEL_INPUT_MAX_LENGTH} dir="ltr" inputMode="text" autoComplete="off"
                   autoCapitalize="characters" spellCheck={false} placeholder="RR123456789IL"
                   onChange={e => { setParcelTrackingRef(e.target.value); setOrderError('') }}
                   style={{ ...inputStyle(parcelTrackingRef.trim().length > 0 && parcelError === null), marginBottom: 12, textAlign: 'left' }} />
                 <label style={labelStyle}>חברת שילוח (לא חובה)</label>
-                <input type="text" value={parcelCarrier} maxLength={40} dir="rtl" autoComplete="off" placeholder="דואר ישראל, UPS, DHL..."
+                <input type="text" value={parcelCarrier} maxLength={PARCEL_INPUT_MAX_LENGTH} dir="rtl" autoComplete="off" placeholder="דואר ישראל, UPS, DHL..."
                   onChange={e => { setParcelCarrier(e.target.value); setOrderError('') }}
                   style={inputStyle(false)} />
                 {parcelError && (parcelTrackingRef.length > 0 || parcelCarrier.length > 0) && (

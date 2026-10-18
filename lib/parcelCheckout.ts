@@ -14,9 +14,11 @@ export interface ParcelCheckoutInput {
 }
 
 export const PARCEL_TRACKING_REF_REGEX = /^[A-Za-z0-9 ._/#-]{4,40}$/
+/** Same 40 as PARCEL_TRACKING_REF_REGEX (normalized length); used only for a clearer "too long" message. */
+export const MAX_PARCEL_TRACKING_REF = 40
 export const MAX_PARCEL_CARRIER = 40
 /** Upper bound on raw input before any processing (rejects oversized payloads early). */
-const MAX_RAW_PARCEL_FIELD = 200
+export const MAX_RAW_PARCEL_FIELD = 200
 // PostgreSQL [[:cntrl:]] in a UTF-8 database: C0 controls, DEL and C1 controls.
 const CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F]/
 const URL_LIKE = /(https?:|www\.|\/\/)/i
