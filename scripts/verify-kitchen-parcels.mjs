@@ -643,4 +643,52 @@ await test('status route maps the DB gate and the cancel-sync rule; UI offers fu
   assert.match(ui, /disabled title="יש לאתר את החבילה לפני אישור ההזמנה"/)
 })
 
+/* ─── Carrier delivery verification confirm (S4-PARCEL-26A) — runs the real ParcelPanel run() handler ─── */
+console.log('Carrier verification confirmation (kitchen UI)')
+const DASH = src('app/dashboard/orders/page.tsx').replace(/\r\n/g, '\n')
+const CARRIER_MSG = 'האם התקבל אישור מפורש ממעלה אקספרס שהחבילה נמסרה בפועל ללקוח? פעולה זו סופית ולא ניתן לבטל אותה דרך המערכת.'
+function parcelRun({ busy = false, answer = true } = {}) {
+  const start = DASH.indexOf('  const run = (e: React.MouseEvent, action: ParcelAction) => {')
+  const fnSrc = DASH.slice(start, DASH.indexOf('\n  }\n', start) + 4)
+  const constLine = DASH.split('\n').find(l => l.startsWith('const CARRIER_VERIFIED_CONFIRM = '))
+  const js = ts.transpileModule(`${constLine}\n${fnSrc}`, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText
+  const calls = { confirm: [], onAction: [] }
+  const fn = new Function('order', 'busy', 'onAction', 'confirm', `${js}\nreturn run`)(
+    { id: 'order-1' }, busy, (...a) => calls.onAction.push(a), m => { calls.confirm.push(m); return answer })
+  return { run: action => fn({ stopPropagation() {} }, action), calls }
+}
+await test('carrier_verified: explicit confirm with the approved text; CANCEL → no request; CONFIRM → exactly one request', () => {
+  const c = parcelRun({ answer: false }); c.run('carrier_verified')
+  assert.deepEqual(c.calls.confirm, [CARRIER_MSG]); assert.equal(c.calls.onAction.length, 0)   // no API call, no state change
+  const ok = parcelRun({ answer: true }); ok.run('carrier_verified')
+  assert.deepEqual(ok.calls.confirm, [CARRIER_MSG]); assert.deepEqual(ok.calls.onAction, [['order-1', 'carrier_verified']])
+})
+await test('no duplicate submission: while busy neither the confirm nor a request; the handler also guards (one parcel request at a time)', () => {
+  const b = parcelRun({ busy: true }); b.run('carrier_verified')
+  assert.equal(b.calls.confirm.length, 0); assert.equal(b.calls.onAction.length, 0)
+  assert.match(DASH, /const handleParcelAction = async \(orderId: string, action: ParcelAction\) => \{\n\s*if \(parcelBusyId\) return/)
+  assert.match(DASH, /<button key=\{a\} type="button" disabled=\{busy\} onClick=\{e => run\(e, a\)\}/)
+})
+await test('other parcel actions unchanged: no new confirm; food_only / returned_to_store keep their existing confirms', () => {
+  for (const a of ['found', 'not_found', 'reset', 'handed_to_courier', 'delivery_problem']) {
+    const r = parcelRun({ answer: false }); r.run(a)
+    assert.equal(r.calls.confirm.length, 0, a); assert.deepEqual(r.calls.onAction, [['order-1', a]], a)
+  }
+  const f = parcelRun({ answer: false }); f.run('food_only')
+  assert.deepEqual(f.calls.confirm, ['אוכל בלבד: החבילה תבוטל וההזמנה תמשיך כהזמנת אוכל רגילה. להמשיך?']); assert.equal(f.calls.onAction.length, 0)
+  const r = parcelRun({ answer: false }); r.run('returned_to_store')
+  assert.deepEqual(r.calls.confirm, ['לסמן שהחבילה הוחזרה לחנות?']); assert.equal(r.calls.onAction.length, 0)
+})
+await test('every kitchen entry point is covered: run() is the only onAction caller; expanded view has no parcel actions; one PATCH path', () => {
+  assert.equal((DASH.match(/onAction\(order\.id, /g) || []).length, 1, 'single call site, inside run()')
+  assert.match(DASH, /\{order\.parcel && <ParcelPanel order=\{order\} large \/>\}/)                  // KitchenModal: no onAction → no buttons
+  assert.equal((DASH.match(/<ParcelPanel [^>]*onAction=/g) || []).length, 1, 'only the order card wires actions')
+  assert.equal((DASH.match(/\/api\/kitchen\/parcels\//g) || []).length, 1, 'the only parcel request is in handleParcelAction')
+})
+await test('handoff is not delivery: carrier_verified only after the handoff; transitions unchanged', () => {
+  assert.deepEqual([...P.PARCEL_TRANSITIONS.handed_to_courier], ['carrier_verified', 'delivery_problem', 'returned_to_store'])
+  assert.deepEqual([...P.PARCEL_TRANSITIONS.found], ['awaiting_search', 'handed_to_courier', 'cancelled'])   // never found → carrier_verified
+  assert.deepEqual([...P.PARCEL_TRANSITIONS.carrier_verified], [])                                          // terminal
+})
+
 console.log(`\nAll ${passed} kitchen-parcel checks passed.`)

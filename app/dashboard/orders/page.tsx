@@ -197,6 +197,8 @@ function cancelConfirmText(order: Order, num: string): string {
   return 'לבטל הזמנה #' + num + '?\nשימו לב: החבילה כבר יצאה מהחנות ולא תבוטל אוטומטית — יש לטפל בה ידנית מול השליח / הלקוח.'
 }
 
+const CARRIER_VERIFIED_CONFIRM = 'האם התקבל אישור מפורש ממעלה אקספרס שהחבילה נמסרה בפועל ללקוח? פעולה זו סופית ולא ניתן לבטל אותה דרך המערכת.'
+
 function ParcelPanel({ order, busy, onAction, onCancelOrder, large }: {
   order: Order; busy?: boolean; onAction?: (orderId: string, action: ParcelAction) => void
   onCancelOrder?: () => void; large?: boolean
@@ -212,6 +214,9 @@ function ParcelPanel({ order, busy, onAction, onCancelOrder, large }: {
     if (!onAction || busy) return
     if (action === 'food_only' && !confirm('אוכל בלבד: החבילה תבוטל וההזמנה תמשיך כהזמנת אוכל רגילה. להמשיך?')) return
     if (action === 'returned_to_store' && !confirm('לסמן שהחבילה הוחזרה לחנות?')) return
+    // Terminal and not undoable — only after explicit delivery confirmation from Maale Express (S4-PARCEL-26A).
+    // A handoff to the courier is not a delivery to the customer.
+    if (action === 'carrier_verified' && !confirm(CARRIER_VERIFIED_CONFIRM)) return
     onAction(order.id, action)
   }
   return (
