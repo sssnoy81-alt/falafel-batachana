@@ -377,7 +377,12 @@ test('DP21–22. checkout shows the dynamic destination fee; pickup copy unchang
   assert.ok(page.includes('computeDisplayTotals(pricingInputs, displayType, deliveryForm.city)'))
   assert.ok(page.includes('getDeliveryFeeForArea(a)'), 'area dropdown shows each destination fee')
   assert.ok(page.includes("cartDisplay.deliveryFee === null ? 'בחרו יישוב'"))
-  assert.ok(page.includes("['pickup', '🏃', 'איסוף עצמי', '']"), 'pickup option unchanged')
+  // Pickup is chosen on the entry screen (S4-UX-11 removed the checkout switch): same copy, no delivery fee on it
+  const pickupBtn = page.slice(page.indexOf("<button onClick={() => setOrderTypeChoice('pickup')}"))
+  const pickupCard = pickupBtn.slice(0, pickupBtn.indexOf('</button>'))
+  assert.ok(pickupCard.includes('>איסוף עצמי</span>') && pickupCard.includes('>מהסניף</span>'), 'pickup option unchanged')
+  assert.ok(!/DELIVERY_FEE|₪/.test(pickupCard), 'pickup option shows no delivery fee')
+  assert.ok(page.includes("selectBranch(b, 'pickup')"), 'every branch selectable for pickup')
   assert.ok(!page.includes('₪{DELIVERY_FEE}') && !page.includes('${DELIVERY_FEE}'))
 })
 

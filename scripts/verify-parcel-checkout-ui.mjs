@@ -203,7 +203,7 @@ await test('tracking input is LTR, no autocomplete / spellcheck; inputs never cu
 console.log('Entry options (static guarantees + state logic)')
 const BRANCH_SCREEN = PAGE.slice(PAGE.indexOf("if (screen === 'branch') return ("), PAGE.indexOf("if (screen === 'tracking') {"))
 const ORDER_SCREEN = PAGE.slice(PAGE.indexOf("if (screen === 'order') return ("))
-const PARCEL_ENTRY = /\{orderTypeChoice !== 'pickup' && parcelCheckoutEnabled && deliveryBranch && \(\n\s*<button onClick=\{\(\) => \{ setParcelSelected\(true\); selectBranch\(deliveryBranch, 'delivery'\) \}\}/
+const PARCEL_ENTRY = /\{orderTypeChoice !== 'pickup' && parcelCheckoutEnabled && deliveryBranch && \(\n\s*<button onClick=\{\(\) => selectBranch\(deliveryBranch, 'delivery', true\)\}/
 await test('entry screen shows three options: pickup, delivery (both unchanged) and "📦 משלוח אוכל + חבילה" with its copy', () => {
   assert.match(BRANCH_SCREEN, /<button onClick=\{\(\) => setOrderTypeChoice\('pickup'\)\}/)
   assert.match(BRANCH_SCREEN, /<button onClick=\{\(\) => selectBranch\(deliveryBranch, 'delivery'\)\}/)   // food-only delivery: no parcel
@@ -212,10 +212,10 @@ await test('entry screen shows three options: pickup, delivery (both unchanged) 
   assert.match(BRANCH_SCREEN, /מזמינים אוכל ומצרפים חבילה שממתינה בסניף\./)
   assert.equal((PAGE.match(/setParcelSelected\(true\)/g) || []).length, 1, 'only the entry option pre-selects a parcel')
 })
-await test('entry labels: "משלוח אוכל" on the entry delivery button only; other delivery labels unchanged', () => {
+await test('entry labels: "משלוח אוכל" on the entry delivery button; menu / checkout switches removed (S4-UX-11)', () => {
   assert.match(BRANCH_SCREEN, /<span style=\{\{ fontWeight: 900, fontSize: 19, color: C\.gold \}\}>משלוח אוכל<\/span>/)
-  assert.match(PAGE, /\['delivery', '🛵', 'משלוח', DELIVERY_FEE_LABEL\]/)          // checkout toggle unchanged
-  assert.match(PAGE, /\{v === 'pickup' \? '🏃 איסוף' : '🛵 משלוח'\}/)              // menu toggle unchanged
+  assert.doesNotMatch(PAGE, /\['delivery', '🛵', 'משלוח', DELIVERY_FEE_LABEL\]/)    // checkout switch gone
+  assert.doesNotMatch(PAGE, /\{v === 'pickup' \? '🏃 איסוף' : '🛵 משלוח'\}/)        // menu switch gone
 })
 await test('parcel card pricing wording: no parcel fee, regular delivery fee applies — from the existing fee source', () => {
   assert.match(BRANCH_SCREEN, /צירוף החבילה ללא תוספת תשלום\. דמי משלוח רגילים חלים\./)
@@ -270,6 +270,110 @@ await test('S4-C2-B truncation fix intact: inputs maxLength 200, rule 4–40, "t
   assert.doesNotMatch(PAGE, /maxLength=\{40\}/)
   assert.equal(F.parcelFormError(st({ trackingRef: 'RR' + '1'.repeat(37) + 'IL' })), F.PARCEL_FORM_MESSAGES.trackingTooLong)
   assert.match(PAGE, /&& orderTypeReady && parcelError === null && !placingOrder/)
+})
+
+/* ═══ 5. Order type only on the entry screen; back keeps the cart; branch change confirms (S4-UX-11) ═══ */
+console.log('Entry-only order type, back navigation, cart preservation')
+const ORDER_START = PAGE.indexOf("if (screen === 'order') return (")
+const MENU_START = PAGE.indexOf('\n  return (\n', ORDER_START)
+const ORDER_ONLY = PAGE.slice(ORDER_START, MENU_START), MENU_SCREEN = PAGE.slice(MENU_START)
+// Runs the real selectBranch / backToEntry source from page.tsx with recording stubs (no React, no network).
+function pageFn(startMarker, endMarker, env) {
+  const fnSrc = PAGE.slice(PAGE.indexOf(startMarker), PAGE.indexOf(endMarker))
+  const js = ts.transpileModule(fnSrc, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText
+  const name = /function (\w+)\(/.exec(fnSrc)[1]
+  return new Function(...Object.keys(env), `${js}\nreturn ${name}`)(...Object.values(env))
+}
+const DELIVERY_BR = { id: '8fed141d-0e7c-46c1-803b-88d3d811c1f8', name: 'מעלה אדומים' }, OTHER_BR = { id: 'b2', name: 'אחר' }
+function selectBranchHarness({ selected, cart, answer }) {
+  const calls = []
+  const rec = n => v => calls.push([n, v])
+  const query = t => { const q = { select: () => q, order: () => q, eq: () => q, then: (ok) => ok({ data: [] }) }; calls.push(['load', t]); return q }
+  const env = {
+    selectedBranch: selected, cart, BRANCH_CHANGE_CONFIRM: 'החלפת סניף תרוקן את סל הקניות',
+    window: { confirm: m => { calls.push(['confirm', m]); return answer } },
+    isDeliveryBranch: id => id === DELIVERY_BR.id, getBrowserSupabase: () => ({ from: query }),
+  }
+  for (const s of ['setCart', 'setParcelSelected', 'setSelectedBranch', 'setLoading', 'setOrderTypeChoice', 'setOrderError',
+    'setCategories', 'setMenuItems', 'setToppings', 'setActiveCategory', 'setScreen']) env[s] = rec(s)
+  return { fn: pageFn('  async function selectBranch(', '  // Back to the entry screen', env), calls }
+}
+const names = calls => calls.map(c => c[0])
+await test('no interactive order-type switch in the menu or checkout; read-only label instead', () => {
+  assert.doesNotMatch(MENU_SCREEN, /setOrderTypeChoice/); assert.doesNotMatch(ORDER_ONLY, /setOrderTypeChoice/)
+  assert.match(MENU_SCREEN, /whiteSpace: 'nowrap' \}\}>\{menuOrderTypeLabel\}<\/div>/)       // menu: short label
+  assert.match(ORDER_ONLY, /\{orderTypeLabel\}/); assert.doesNotMatch(ORDER_ONLY, /menuOrderTypeLabel/)  // checkout: full label
+  assert.match(PAGE, /const isParcelOrder = effectiveOrderType === 'delivery' && parcelSectionVisible && parcelSelected/)
+  assert.match(PAGE, /const orderTypeLabel = effectiveOrderType === 'delivery' \? \(isParcelOrder \? '📦 משלוח אוכל \+ חבילה' : '🛵 משלוח אוכל'\)\n\s*: effectiveOrderType === 'pickup' \? '🏃 איסוף עצמי' : 'לא נבחר סוג הזמנה'/)
+  assert.match(PAGE, /const menuOrderTypeLabel = isParcelOrder \? '📦 משלוח \+ חבילה' : orderTypeLabel/)
+  assert.match(BRANCH_SCREEN, /📦 משלוח אוכל \+ חבילה/)                                           // entry card text unchanged
+  // setOrderTypeChoice remains only on the entry screen, in selectBranch / backToEntry, session restore and resets
+  assert.equal((PAGE.match(/setOrderTypeChoice\(/g) || []).length, 7)
+})
+await test('menu back arrow and checkout "שינוי סוג הזמנה" both call backToEntry; checkout → menu unchanged', () => {
+  assert.match(MENU_SCREEN, /<button onClick=\{backToEntry\}\n\s*style=\{\{ background: C\.border[^\n]*>→<\/button>/)
+  assert.match(ORDER_ONLY, /<button onClick=\{backToEntry\}[\s\S]{0,400}שינוי סוג הזמנה/)
+  assert.match(ORDER_ONLY, /<button onClick=\{\(\) => setScreen\('menu'\)\}/)
+  assert.doesNotMatch(MENU_SCREEN, /localStorage\.removeItem\('falafel_session'\); setOrderTypeChoice\(null\); setScreen\('branch'\); setCart\(\[\]\)/)
+})
+await test('backToEntry: clears the session + order type, goes to entry, does NOT touch the cart', () => {
+  const calls = []
+  const fn = pageFn('  function backToEntry()', '  // ── תמחור', { localStorage: { removeItem: k => calls.push(['removeItem', k]) },
+    setOrderTypeChoice: v => calls.push(['setOrderTypeChoice', v]), setOrderError: v => calls.push(['setOrderError', v]),
+    setScreen: v => calls.push(['setScreen', v]), setCart: v => calls.push(['setCart', v]), setParcelSelected: v => calls.push(['setParcelSelected', v]) })
+  fn()
+  assert.deepEqual(calls, [['removeItem', 'falafel_session'], ['setOrderTypeChoice', null], ['setOrderError', ''], ['setScreen', 'branch']])
+  // order type null → parcel section hidden → the existing effect clears parcel selection + fields
+  assert.equal(F.isParcelSectionVisible({ enabled: true, orderType: null }), false)
+})
+await test('same branch (e.g. delivery → back → pickup at the delivery branch): cart kept, no confirm, menu reloads', async () => {
+  const h = selectBranchHarness({ selected: DELIVERY_BR, cart: [{ q: 2 }], answer: false })
+  await h.fn(DELIVERY_BR, 'pickup')
+  assert.ok(!names(h.calls).includes('confirm') && !names(h.calls).includes('setCart'))
+  assert.deepEqual(h.calls.find(c => c[0] === 'setOrderTypeChoice'), ['setOrderTypeChoice', 'pickup'])
+  assert.deepEqual(h.calls.at(-1), ['setScreen', 'menu'])
+})
+await test('different branch, empty cart (or first visit): no confirm, no cart change', async () => {
+  for (const selected of [DELIVERY_BR, null]) {
+    const h = selectBranchHarness({ selected, cart: [], answer: false })
+    await h.fn(OTHER_BR, 'pickup')
+    assert.ok(!names(h.calls).includes('confirm') && !names(h.calls).includes('setCart'))
+    assert.deepEqual(h.calls.at(-1), ['setScreen', 'menu'])
+  }
+})
+await test('different branch + items → confirm; CANCEL changes nothing (no branch / cart / parcel / menu load / screen)', async () => {
+  for (const withParcel of [false, true]) {
+    const h = selectBranchHarness({ selected: OTHER_BR, cart: [{ q: 1 }], answer: false })
+    await h.fn(DELIVERY_BR, 'delivery', withParcel)
+    assert.deepEqual(names(h.calls), ['confirm'], `withParcel=${withParcel}`)
+    assert.match(h.calls[0][1], /החלפת סניף תרוקן את סל הקניות/)
+  }
+  assert.match(PAGE, /const BRANCH_CHANGE_CONFIRM = 'החלפת סניף תרוקן את סל הקניות, מכיוון שהתפריטים עשויים להיות שונים\. להמשיך\?'/)
+})
+await test('different branch + items → CONFIRM clears the cart exactly once, before the new branch and menu load', async () => {
+  const h = selectBranchHarness({ selected: OTHER_BR, cart: [{ q: 1 }], answer: true })
+  await h.fn(DELIVERY_BR, 'delivery')
+  const n = names(h.calls)
+  assert.equal(n.filter(x => x === 'setCart').length, 1); assert.deepEqual(h.calls.find(c => c[0] === 'setCart'), ['setCart', []])
+  assert.ok(n.indexOf('setCart') < n.indexOf('setSelectedBranch') && n.indexOf('setSelectedBranch') < n.indexOf('load'))
+  assert.deepEqual(h.calls.find(c => c[0] === 'setOrderTypeChoice'), ['setOrderTypeChoice', 'delivery'])
+  assert.deepEqual(h.calls.at(-1), ['setScreen', 'menu'])
+})
+await test('parcel entry: parcel set only after the guard, before the branch / order type and the first await', async () => {
+  const h = selectBranchHarness({ selected: DELIVERY_BR, cart: [{ q: 1 }], answer: false })
+  await h.fn(DELIVERY_BR, 'delivery', true)
+  const n = names(h.calls)
+  assert.deepEqual(h.calls.find(c => c[0] === 'setParcelSelected'), ['setParcelSelected', true])
+  assert.ok(n.indexOf('setParcelSelected') < n.indexOf('setSelectedBranch') && n.indexOf('setOrderTypeChoice') < n.indexOf('load'))
+  // food-only delivery never sets a parcel (no restore of a cleared one)
+  const f = selectBranchHarness({ selected: DELIVERY_BR, cart: [], answer: false })
+  await f.fn(DELIVERY_BR, 'delivery'); assert.ok(!names(f.calls).includes('setParcelSelected'))
+})
+await test('new-order resets still clear the cart (unchanged); parcel checkbox + tracking stay in checkout', () => {
+  assert.match(PAGE, /<button onClick=\{\(\) => \{ setCart\(\[\]\); setOrderTypeChoice\(null\); setScreen\('branch'\) \}\}/)
+  assert.match(PAGE, /setOrderId\(null\); setCart\(\[\]\); setOrderCart\(\[\]\); setOrderTypeChoice\(null\); setScreen\('branch'\)/)
+  assert.match(ORDER_ONLY, /<input type="checkbox" checked=\{parcelSelected\}/)
+  assert.match(ORDER_ONLY, /value=\{parcelTrackingRef\} maxLength=\{PARCEL_INPUT_MAX_LENGTH\}/)
 })
 
 await test('no pricing / Maale / HYP code in the new modules', () => {

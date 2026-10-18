@@ -94,6 +94,7 @@ const GENERIC_ORDER_ERROR = 'לא ניתן לשלוח את ההזמנה כרגע
 // Destination-based delivery fee (lib/orderConfig DELIVERY_FEES_BY_AREA); range shown until an area is chosen.
 const DELIVERY_FEE_LABEL = `דמי משלוח ₪${DELIVERY_FEE_RANGE.min}–₪${DELIVERY_FEE_RANGE.max} לפי יישוב`
 const DELIVERY_PRICE_NOTE = `מחירי המשלוח למנות כוללים תוספת של ${DELIVERY_MEAL_SURCHARGE} ₪ למנה.`
+const BRANCH_CHANGE_CONFIRM = 'החלפת סניף תרוקן את סל הקניות, מכיוון שהתפריטים עשויים להיות שונים. להמשיך?'
 
 const C = {
   bg: '#0D0D0D', bgCard: '#1A1A1A', bgCardHover: '#222222',
@@ -309,7 +310,15 @@ export default function Home() {
     setLoading(false)
   }
 
-  async function selectBranch(branch: Branch, type: OrderType) {
+  async function selectBranch(branch: Branch, type: OrderType, withParcel = false) {
+    // Same branch → the cart is kept (prices follow the order type). Another branch with items → confirm first; on
+    // cancel nothing changes (branch, cart, parcel, screen). The parcel is set only after this guard (S4-UX-11).
+    const branchChanged = selectedBranch !== null && selectedBranch.id !== branch.id
+    if (branchChanged && cart.length > 0) {
+      if (!window.confirm(BRANCH_CHANGE_CONFIRM)) return
+      setCart([])
+    }
+    if (withParcel) setParcelSelected(true)
     setSelectedBranch(branch); setLoading(true)
     // משלוח רק מסניף משלוחים; כל סניף אחר → איסוף בלבד
     setOrderTypeChoice(type === 'delivery' && isDeliveryBranch(branch.id) ? 'delivery' : 'pickup')
@@ -327,6 +336,13 @@ export default function Home() {
     setCategories(cats); setMenuItems(items); setToppings(topRes.data || [])
     if (cats.length > 0) setActiveCategory(cats[0].id)
     setLoading(false); setScreen('menu')
+  }
+
+  // Back to the entry screen (S4-UX-11): the order type is chosen only there. The cart is kept — selectBranch decides
+  // whether it still fits. orderTypeChoice = null hides the parcel section, so the existing effect clears the parcel.
+  function backToEntry() {
+    localStorage.removeItem('falafel_session')
+    setOrderTypeChoice(null); setOrderError(''); setScreen('branch')
   }
 
   // ── תמחור (תצוגה בלבד — הסכום הקובע מחושב בשרת) ──
@@ -377,6 +393,11 @@ export default function Home() {
     selected: parcelSelected, trackingRef: parcelTrackingRef, carrier: parcelCarrier,
   }
   const parcelSectionVisible = isParcelSectionVisible(parcelForm)
+  // Read-only order-type label for the menu header and checkout (changed only on the entry screen).
+  const isParcelOrder = effectiveOrderType === 'delivery' && parcelSectionVisible && parcelSelected
+  const orderTypeLabel = effectiveOrderType === 'delivery' ? (isParcelOrder ? '📦 משלוח אוכל + חבילה' : '🛵 משלוח אוכל')
+    : effectiveOrderType === 'pickup' ? '🏃 איסוף עצמי' : 'לא נבחר סוג הזמנה'
+  const menuOrderTypeLabel = isParcelOrder ? '📦 משלוח + חבילה' : orderTypeLabel   // shorter for the narrow menu header
   const parcelError = parcelFormError(parcelForm)
   const canPlaceOrder = isOpen && isValidPhone(orderPhone) && cart.length > 0 && customerName.trim().length >= 2
     && orderTypeReady && parcelError === null && !placingOrder
@@ -670,9 +691,9 @@ export default function Home() {
           </div>
         )}
         {/* משלוח אוכל + חבילה (S4-UX-04) — רק כשהשרת מאשר ויש סניף משלוחים. אותו מסלול משלוח; רק מסמן חבילה מראש.
-            setParcelSelected לפני selectBranch באותו handler → רינדור אחד עם משלוח, ולכן הניקוי האוטומטי לא מוחק את הבחירה */}
+            selectBranch מסמן את החבילה אחרי אישור החלפת סניף ולפני ה-await → רינדור אחד עם משלוח, והניקוי האוטומטי לא מוחק */}
         {orderTypeChoice !== 'pickup' && parcelCheckoutEnabled && deliveryBranch && (
-          <button onClick={() => { setParcelSelected(true); selectBranch(deliveryBranch, 'delivery') }}
+          <button onClick={() => selectBranch(deliveryBranch, 'delivery', true)}
             style={{ ...fulfillmentButtonStyle, width: '100%', marginTop: 12, padding: '20px 16px', border: `2px solid ${C.gold}`, background: 'rgba(255,215,0,0.08)' }}>
             <span style={{ fontWeight: 900, fontSize: 19, color: C.gold }}>📦 משלוח אוכל + חבילה</span>
             <span style={{ fontSize: 13, color: C.white, lineHeight: 1.5 }}>מזמינים אוכל ומצרפים חבילה שממתינה בסניף.</span>
@@ -886,22 +907,20 @@ export default function Home() {
           </div>
         </div>
 
-        {/* איסוף עצמי / משלוח — רק בסניף עם משלוחים */}
-        {deliveryAvailable && (
-          <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${effectiveOrderType ? C.border : C.gold}` }}>
-            <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>🚦 אופן קבלת ההזמנה</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              {([['pickup', '🏃', 'איסוף עצמי', ''], ['delivery', '🛵', 'משלוח', DELIVERY_FEE_LABEL]] as const).map(([v, icon, label, sub]) => (
-                <button key={v} onClick={() => { setOrderTypeChoice(v); setOrderError('') }}
-                  style={{ padding: '16px 10px', border: `2px solid ${effectiveOrderType === v ? C.gold : C.border}`, borderRadius: 14, background: effectiveOrderType === v ? 'rgba(255,215,0,0.1)' : C.bg, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-                  <span style={{ fontSize: 28 }}>{icon}</span>
-                  <span style={{ fontWeight: 800, fontSize: 16, color: effectiveOrderType === v ? C.gold : C.white }}>{label}</span>
-                  {sub && <span style={{ fontSize: 11, color: C.gray }}>{sub}</span>}
-                </button>
-              ))}
+        {/* אופן קבלת ההזמנה — לקריאה בלבד; שינוי רק דרך מסך הכניסה (S4-UX-11) */}
+        <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${effectiveOrderType ? C.border : C.gold}` }}>
+          <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 10 }}>🚦 אופן קבלת ההזמנה</div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 16, color: effectiveOrderType ? C.gold : C.red }}>{orderTypeLabel}</div>
+              {effectiveOrderType === 'delivery' && <div style={{ fontSize: 11, color: C.gray, marginTop: 3 }}>{DELIVERY_FEE_LABEL}</div>}
             </div>
+            <button onClick={backToEntry}
+              style={{ background: 'none', border: `1px solid ${C.gold}`, borderRadius: 10, padding: '8px 12px', color: C.gold, fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', whiteSpace: 'nowrap', flexShrink: 0 }}>
+              שינוי סוג הזמנה
+            </button>
           </div>
-        )}
+        </div>
 
         {/* כתובת למשלוח */}
         {effectiveOrderType === 'delivery' && (
@@ -1097,7 +1116,7 @@ export default function Home() {
       <div style={{ background: C.bgCard, borderBottom: `1px solid ${C.border}`, position: 'sticky', top: 0, zIndex: 200 }}>
         <div style={{ maxWidth: 640, margin: '0 auto' }}>
           <div style={{ padding: '12px 16px 10px', display: 'flex', alignItems: 'center', gap: 12 }}>
-            <button onClick={() => { localStorage.removeItem('falafel_session'); setOrderTypeChoice(null); setScreen('branch'); setCart([]) }}
+            <button onClick={backToEntry}
               style={{ background: C.border, border: 'none', borderRadius: 10, padding: '8px 10px', cursor: 'pointer', fontSize: 18, lineHeight: 1, color: C.white }}>→</button>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1 }}>
               <img src={LOGO} alt="" style={{ width: 48, height: 48, objectFit: 'contain', borderRadius: 10 }} />
@@ -1106,19 +1125,8 @@ export default function Home() {
                 <div style={{ fontSize: 12, color: C.gray }}>{selectedBranch?.name}</div>
               </div>
             </div>
-            {/* מצב הזמנה — מחליף מיד את המחירים בתפריט/סל (רק בסניף משלוחים; סל נשמר) */}
-            {deliveryAvailable ? (
-              <div style={{ display: 'flex', background: C.bg, border: `1px solid ${C.border}`, borderRadius: 12, padding: 3, flexShrink: 0 }}>
-                {(['pickup', 'delivery'] as const).map(v => (
-                  <button key={v} onClick={() => { setOrderTypeChoice(v); setOrderError('') }}
-                    style={{ padding: '6px 8px', borderRadius: 9, border: 'none', cursor: 'pointer', fontFamily: 'Heebo, sans-serif', fontWeight: 800, fontSize: 12, whiteSpace: 'nowrap', background: displayType === v ? C.gold : 'transparent', color: displayType === v ? '#000' : C.gray }}>
-                    {v === 'pickup' ? '🏃 איסוף' : '🛵 משלוח'}
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div style={{ fontSize: 12, fontWeight: 700, color: C.gray, flexShrink: 0 }}>🏃 איסוף עצמי</div>
-            )}
+            {/* סוג ההזמנה — לקריאה בלבד; שינוי רק דרך מסך הכניסה (חץ החזרה), הסל נשמר (S4-UX-11) */}
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.gray, flexShrink: 0, whiteSpace: 'nowrap' }}>{menuOrderTypeLabel}</div>
             {selectedBranch && BRANCH_INFO[selectedBranch.id] && (
               <a href={`tel:${BRANCH_INFO[selectedBranch.id].phone.replace(/-/g,'')}`}
                 style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 44, height: 44, background: C.gold, border: 'none', borderRadius: 12, textDecoration: 'none', fontSize: 22, flexShrink: 0, boxShadow: '0 4px 16px rgba(255,215,0,0.4)' }}>
