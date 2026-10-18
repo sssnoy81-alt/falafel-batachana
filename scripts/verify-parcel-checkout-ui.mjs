@@ -199,6 +199,79 @@ await test('tracking input is LTR, no autocomplete / spellcheck; inputs never cu
   assert.equal(F.PARCEL_INPUT_MAX_LENGTH, 200)              // far above the 40 rule; = the parser's raw-input bound
   assert.doesNotMatch(PAGE, /maxLength=\{40\}/)
 })
+/* ═══ 4. Entry options (S4-UX-04): איסוף עצמי / משלוח / משלוח אוכל + חבילה ═══ */
+console.log('Entry options (static guarantees + state logic)')
+const BRANCH_SCREEN = PAGE.slice(PAGE.indexOf("if (screen === 'branch') return ("), PAGE.indexOf("if (screen === 'tracking') {"))
+const ORDER_SCREEN = PAGE.slice(PAGE.indexOf("if (screen === 'order') return ("))
+const PARCEL_ENTRY = /\{orderTypeChoice !== 'pickup' && parcelCheckoutEnabled && deliveryBranch && \(\n\s*<button onClick=\{\(\) => \{ setParcelSelected\(true\); selectBranch\(deliveryBranch, 'delivery'\) \}\}/
+await test('entry screen shows three options: pickup, delivery (both unchanged) and "📦 משלוח אוכל + חבילה" with its copy', () => {
+  assert.match(BRANCH_SCREEN, /<button onClick=\{\(\) => setOrderTypeChoice\('pickup'\)\}/)
+  assert.match(BRANCH_SCREEN, /<button onClick=\{\(\) => selectBranch\(deliveryBranch, 'delivery'\)\}/)   // food-only delivery: no parcel
+  assert.match(BRANCH_SCREEN, PARCEL_ENTRY)
+  assert.match(BRANCH_SCREEN, /📦 משלוח אוכל \+ חבילה/)
+  assert.match(BRANCH_SCREEN, /מזמינים אוכל ומצרפים חבילה שממתינה בסניף\./)
+  assert.equal((PAGE.match(/setParcelSelected\(true\)/g) || []).length, 1, 'only the entry option pre-selects a parcel')
+})
+await test('entry labels: "משלוח אוכל" on the entry delivery button only; other delivery labels unchanged', () => {
+  assert.match(BRANCH_SCREEN, /<span style=\{\{ fontWeight: 900, fontSize: 19, color: C\.gold \}\}>משלוח אוכל<\/span>/)
+  assert.match(PAGE, /\['delivery', '🛵', 'משלוח', DELIVERY_FEE_LABEL\]/)          // checkout toggle unchanged
+  assert.match(PAGE, /\{v === 'pickup' \? '🏃 איסוף' : '🛵 משלוח'\}/)              // menu toggle unchanged
+})
+await test('parcel card pricing wording: no parcel fee, regular delivery fee applies — from the existing fee source', () => {
+  assert.match(BRANCH_SCREEN, /צירוף החבילה ללא תוספת תשלום\. דמי משלוח רגילים חלים\./)
+  assert.doesNotMatch(BRANCH_SCREEN, /— ללא תוספת תשלום/)                          // old ambiguous wording gone
+  const card = BRANCH_SCREEN.slice(BRANCH_SCREEN.indexOf('📦 משלוח אוכל + חבילה'))
+  assert.match(card.slice(0, 600), /\{DELIVERY_FEE_LABEL\}/)                      // same label as the delivery button
+  assert.doesNotMatch(card.slice(0, 600), /₪\s?\d/)                              // no hard-coded price on the card
+  assert.match(PAGE, /const DELIVERY_FEE_LABEL = `דמי משלוח ₪\$\{DELIVERY_FEE_RANGE\.min\}–₪\$\{DELIVERY_FEE_RANGE\.max\} לפי יישוב`/)
+})
+await test('parcel entry option only with the flag ON (config fails closed) and a delivery branch, in step 1 only', () => {
+  assert.match(PAGE, /setParcelCheckoutEnabled\(j\?\.parcelCheckout === true\)/)
+  assert.match(PAGE, /\.catch\(\(\) => \{ if \(!cancelled\) setParcelCheckoutEnabled\(false\) \}\)/)
+  assert.match(PAGE, /const \[parcelCheckoutEnabled, setParcelCheckoutEnabled\] = useState\(false\)/)
+  // the same guard as the pickup/delivery grid (step 1) plus the flag and the delivery branch
+  assert.match(PAGE, PARCEL_ENTRY)
+})
+await test('selection survives branch selection + menu loading: selectBranch sets branch and delivery before its first await', () => {
+  const fn = PAGE.slice(PAGE.indexOf('async function selectBranch('), PAGE.indexOf('// ── תמחור'))
+  const firstAwait = fn.indexOf('await ')
+  assert.ok(fn.indexOf('setSelectedBranch(branch)') < firstAwait && fn.indexOf("setOrderTypeChoice(type === 'delivery'") < firstAwait)
+  // same handler, parcel first → one batched render with delivery → the section is visible → the clearing effect keeps it
+  const st2 = { enabled: true, orderType: 'delivery', selected: true, trackingRef: '', carrier: '' }
+  assert.equal(F.isParcelSectionVisible(st2), true)
+  assert.equal(F.isParcelActive(st2), true)
+  assert.equal(F.parcelFormError(st2), F.PARCEL_FORM_MESSAGES.trackingRequired)       // order blocked until a number is entered
+  assert.equal(F.buildParcelWire(st2), undefined)
+})
+await test('switching to pickup clears the parcel; back to delivery does not restore it (re-select at checkout)', () => {
+  assert.match(PAGE, /useEffect\(\(\) => \{\n\s*if \(!parcelSectionVisible\) clearParcelForm\(\)\n\s*\}, \[parcelSectionVisible\]\)/)
+  assert.match(PAGE, /function clearParcelForm\(\) \{\n\s*setParcelSelected\(EMPTY_PARCEL_FORM\.selected\); setParcelTrackingRef\(EMPTY_PARCEL_FORM\.trackingRef\); setParcelCarrier\(EMPTY_PARCEL_FORM\.carrier\)/)
+  assert.equal(F.isParcelSectionVisible({ enabled: true, orderType: 'pickup' }), false)   // pickup → effect clears
+  assert.equal(F.buildParcelWire({ enabled: true, orderType: 'pickup', selected: true, trackingRef: REF, carrier: '' }), undefined)
+  assert.equal(F.isParcelSectionVisible({ enabled: false, orderType: 'delivery' }), false) // flag off → cleared, nothing sent
+  // nothing restores the selection: the entry option is the only setParcelSelected(true); the checkbox stays at checkout
+  assert.match(ORDER_SCREEN, /<input type="checkbox" checked=\{parcelSelected\}/)
+})
+await test('tracking + carrier inputs stay near final checkout (order screen, after the address, before name / submit)', () => {
+  const tracking = PAGE.indexOf('value={parcelTrackingRef}'), carrier = PAGE.indexOf('value={parcelCarrier}')
+  const orderStart = PAGE.indexOf("if (screen === 'order') return ("), submit = PAGE.indexOf('<button onClick={placeOrder}')
+  assert.ok(orderStart > 0 && tracking > orderStart && carrier > tracking && submit > carrier)
+  assert.ok(tracking > PAGE.indexOf('📍 כתובת למשלוח') && tracking < PAGE.indexOf('👤 שם מלא'))
+  assert.ok(!BRANCH_SCREEN.includes('parcelTrackingRef') && !BRANCH_SCREEN.includes('parcelCarrier'))
+  assert.equal((PAGE.match(/value=\{parcelTrackingRef\}/g) || []).length, 1, 'single tracking input — no duplicated form state')
+})
+await test('checkout shows an entry-selected parcel as already attached (same checkbox = edit / remove control)', () => {
+  assert.match(ORDER_SCREEN, /\{parcelSelected \? '📦 חבילה מצורפת למשלוח' : '📦 יש לי חבילה לצרף למשלוח'\}/)
+  assert.match(ORDER_SCREEN, /להסרת החבילה מההזמנה — יש לבטל את הסימון/)
+  assert.match(ORDER_SCREEN, /if \(!e\.target\.checked\) \{ setParcelTrackingRef\(''\); setParcelCarrier\(''\) \}/)
+})
+await test('S4-C2-B truncation fix intact: inputs maxLength 200, rule 4–40, "too long" blocks the order', () => {
+  assert.equal(F.PARCEL_INPUT_MAX_LENGTH, 200)
+  assert.doesNotMatch(PAGE, /maxLength=\{40\}/)
+  assert.equal(F.parcelFormError(st({ trackingRef: 'RR' + '1'.repeat(37) + 'IL' })), F.PARCEL_FORM_MESSAGES.trackingTooLong)
+  assert.match(PAGE, /&& orderTypeReady && parcelError === null && !placingOrder/)
+})
+
 await test('no pricing / Maale / HYP code in the new modules', () => {
   for (const f of ['lib/parcelCheckoutForm.ts', 'app/api/checkout/config/route.ts'])
     assert.ok(!/pricing|DELIVERY_FEES|maale|hyp|supabase/i.test(src(f).replace(/\/\/.*$/gm, '')), f)

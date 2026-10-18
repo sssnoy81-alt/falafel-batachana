@@ -663,11 +663,22 @@ export default function Home() {
               <button onClick={() => selectBranch(deliveryBranch, 'delivery')}
                 style={{ ...fulfillmentButtonStyle, border: `1px solid ${C.gold}` }}>
                 <span style={{ fontSize: 44 }}>🛵</span>
-                <span style={{ fontWeight: 900, fontSize: 19, color: C.gold }}>משלוח</span>
+                <span style={{ fontWeight: 900, fontSize: 19, color: C.gold }}>משלוח אוכל</span>
                 <span style={{ fontSize: 12, color: C.gray }}>מ{deliveryBranch.name} · {DELIVERY_FEE_LABEL}</span>
               </button>
             )}
           </div>
+        )}
+        {/* משלוח אוכל + חבילה (S4-UX-04) — רק כשהשרת מאשר ויש סניף משלוחים. אותו מסלול משלוח; רק מסמן חבילה מראש.
+            setParcelSelected לפני selectBranch באותו handler → רינדור אחד עם משלוח, ולכן הניקוי האוטומטי לא מוחק את הבחירה */}
+        {orderTypeChoice !== 'pickup' && parcelCheckoutEnabled && deliveryBranch && (
+          <button onClick={() => { setParcelSelected(true); selectBranch(deliveryBranch, 'delivery') }}
+            style={{ ...fulfillmentButtonStyle, width: '100%', marginTop: 12, padding: '20px 16px', border: `2px solid ${C.gold}`, background: 'rgba(255,215,0,0.08)' }}>
+            <span style={{ fontWeight: 900, fontSize: 19, color: C.gold }}>📦 משלוח אוכל + חבילה</span>
+            <span style={{ fontSize: 13, color: C.white, lineHeight: 1.5 }}>מזמינים אוכל ומצרפים חבילה שממתינה בסניף.</span>
+            <span style={{ fontSize: 13, color: C.white, lineHeight: 1.5 }}>צירוף החבילה ללא תוספת תשלום. דמי משלוח רגילים חלים.</span>
+            <span style={{ fontSize: 12, color: C.gray }}>מ{deliveryBranch.name} · {DELIVERY_FEE_LABEL}</span>
+          </button>
         )}
         {/* שלב 2 — בחירת סניף לאיסוף */}
         {orderTypeChoice === 'pickup' && (
@@ -982,8 +993,11 @@ export default function Home() {
               <input type="checkbox" checked={parcelSelected}
                 onChange={e => { setParcelSelected(e.target.checked); setOrderError(''); if (!e.target.checked) { setParcelTrackingRef(''); setParcelCarrier('') } }}
                 style={{ width: 22, height: 22, accentColor: C.gold, flexShrink: 0 }} />
-              📦 יש לי חבילה לצרף למשלוח
+              {parcelSelected ? '📦 חבילה מצורפת למשלוח' : '📦 יש לי חבילה לצרף למשלוח'}
             </label>
+            {parcelSelected && (
+              <div style={{ fontSize: 12, color: C.gray, marginTop: 6, marginRight: 32 }}>להסרת החבילה מההזמנה — יש לבטל את הסימון</div>
+            )}
             {parcelSelected && (
               <div style={{ marginTop: 14 }}>
                 <div style={{ fontSize: 13, color: C.gray, marginBottom: 12, lineHeight: 1.5 }}>
