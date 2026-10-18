@@ -48,7 +48,7 @@ function dbParcelRule(old, next, closeReason, orderStatus) {
 }
 
 /* ─── Fake service-role Supabase client ─── */
-const db = { kitchen_users: [], orders: new Map(), parcels: new Map(), events: [], queries: [], dbGate: false, dbSync: true, syncRule: null, failUpdate: null, hooks: {} }
+const db = { kitchen_users: [], orders: new Map(), parcels: new Map(), events: [], queries: [], dbGate: false, dbSync: true, dbCancelGate: false, syncRule: null, failUpdate: null, hooks: {} }
 const IN_STORE = ['awaiting_search', 'not_found', 'found']
 class ServerConfigError extends Error { constructor(m) { super(m); this.name = 'ServerConfigError' } }
 const tick = () => new Promise(r => setImmediate(r))
@@ -80,6 +80,11 @@ function query(table) {
       // Migration 03 gate emulation (only when switched on): every exit from received except cancellation
       if (db.dbGate && o.status === 'received' && q.patch.status !== 'cancelled' && p && !['found', 'cancelled'].includes(p.status))
         return { data: null, error: { code: 'P0001', message: 'parcel_not_ready' } }
+      // Migration 04 cancel-gate emulation (installed and verified in Production; switched on per test — the default
+      // stays off so the S2 / S2b tests keep exercising the application logic alone): a received order may be cancelled
+      // only while its parcel is not_found (or already cancelled / absent), decided at update time.
+      if (db.dbCancelGate && o.status === 'received' && q.patch.status === 'cancelled' && p && !['not_found', 'cancelled'].includes(p.status))
+        return { data: null, error: { code: '22023', message: 'parcel_cancel_requires_not_found' } }
       // Migration 03 cancel-sync emulation (installed in Production → on by default): same statement, same
       // transaction. A parcel still in the store becomes cancelled / order_cancelled / system actor (validated by the
       // parcel trigger rules, one event); any other parcel is untouched. A rule rejection rolls back the whole update.
@@ -168,7 +173,7 @@ function reset({ orders = [], parcels = [] } = {}) {
   db.kitchen_users = [userRow('adumim', 'branch', ADUMIM), userRow('mikhmas', 'branch', MIKHMAS), userRow('boss', 'admin', null)]
   db.orders = new Map(orders.map(o => [o.id, { type: 'delivery', branch_id: ADUMIM, daily_number: 1, ...o }]))
   db.parcels = new Map(parcels.map(p => [p.order_id, { tracking_ref: 'RR123456789IL', carrier: 'דואר ישראל', last_actor: 'customer_checkout', ...p }]))
-  db.events = []; db.queries = []; db.dbGate = false; db.dbSync = true; db.syncRule = null; db.failUpdate = null; db.hooks = {}
+  db.events = []; db.queries = []; db.dbGate = false; db.dbSync = true; db.dbCancelGate = false; db.syncRule = null; db.failUpdate = null; db.hooks = {}
 }
 const patchReq = (path, body, { session = SESS.adumim, origin = ORIGIN, contentType = 'application/json' } = {}) =>
   new NextRequest(`${ORIGIN}${path}`, {
@@ -410,6 +415,29 @@ await test('race: concurrent cancel and "found" on received + not_found → cons
   }
 })
 
+await test('M04: race "not_found → found" between load and cancel → DB gate rejects → HTTP 409 invalid_state; order + parcel unchanged', async () => {
+  reset({ orders: [{ id: id(41), status: 'received' }], parcels: [{ order_id: id(41), status: 'not_found' }] })
+  db.dbCancelGate = true
+  db.hooks.afterOrderLoad = oid => { db.parcels.get(oid).status = 'found' }   // tablet B marks found after A's load
+  assert.deepEqual(await setStatus(id(41), 'cancelled'), { status: 409, body: { error: 'invalid_state' } })
+  assert.deepEqual([db.orders.get(id(41)).status, db.parcels.get(id(41)).status, db.events.length], ['received', 'found', 0])
+})
+await test('M04: without the database gate (app logic alone, as before Migration 04) the same race cancels the found parcel', async () => {
+  reset({ orders: [{ id: id(42), status: 'received' }], parcels: [{ order_id: id(42), status: 'not_found' }] })
+  db.hooks.afterOrderLoad = oid => { db.parcels.get(oid).status = 'found' }
+  assert.equal((await setStatus(id(42), 'cancelled')).status, 200)
+  assert.deepEqual([db.orders.get(id(42)).status, db.parcels.get(id(42)).close_reason], ['cancelled', 'order_cancelled'])
+})
+await test('M04 gate on: received + not_found cancel still 200 (synced); confirmed / preparing / food-only cancellations unchanged', async () => {
+  reset({ orders: [{ id: id(43), status: 'received' }], parcels: [{ order_id: id(43), status: 'not_found' }] }); db.dbCancelGate = true
+  assert.equal((await setStatus(id(43), 'cancelled')).status, 200); assert.equal(db.parcels.get(id(43)).close_reason, 'order_cancelled')
+  for (const os of ['confirmed', 'preparing']) {
+    reset({ orders: [{ id: id(44), status: os }], parcels: [{ order_id: id(44), status: 'found' }] }); db.dbCancelGate = true
+    assert.equal((await setStatus(id(44), 'cancelled')).status, 200, os)
+    reset({ orders: [{ id: id(45), status: os }] }); db.dbCancelGate = true
+    assert.equal((await setStatus(id(45), 'cancelled')).status, 200, `food-only ${os}`)
+  }
+})
 await test('two tablets cancel the same parcel order at once → one 200, one 409 conflict, exactly one sync event', async () => {
   reset({ orders: [{ id: id(39), status: 'preparing' }], parcels: [{ order_id: id(39), status: 'found' }] })
   const both = await Promise.all([setStatus(id(39), 'cancelled'), setStatus(id(39), 'cancelled')])
