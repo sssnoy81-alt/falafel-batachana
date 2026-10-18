@@ -95,6 +95,9 @@ const GENERIC_ORDER_ERROR = 'לא ניתן לשלוח את ההזמנה כרגע
 const DELIVERY_FEE_LABEL = `דמי משלוח ₪${DELIVERY_FEE_RANGE.min}–₪${DELIVERY_FEE_RANGE.max} לפי יישוב`
 const DELIVERY_PRICE_NOTE = `מחירי המשלוח למנות כוללים תוספת של ${DELIVERY_MEAL_SURCHARGE} ₪ למנה.`
 const BRANCH_CHANGE_CONFIRM = 'החלפת סניף תרוקן את סל הקניות, מכיוון שהתפריטים עשויים להיות שונים. להמשיך?'
+// Credit is collected by phone by the branch (HYP not integrated) — never claim an automatic charge (S4-PARCEL-21A)
+const CREDIT_PHONE_NOTE = 'התשלום באשראי ייגבה בשיחה טלפונית עם הסניף לפני מסירת ההזמנה. אין להזין פרטי אשראי באתר.'
+const CREDIT_TRACKING_LABEL = '💳 אשראי — הסניף ייצור קשר לגביית התשלום'
 
 const C = {
   bg: '#0D0D0D', bgCard: '#1A1A1A', bgCardHover: '#222222',
@@ -753,7 +756,8 @@ export default function Home() {
   if (screen === 'tracking') {
     const steps: OrderStatus[] = ['received', 'confirmed', 'preparing', 'ready', 'delivered']
     const currentStep = steps.indexOf(orderStatus)
-    const payLabel = isPaymentMethod(orderPaymentMethod) ? PAYMENT_METHOD_LABELS[orderPaymentMethod] : orderPaymentMethod
+    const payLabel = orderPaymentMethod === 'credit' ? CREDIT_TRACKING_LABEL
+      : isPaymentMethod(orderPaymentMethod) ? PAYMENT_METHOD_LABELS[orderPaymentMethod] : orderPaymentMethod
     const isDeliveryOrder = orderType === 'delivery'
 
     return (
@@ -1060,6 +1064,10 @@ export default function Home() {
               </button>
             ))}
           </div>
+          {/* HYP not integrated: credit is collected by phone by the branch (S4-PARCEL-21A) — never on this site */}
+          {effectivePaymentMethod === 'credit' && (
+            <div style={{ fontSize: 13, color: C.gray, marginTop: 10, lineHeight: 1.5 }}>{CREDIT_PHONE_NOTE}</div>
+          )}
         </div>
 
         {/* סיכום לתשלום */}

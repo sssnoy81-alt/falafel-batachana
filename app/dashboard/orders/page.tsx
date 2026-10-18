@@ -342,6 +342,7 @@ function KitchenModal({ order, onClose, onDone }: {
         </div>
         {isDeliveryOrder(order) && <DeliveryDetails order={order} large />}
         {order.parcel && <ParcelPanel order={order} large />}
+        <KitchenReminders order={order} large />
         {(() => {
           const mains  = order.items.filter(oi => getItemType(oi.name) === 'main')
           const addons = order.items.filter(oi => getItemType(oi.name) === 'addon')
@@ -419,6 +420,28 @@ function KitchenModal({ order, onClose, onDone }: {
   )
 }
 
+// Static reminders (S4-PARCEL-21A) — no payment / parcel state: HYP and the courier API are not integrated, so credit is
+// collected by phone before acceptance and the courier is told about the parcel manually.
+const CREDIT_PHONE_REMINDER = '💳 לגבות תשלום טלפוני לפני אישור ההזמנה'
+const PARCEL_COURIER_REMINDER = '📦 לעדכן את השליח שיש לאסוף גם חבילה'
+function kitchenReminders(order: Pick<Order, 'paymentMethod' | 'parcel'>): string[] {
+  return [
+    ...(order.paymentMethod === 'credit' ? [CREDIT_PHONE_REMINDER] : []),
+    ...(order.parcel ? [PARCEL_COURIER_REMINDER] : []),
+  ]
+}
+function KitchenReminders({ order, large }: { order: Order; large?: boolean }) {
+  const lines = kitchenReminders(order)
+  if (lines.length === 0) return null
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: large ? 8 : 4, marginBottom: large ? 20 : 10 }}>
+      {lines.map(t => (
+        <div key={t} style={{ background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.45)', color: '#FBBF24', borderRadius: large ? 10 : 6, padding: large ? '8px 14px' : '4px 8px', fontSize: large ? 18 : 12, fontWeight: 700 }}>{t}</div>
+      ))}
+    </div>
+  )
+}
+
 function OrderCard({ order, onAdvance, onKitchenOpen, onEdit, onParcelAction, parcelBusy }: {
   order: Order; onAdvance: (id: string, next: OrderStatus) => void
   onKitchenOpen?: (order: Order) => void; onEdit?: (order: Order) => void
@@ -452,6 +475,7 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit, onParcelAction, pa
       </div>
       {isDeliveryOrder(order) && <DeliveryDetails order={order} />}
       {order.parcel && <ParcelPanel order={order} busy={parcelBusy} onAction={onParcelAction} onCancelOrder={() => onAdvance(order.id, 'cancelled')} />}
+      <KitchenReminders order={order} />
       <div style={{ marginBottom: 10 }}>
         {(() => {
           const mains  = order.items.filter(oi => getItemType(oi.name) === 'main')
