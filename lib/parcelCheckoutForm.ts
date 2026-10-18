@@ -17,9 +17,11 @@ export interface ParcelFormState {
   selected: boolean
   trackingRef: string
   carrier: string
+  /** Optional name printed on the parcel ('' = not provided → the food customer's name identifies the parcel). */
+  recipientName: string
 }
 
-export const EMPTY_PARCEL_FORM = { selected: false, trackingRef: '', carrier: '' } as const
+export const EMPTY_PARCEL_FORM = { selected: false, trackingRef: '', carrier: '', recipientName: '' } as const
 
 /**
  * maxLength for the parcel inputs. Deliberately far above the 40-character rule: a browser silently cuts a pasted
@@ -41,6 +43,7 @@ export const PARCEL_FORM_MESSAGES = {
   trackingTooLong: 'מספר המעקב ארוך מדי — מותר עד 40 תווים. נא לבדוק שהמספר הודבק נכון',
   carrierInvalid: 'שם חברת השילוח אינו תקין (עד 40 תווים, ללא קישורים)',
   carrierTooLong: 'שם חברת השילוח ארוך מדי — מותר עד 40 תווים',
+  recipientInvalid: 'שם הנמען על החבילה צריך להכיל 2–60 תווים, ללא תווים מיוחדים. אפשר גם להשאיר את השדה ריק',
 } as const
 
 /** Hebrew validation message for the parcel fields, or null when they are valid / not in use. */
@@ -49,8 +52,9 @@ export function parcelFormError(s: ParcelFormState): string | null {
   if (s.trackingRef.trim() === '') return PARCEL_FORM_MESSAGES.trackingRequired
   // Same normalization as parseParcelCheckout — only picks the clearer message; the parser below stays the rule.
   if (s.trackingRef.trim().replace(/ {2,}/g, ' ').length > MAX_PARCEL_TRACKING_REF) return PARCEL_FORM_MESSAGES.trackingTooLong
-  const p = parseParcelCheckout({ trackingRef: s.trackingRef, carrier: s.carrier })
+  const p = parseParcelCheckout({ trackingRef: s.trackingRef, carrier: s.carrier, recipientName: s.recipientName })
   if (p.ok) return null
+  if (p.detail === 'invalid_recipient_name') return PARCEL_FORM_MESSAGES.recipientInvalid
   if (p.detail !== 'invalid_carrier') return PARCEL_FORM_MESSAGES.trackingInvalid
   return s.carrier.trim().length > MAX_PARCEL_CARRIER ? PARCEL_FORM_MESSAGES.carrierTooLong : PARCEL_FORM_MESSAGES.carrierInvalid
 }
@@ -61,13 +65,13 @@ export function parcelFormError(s: ParcelFormState): string | null {
  */
 export function buildParcelWire(s: ParcelFormState): ParcelCheckoutInput | undefined {
   if (!isParcelActive(s)) return undefined
-  const p = parseParcelCheckout({ trackingRef: s.trackingRef, carrier: s.carrier })
-  return p.ok ? p.value : undefined
+  const p = parseParcelCheckout({ trackingRef: s.trackingRef, carrier: s.carrier, recipientName: s.recipientName })
+  return p.ok ? p.value : undefined   // recipientName key present only when a value was entered
 }
 
 /** Friendly Hebrew messages for the S4-A server error codes (merged into the page's existing error map). */
 export const PARCEL_ORDER_ERROR_MESSAGES: Partial<Record<OrderErrorCode, string>> = {
   parcel_checkout_disabled: 'צירוף חבילה אינו זמין כרגע. אפשר לשלוח את ההזמנה בלי חבילה',
-  invalid_parcel: 'פרטי החבילה אינם תקינים. נא לבדוק את מספר המעקב ואת שם חברת השילוח',
+  invalid_parcel: 'פרטי החבילה אינם תקינים. נא לבדוק את מספר המעקב, את שם חברת השילוח ואת שם הנמען',
   parcel_duplicate: 'מספר המעקב הזה כבר מצורף להזמנה פעילה. נא לבדוק את המספר או ליצור קשר עם הסניף',
 }

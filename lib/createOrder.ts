@@ -100,7 +100,11 @@ export async function createOrderWithParcelAtomic(args: CreateOrderRpcArgs, parc
   const supabase = getServerSupabase()
   const { data, error } = await supabase.rpc('create_order_with_parcel', {
     ...args,
-    p_parcel: { tracking_ref: parcel.trackingRef, carrier: parcel.carrier },
+    // recipient_name only when entered: without it the payload is exactly the pre-Migration-05 one (old DB compatible)
+    p_parcel: {
+      tracking_ref: parcel.trackingRef, carrier: parcel.carrier,
+      ...(parcel.recipientName ? { recipient_name: parcel.recipientName } : {}),
+    },
   })
 
   if (error) {

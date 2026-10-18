@@ -143,4 +143,13 @@ test('11e. month/year boundary', () => {
   assert.equal(iso(b.start), '2026-12-30T22:00:00.000Z'); assert.equal(iso(b.end), '2026-12-31T22:00:00.000Z')
 })
 
+test('parcel recipient (S4-PARCEL-30B): selected with the parcel embed; mapped to recipientName; absent → null', () => {
+  assert.match(R.KITCHEN_ORDER_SELECT, /parcel_requests\(status, tracking_ref, carrier, recipient_name\)/)
+  const withParcel = r => R.normalizeKitchenOrder({ ...deliveryRow, parcel_requests: [{ status: 'found', tracking_ref: 'RR123456789IL', carrier: null, ...r }] })
+  assert.deepEqual(withParcel({ recipient_name: 'נריה נוימן' }).parcel, { status: 'found', trackingRef: 'RR123456789IL', carrier: null, recipientName: 'נריה נוימן' })
+  assert.equal(withParcel({}).parcel.recipientName, null)
+  assert.equal(withParcel({ recipient_name: null }).parcel.recipientName, null)
+  assert.equal(withParcel({ recipient_name: 'נריה נוימן' }).customerName, deliveryRow.customer_name ?? null)
+})
+
 console.log(`\nAll ${passed} kitchen-read checks passed.`)

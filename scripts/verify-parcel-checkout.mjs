@@ -320,4 +320,86 @@ await test('no tracking number / carrier in any log statement; no customer UI ch
   for (const f of ['lib/parcelCheckout.ts', 'lib/createOrder.ts']) assert.ok(!/maale|hyp|pricing|DELIVERY_FEES/i.test(code(src(f))), f)
 })
 
+/* ─── Optional parcel recipient name (S4-PARCEL-30B) ─── */
+console.log('Parcel recipient name (S4-PARCEL-30B)')
+const parseR = extra => PC.parseParcelCheckout({ trackingRef: REF, ...extra })
+await test('A/B/C: omitted / null / undefined / empty / whitespace-only → not provided: key OMITTED (payload as before)', () => {
+  for (const extra of [{}, { recipientName: null }, { recipientName: undefined }, { recipientName: '' }, { recipientName: '    ' }, { recipientName: '  ' }]) {
+    const p = parseR(extra)
+    assert.equal(p.ok, true, JSON.stringify(extra))
+    assert.deepEqual(p.value, { trackingRef: REF, carrier: null }, JSON.stringify(extra))
+    assert.ok(!('recipientName' in p.value))
+  }
+})
+await test('D/E/F: explicit name, same name as the customer, padded name → trimmed and kept (inner spacing untouched)', () => {
+  assert.deepEqual(parseR({ recipientName: 'נריה נוימן' }).value, { trackingRef: REF, carrier: null, recipientName: 'נריה נוימן' })
+  assert.equal(parseR({ recipientName: 'ישראל ישראלי' }).value.recipientName, 'ישראל ישראלי')
+  assert.equal(parseR({ recipientName: '   נריה נוימן   ' }).value.recipientName, 'נריה נוימן')
+  assert.equal(parseR({ recipientName: 'Ané O’Brien-לוי' }).value.recipientName, 'Ané O’Brien-לוי')   // other valid names kept
+})
+await test('G/H/I/J: 1 char rejected, 2 and 60 accepted, 61 rejected (counted as characters, like PostgreSQL char_length)', () => {
+  assert.deepEqual(parseR({ recipientName: 'נ' }), { ok: false, detail: 'invalid_recipient_name' })
+  assert.equal(parseR({ recipientName: 'נר' }).value.recipientName, 'נר')
+  assert.equal(parseR({ recipientName: 'א'.repeat(60) }).value.recipientName.length, 60)
+  assert.deepEqual(parseR({ recipientName: 'א'.repeat(61) }), { ok: false, detail: 'invalid_recipient_name' })
+  assert.equal(parseR({ recipientName: '\u{1D49C}'.repeat(31) }).ok, true)          // 31 characters (62 UTF-16 units) → OK
+  assert.equal(PC.MIN_PARCEL_RECIPIENT_NAME, 2); assert.equal(PC.MAX_PARCEL_RECIPIENT_NAME, 60)
+})
+await test('K/L: invalid types, oversized raw input and control characters → invalid_recipient_name', () => {
+  for (const v of [5, true, {}, ['נריה'], 'א'.repeat(201)]) assert.deepEqual(parseR({ recipientName: v }), { ok: false, detail: 'invalid_recipient_name' }, String(v))
+  for (const v of ['נריה\u0000נוימן', 'נריה\u0007', 'נריה\tנוימן', 'נריה\nנוימן', 'נריה\u0085נוימן', 'נריה\u007F'])
+    assert.deepEqual(parseR({ recipientName: v }), { ok: false, detail: 'invalid_recipient_name' }, JSON.stringify(v))
+})
+await test('still exactly one new parcel key; tracking / carrier rules unchanged (S)', () => {
+  assert.deepEqual(parseR({ recipient: 'נריה' }), { ok: false, detail: 'unexpected_parcel_field' })
+  assert.deepEqual(parseR({ recipient_name: 'נריה' }), { ok: false, detail: 'unexpected_parcel_field' })   // wire key is camelCase
+  assert.deepEqual(PC.parseParcelCheckout({ trackingRef: 'AB', recipientName: 'נריה נוימן' }), { ok: false, detail: 'invalid_tracking_ref' })
+  assert.deepEqual(PC.parseParcelCheckout({ trackingRef: REF, carrier: 'http://x', recipientName: 'נריה נוימן' }), { ok: false, detail: 'invalid_carrier' })
+})
+await test('server request: recipient parsed into parcel only; customerName untouched (Q); invalid → invalid_parcel', () => {
+  const r = OR.parseCreateOrderRequest(baseOrder({ parcel: { trackingRef: REF, recipientName: ' נריה נוימן ' } }), { parcelCheckoutEnabled: true })
+  assert.equal(r.ok, true)
+  assert.deepEqual(r.value.parcel, { trackingRef: REF, carrier: null, recipientName: 'נריה נוימן' })
+  assert.equal(r.value.customerName, 'ישראל ישראלי')
+  assert.equal(OR.parseCreateOrderRequest(baseOrder({ parcel: { trackingRef: REF, recipientName: 'נ' } }), { parcelCheckoutEnabled: true }).code, 'invalid_parcel')
+  const noR = OR.parseCreateOrderRequest(baseOrder({ parcel: { trackingRef: REF } }), { parcelCheckoutEnabled: true })
+  assert.ok(!('recipientName' in noR.value.parcel))
+})
+await test('top-level recipientName / recipient_name rejected (flag on); flag off still rejects any parcel first (T)', () => {
+  for (const k of ['recipientName', 'recipient_name'])
+    assert.equal(OR.parseCreateOrderRequest(baseOrder({ [k]: 'נריה נוימן' }), { parcelCheckoutEnabled: true }).code, 'invalid_request', k)
+  assert.equal(OR.parseCreateOrderRequest(baseOrder({ parcel: { trackingRef: REF, recipientName: 'נריה נוימן' } })).code, 'parcel_checkout_disabled')
+})
+await test('adapter: p_parcel.recipient_name only when a recipient exists; otherwise exactly {tracking_ref, carrier}', async () => {
+  reset()
+  const args = { p_order: { a: 1 }, p_items: [], p_delivery: { c: 3 } }
+  await CO.createOrderWithParcelAtomic(args, { trackingRef: REF, carrier: null, recipientName: 'נריה נוימן' })
+  assert.deepEqual(db.rpcCalls[0].args.p_parcel, { tracking_ref: REF, carrier: null, recipient_name: 'נריה נוימן' })
+  reset()
+  await CO.createOrderWithParcelAtomic(args, { trackingRef: REF, carrier: 'DHL' })
+  assert.deepEqual(Object.keys(db.rpcCalls[0].args.p_parcel).sort(), ['carrier', 'tracking_ref'])
+})
+await test('route end-to-end (flag ON): recipient reaches the RPC; food-only / pickup payloads have no parcel at all (M)', async () => {
+  reset()
+  let r = await post(baseOrder({ parcel: { trackingRef: REF, recipientName: 'נריה נוימן' } }), ON)
+  assert.equal(r.status, 201)
+  assert.equal(db.rpcCalls[0].name, 'create_order_with_parcel')
+  assert.equal(db.rpcCalls[0].args.p_parcel.recipient_name, 'נריה נוימן')
+  assert.equal(db.rpcCalls[0].args.p_order.customer_name, 'ישראל ישראלי')   // the food customer stays the order identity
+  reset(); r = await post(baseOrder(), ON)
+  assert.equal(r.status, 201); assert.equal(db.rpcCalls[0].name, 'create_order'); assert.ok(!('p_parcel' in db.rpcCalls[0].args))
+})
+await test('route: invalid recipient → 400 invalid_parcel, no RPC; the name never appears in any log line', async () => {
+  reset()
+  const secret = 'נריה' + '\u0007' + 'נוימן'
+  const r = await post(baseOrder({ parcel: { trackingRef: REF, recipientName: secret } }), ON)
+  assert.deepEqual([r.status, r.body], [400, { error: 'invalid_parcel', detail: 'invalid_recipient_name' }])   // code only, never the value
+  assert.equal(db.rpcCalls.length, 0)
+  assert.ok(!r.logs.some(l => l.includes('נריה') || l.includes('נוימן')))
+  reset(); db.rpcResponse = { data: null, error: { code: '23514', message: 'new row for relation "parcel_requests" violates check constraint "parcel_requests_recipient_name_format"', details: 'Failing row contains (נריה נוימן)' } }
+  const r2 = await post(baseOrder({ parcel: { trackingRef: REF, recipientName: 'נריה נוימן' } }), ON)
+  assert.deepEqual([r2.status, r2.body], [400, { error: 'invalid_parcel' }])           // DB rule → same safe 400
+  assert.ok(!r2.logs.some(l => l.includes('נריה')), 'only the rule name is logged')
+})
+
 console.log(`\nAll ${passed} parcel-checkout checks passed.`)

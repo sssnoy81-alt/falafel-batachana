@@ -202,8 +202,10 @@ export default function Home() {
   const [parcelSelected, setParcelSelected] = useState<boolean>(EMPTY_PARCEL_FORM.selected)
   const [parcelTrackingRef, setParcelTrackingRef] = useState<string>(EMPTY_PARCEL_FORM.trackingRef)
   const [parcelCarrier, setParcelCarrier] = useState<string>(EMPTY_PARCEL_FORM.carrier)
+  const [parcelRecipientName, setParcelRecipientName] = useState<string>(EMPTY_PARCEL_FORM.recipientName)
   function clearParcelForm() {
     setParcelSelected(EMPTY_PARCEL_FORM.selected); setParcelTrackingRef(EMPTY_PARCEL_FORM.trackingRef); setParcelCarrier(EMPTY_PARCEL_FORM.carrier)
+    setParcelRecipientName(EMPTY_PARCEL_FORM.recipientName)
   }
   useEffect(() => {
     let cancelled = false
@@ -393,7 +395,7 @@ export default function Home() {
   // Parcel (GATE S4-B): only with the server flag on and a delivery order; otherwise nothing changes.
   const parcelForm: ParcelFormState = {
     enabled: parcelCheckoutEnabled, orderType: effectiveOrderType,
-    selected: parcelSelected, trackingRef: parcelTrackingRef, carrier: parcelCarrier,
+    selected: parcelSelected, trackingRef: parcelTrackingRef, carrier: parcelCarrier, recipientName: parcelRecipientName,
   }
   const parcelSectionVisible = isParcelSectionVisible(parcelForm)
   // Read-only order-type label for the menu header and checkout (changed only on the entry screen).
@@ -1014,7 +1016,7 @@ export default function Home() {
           <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${parcelSelected ? C.gold : C.border}` }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontWeight: 800, fontSize: 16, color: C.white }}>
               <input type="checkbox" checked={parcelSelected}
-                onChange={e => { setParcelSelected(e.target.checked); setOrderError(''); if (!e.target.checked) { setParcelTrackingRef(''); setParcelCarrier('') } }}
+                onChange={e => { setParcelSelected(e.target.checked); setOrderError(''); if (!e.target.checked) { setParcelTrackingRef(''); setParcelCarrier(''); setParcelRecipientName('') } }}
                 style={{ width: 22, height: 22, accentColor: C.gold, flexShrink: 0 }} />
               {parcelSelected ? '📦 חבילה מצורפת למשלוח' : '📦 יש לי חבילה לצרף למשלוח'}
             </label>
@@ -1035,7 +1037,15 @@ export default function Home() {
                 <input type="text" value={parcelCarrier} maxLength={PARCEL_INPUT_MAX_LENGTH} dir="rtl" autoComplete="off" placeholder="דואר ישראל, UPS, DHL..."
                   onChange={e => { setParcelCarrier(e.target.value); setOrderError('') }}
                   style={inputStyle(false)} />
-                {parcelError && (parcelTrackingRef.length > 0 || parcelCarrier.length > 0) && (
+                {/* Optional parcel recipient (S4-PARCEL-30B) — always shown with the parcel details; empty → the food customer's name */}
+                <div style={{ marginTop: 12 }}>
+                  <label style={labelStyle}>שם הנמען על החבילה</label>
+                  <input type="text" value={parcelRecipientName} maxLength={PARCEL_INPUT_MAX_LENGTH} dir="rtl" autoComplete="off"
+                    onChange={e => { setParcelRecipientName(e.target.value); setOrderError('') }}
+                    style={inputStyle(false)} />
+                  <div style={{ fontSize: 12, color: C.gray, marginTop: 6, lineHeight: 1.5 }}>אם השדה ריק, נשתמש בשם מזמין האוכל לזיהוי החבילה.</div>
+                </div>
+                {parcelError && (parcelTrackingRef.length > 0 || parcelCarrier.length > 0 || parcelRecipientName.length > 0) && (
                   <div style={{ color: C.red, fontSize: 13, marginTop: 8, lineHeight: 1.5 }}>{parcelError}</div>
                 )}
               </div>

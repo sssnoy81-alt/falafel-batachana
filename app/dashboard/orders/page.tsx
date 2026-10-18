@@ -226,6 +226,11 @@ function ParcelPanel({ order, busy, onAction, onCancelOrder, large }: {
         <span style={{ background: 'rgba(167,139,250,0.18)', color: PARCEL_COLOR, borderRadius: 6, padding: '1px 8px', fontSize: large ? 15 : 11, fontWeight: 800 }}>{statusLabel}</span>
       </div>
       <div style={{ color: '#fff', fontWeight: 800, fontSize: fs + 1, marginTop: 4, direction: 'ltr', textAlign: 'right', fontFamily: 'monospace', letterSpacing: 0.5 }}>{p.trackingRef || '—'}</div>
+      {/* Name on the parcel (S4-PARCEL-30B): the entered recipient, else the food customer's name — marked as such */}
+      <div style={{ color: '#E9D5FF', fontSize: fs, marginTop: 3, fontWeight: 700 }}>
+        📦 שם על החבילה: {p.recipientName ?? order.customerName ?? '—'}
+        {!p.recipientName && order.customerName && <span style={{ color: '#9CA3AF', fontWeight: 400 }}> (שם המזמין)</span>}
+      </div>
       {p.carrier && <div style={{ color: '#C4B5FD', fontSize: fs - 1, marginTop: 2 }}>🏷️ {p.carrier}</div>}
       {blocking && (
         <div style={{ color: '#FED7AA', fontSize: fs - 1, marginTop: 4, fontWeight: 700 }}>יש לאתר את החבילה לפני אישור ההזמנה</div>

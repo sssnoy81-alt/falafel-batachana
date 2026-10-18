@@ -590,12 +590,12 @@ await test('kitchen orders API returns the parcel (status, tracking, carrier) to
     payment_method: 'cash', total_price: 50, branch_id: ADUMIM, branches: { name: 'מישור אדומים' }, order_items: [], deliveries: [{ address: 'a' }],
     parcel_requests: [{ status: 'awaiting_search', tracking_ref: 'RR123456789IL', carrier: 'דואר ישראל', id: 'secret-id', last_actor: 'x' }] }
   const o = R.normalizeKitchenOrder(row)
-  assert.deepEqual(o.parcel, { status: 'awaiting_search', trackingRef: 'RR123456789IL', carrier: 'דואר ישראל' })
-  assert.deepEqual(Object.keys(o.parcel).sort(), ['carrier', 'status', 'trackingRef'])
+  assert.deepEqual(o.parcel, { status: 'awaiting_search', trackingRef: 'RR123456789IL', carrier: 'דואר ישראל', recipientName: null }) // no recipient → null (historical rows)
+  assert.deepEqual(Object.keys(o.parcel).sort(), ['carrier', 'recipientName', 'status', 'trackingRef'])
   assert.equal(R.normalizeKitchenOrder({ ...row, type: 'pickup' }).parcel, null)            // pickup never shows a parcel
   assert.equal(R.normalizeKitchenOrder({ ...row, parcel_requests: [] }).parcel, null)
   assert.equal(R.normalizeKitchenOrder({ ...row, parcel_requests: [{}] }).parcel.status, 'invalid') // malformed stays visible
-  assert.match(R.KITCHEN_ORDER_SELECT, /parcel_requests\(status, tracking_ref, carrier\)/)
+  assert.match(R.KITCHEN_ORDER_SELECT, /parcel_requests\(status, tracking_ref, carrier, recipient_name\)/)
   assert.ok(!/close_reason|last_actor|tracking_key/.test(R.KITCHEN_ORDER_SELECT))
 })
 
@@ -689,6 +689,41 @@ await test('handoff is not delivery: carrier_verified only after the handoff; tr
   assert.deepEqual([...P.PARCEL_TRANSITIONS.handed_to_courier], ['carrier_verified', 'delivery_problem', 'returned_to_store'])
   assert.deepEqual([...P.PARCEL_TRANSITIONS.found], ['awaiting_search', 'handed_to_courier', 'cancelled'])   // never found → carrier_verified
   assert.deepEqual([...P.PARCEL_TRANSITIONS.carrier_verified], [])                                          // terminal
+})
+
+/* ─── Parcel recipient name in the kitchen (S4-PARCEL-30B) ─── */
+console.log('Parcel recipient name (kitchen)')
+const recipientRow = (recipient_name) => ({ id: id(61), daily_number: 4, type: 'delivery', status: 'received', created_at: '2026-10-18T08:00:00Z',
+  customer_name: 'שלמה נוימן', phone: '0501111111', payment_method: 'cash', total_price: 50, branch_id: ADUMIM, order_items: [], deliveries: [{ address: 'a' }],
+  parcel_requests: [{ status: 'awaiting_search', tracking_ref: 'RR123456789IL', carrier: null, ...(recipient_name === undefined ? {} : { recipient_name }) }] })
+await test('P/N/Q: read model maps recipient_name; historical rows (no value / column absent) → null; customerName untouched', () => {
+  const explicit = R.normalizeKitchenOrder(recipientRow('נריה נוימן'))
+  assert.equal(explicit.parcel.recipientName, 'נריה נוימן'); assert.equal(explicit.customerName, 'שלמה נוימן')
+  assert.equal(R.normalizeKitchenOrder(recipientRow(null)).parcel.recipientName, null)
+  assert.equal(R.normalizeKitchenOrder(recipientRow(undefined)).parcel.recipientName, null)
+  assert.equal(R.normalizeKitchenOrder(recipientRow('')).parcel.recipientName, null)
+  assert.ok(!/recipient/.test(R.KITCHEN_ORDER_SELECT.replace('recipient_name', '')), 'only parcel_requests.recipient_name is selected')
+})
+await test('O/P: ParcelPanel shows the effective name below the tracking number; fallback marked "(שם המזמין)"', () => {
+  const panel = DASH.slice(DASH.indexOf('function ParcelPanel('), DASH.indexOf('function csvDeliveryFields('))
+  const tracking = panel.indexOf('{p.trackingRef || \'—\'}'), name = panel.indexOf('📦 שם על החבילה:')
+  assert.ok(tracking > 0 && name > tracking, 'name line comes right after the tracking number')
+  assert.match(panel, /📦 שם על החבילה: \{p\.recipientName \?\? order\.customerName \?\? '—'\}/)
+  assert.match(panel, /\{!p\.recipientName && order\.customerName && <span[^>]*> \(שם המזמין\)<\/span>\}/)
+  assert.ok(!/dangerouslySetInnerHTML/.test(DASH), 'names rendered as React text (escaped)')
+})
+await test('same panel in the order card and the expanded view; customer name + phone row unchanged; no new action entry point (W)', () => {
+  assert.equal((DASH.match(/<ParcelPanel /g) || []).length, 2)
+  assert.equal((DASH.match(/<ParcelPanel [^>]*onAction=/g) || []).length, 1)
+  assert.match(DASH, /\{order\.customerName && <div style=\{\{ color: '#fff', fontSize: 13, fontWeight: 700 \}\}>👤 \{order\.customerName\}<\/div>\}/)
+  assert.equal((DASH.match(/onAction\(order\.id, /g) || []).length, 1)
+})
+await test('CSV export unchanged (no recipient); recipient never logged; parcel PATCH never writes recipient_name', () => {
+  const csv = DASH.slice(DASH.indexOf('function csvDeliveryFields('), DASH.indexOf('function formatTime('))
+  assert.ok(!/recipient/i.test(csv))
+  assert.ok(!/'שם על החבילה'|recipientName[^\n]*csv|csv[^\n]*recipient/i.test(DASH))
+  assert.ok(!/console\.[a-z]+\([^)]*recipient/i.test(DASH + src('lib/kitchenOrders.ts')))
+  assert.ok(!/recipient/i.test(src('app/api/kitchen/parcels/[orderId]/route.ts')))
 })
 
 console.log(`\nAll ${passed} kitchen-parcel checks passed.`)

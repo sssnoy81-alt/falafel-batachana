@@ -44,7 +44,8 @@ export const KITCHEN_ORDER_SELECT = [
   'branches(name)',
   'order_items(id, quantity, notes, menu_items(name_he))',
   'deliveries(address, notes, meal_quantity, meal_surcharge, delivery_fee)',
-  'parcel_requests(status, tracking_ref, carrier)', // GATE 03H — kitchen only (service role; RLS blocks anon)
+  // GATE 03H — kitchen only (service role; RLS blocks anon). recipient_name needs Migration 05 installed first.
+  'parcel_requests(status, tracking_ref, carrier, recipient_name)',
 ].join(', ')
 
 /* ─── Response contract (types live in lib/kitchenTypes.ts, shared with the kitchen UI) ─── */
@@ -110,6 +111,7 @@ export function normalizeKitchenOrder(raw: unknown): KitchenOrder | null {
           status: str(p.status) ?? 'invalid',
           trackingRef: str(p.tracking_ref) ?? '',
           carrier: str(p.carrier),
+          recipientName: str(p.recipient_name) || null, // NULL before Migration 05 / without a recipient ('' never shown)
         }
       : null,
   }

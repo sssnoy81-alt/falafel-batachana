@@ -71,7 +71,8 @@ export interface CreateOrderRequest {
    */
   googleAddress?: { status: 'verified'; lat: number; lng: number } | { status: 'route_only' } | { status: 'unavailable' }
   /**
-   * Optional parcel (GATE S4-A), delivery orders only. Wire: { trackingRef, carrier? }. Parsed: normalized values.
+   * Optional parcel (GATE S4-A), delivery orders only. Wire: { trackingRef, carrier?, recipientName? }. Parsed:
+   * normalized values; recipientName only when a value was entered (S4-PARCEL-30B). Never touches customerName.
    * Accepted only when the server-side flag PARCEL_CHECKOUT_ENABLED is on; otherwise the request is rejected.
    */
   parcel?: ParcelCheckoutInput
@@ -150,7 +151,7 @@ function uuidList(v: unknown): string[] | null {
 }
 
 // Parcel details are only accepted inside `parcel` (never as loose top-level fields or a raw RPC payload).
-const FORBIDDEN_PARCEL_KEYS = ['p_parcel', 'tracking_ref', 'trackingRef', 'tracking_key', 'carrier']
+const FORBIDDEN_PARCEL_KEYS = ['p_parcel', 'tracking_ref', 'trackingRef', 'tracking_key', 'carrier', 'recipient_name', 'recipientName']
 
 export interface ParseOrderOptions {
   /** Server-side PARCEL_CHECKOUT_ENABLED. Default false: any parcel in the request is rejected. */

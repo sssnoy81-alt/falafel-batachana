@@ -34,6 +34,7 @@ export interface KitchenParcel {
   status: string          // parcel_requests.status (independent of the food order status)
   trackingRef: string     // as entered by the customer — shown to authorized kitchen staff only
   carrier: string | null
+  recipientName: string | null // name printed on the parcel (Migration 05); null → identify by the order's customer name
 }
 
 /** One element of GET /api/kitchen/orders → { orders: KitchenOrder[] } */

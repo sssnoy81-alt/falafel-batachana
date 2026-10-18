@@ -176,7 +176,7 @@ await test('parcel UI is rendered only when parcelSectionVisible (flag on + deli
 })
 await test('switching to pickup / leaving delivery / flag off clears the parcel; unticking clears the inputs; success clears', () => {
   assert.match(PAGE, /useEffect\(\(\) => \{\n\s*if \(!parcelSectionVisible\) clearParcelForm\(\)\n\s*\}, \[parcelSectionVisible\]\)/)
-  assert.match(PAGE, /if \(!e\.target\.checked\) \{ setParcelTrackingRef\(''\); setParcelCarrier\(''\) \}/)
+  assert.match(PAGE, /if \(!e\.target\.checked\) \{ setParcelTrackingRef\(''\); setParcelCarrier\(''\); setParcelRecipientName\(''\) \}/)
   assert.match(PAGE, /setCart\(\[\]\); clearParcelForm\(\); setPlacingOrder\(false\)/)
 })
 await test('invalid parcel blocks submission and explains why; valid parcel does not change price / fee / payment UI', () => {
@@ -263,7 +263,7 @@ await test('tracking + carrier inputs stay near final checkout (order screen, af
 await test('checkout shows an entry-selected parcel as already attached (same checkbox = edit / remove control)', () => {
   assert.match(ORDER_SCREEN, /\{parcelSelected \? '📦 חבילה מצורפת למשלוח' : '📦 יש לי חבילה לצרף למשלוח'\}/)
   assert.match(ORDER_SCREEN, /להסרת החבילה מההזמנה — יש לבטל את הסימון/)
-  assert.match(ORDER_SCREEN, /if \(!e\.target\.checked\) \{ setParcelTrackingRef\(''\); setParcelCarrier\(''\) \}/)
+  assert.match(ORDER_SCREEN, /if \(!e\.target\.checked\) \{ setParcelTrackingRef\(''\); setParcelCarrier\(''\); setParcelRecipientName\(''\) \}/)
 })
 await test('S4-C2-B truncation fix intact: inputs maxLength 200, rule 4–40, "too long" blocks the order', () => {
   assert.equal(F.PARCEL_INPUT_MAX_LENGTH, 200)
@@ -379,6 +379,61 @@ await test('new-order resets still clear the cart (unchanged); parcel checkbox +
 await test('no pricing / Maale / HYP code in the new modules', () => {
   for (const f of ['lib/parcelCheckoutForm.ts', 'app/api/checkout/config/route.ts'])
     assert.ok(!/pricing|DELIVERY_FEES|maale|hyp|supabase/i.test(src(f).replace(/\/\/.*$/gm, '')), f)
+})
+
+/* ═══ 6. Optional parcel recipient name (S4-PARCEL-30B) ═══ */
+console.log('Parcel recipient name (checkout)')
+const RECIPIENT_BLOCK = PAGE.slice(PAGE.indexOf('{/* Optional parcel recipient (S4-PARCEL-30B)'), PAGE.indexOf('{parcelError && (parcelTrackingRef.length > 0'))
+await test('field is inside the parcel details, always shown with them (no extra checkbox), exact label + helper, RTL, no silent truncation', () => {
+  assert.ok(RECIPIENT_BLOCK.length > 0)
+  assert.ok(PAGE.indexOf('value={parcelCarrier}') < PAGE.indexOf('value={parcelRecipientName}'))
+  assert.ok(PAGE.indexOf('value={parcelRecipientName}') < PAGE.indexOf('👤 שם מלא'))
+  assert.match(RECIPIENT_BLOCK, /<label style=\{labelStyle\}>שם הנמען על החבילה<\/label>/)
+  assert.match(RECIPIENT_BLOCK, />אם השדה ריק, נשתמש בשם מזמין האוכל לזיהוי החבילה\.<\/div>/)
+  assert.match(RECIPIENT_BLOCK, /value=\{parcelRecipientName\} maxLength=\{PARCEL_INPUT_MAX_LENGTH\} dir="rtl" autoComplete="off"/)
+  assert.doesNotMatch(RECIPIENT_BLOCK, /type="checkbox"|required|\*<\/label>/)                      // optional, no extra checkbox
+  assert.equal(F.PARCEL_INPUT_MAX_LENGTH, 200)                                                     // 60 is enforced by validation
+  // shown exactly when the tracking / carrier inputs are shown (same parcelSelected block)
+  const detailsBlock = PAGE.slice(PAGE.indexOf('{parcelSelected && (\n              <div style={{ marginTop: 14 }}>'), PAGE.indexOf('👤 שם מלא'))
+  assert.ok(detailsBlock.includes('value={parcelTrackingRef}') && detailsBlock.includes('value={parcelRecipientName}'))
+})
+await test('A/B/C: empty, whitespace-only or untouched → no recipientName key in the wire (payload exactly as before)', () => {
+  for (const r of [undefined, '', '   ']) {
+    const w = F.buildParcelWire(st({ recipientName: r }))
+    assert.deepEqual(Object.keys(w).sort(), ['carrier', 'trackingRef'], JSON.stringify(r))
+    assert.equal(F.parcelFormError(st({ recipientName: r })), null)
+  }
+})
+await test('D/F: entered name → trimmed recipientName in the wire; G/J/L invalid → Hebrew message, order blocked, nothing sent', () => {
+  assert.deepEqual(F.buildParcelWire(st({ recipientName: '  נריה נוימן ' })), { trackingRef: REF, carrier: null, recipientName: 'נריה נוימן' })
+  for (const bad of ['נ', 'א'.repeat(61), 'נריה\u0007']) {
+    assert.equal(F.parcelFormError(st({ recipientName: bad })), F.PARCEL_FORM_MESSAGES.recipientInvalid, JSON.stringify(bad))
+    assert.equal(F.buildParcelWire(st({ recipientName: bad })), undefined)
+  }
+  assert.match(F.PARCEL_FORM_MESSAGES.recipientInvalid, /2–60/)
+  assert.match(PAGE, /&& orderTypeReady && parcelError === null && !placingOrder/)                 // invalid parcel blocks the order
+  assert.match(PAGE, /\{parcelError && \(parcelTrackingRef\.length > 0 \|\| parcelCarrier\.length > 0 \|\| parcelRecipientName\.length > 0\) && \(/)
+})
+await test('tracking errors still win over the recipient (tracking validation unchanged); M: pickup / flag off → no parcel at all', () => {
+  assert.equal(F.parcelFormError(st({ trackingRef: '', recipientName: 'נ' })), F.PARCEL_FORM_MESSAGES.trackingRequired)
+  assert.equal(F.parcelFormError(st({ trackingRef: 'AB', recipientName: 'נריה נוימן' })), F.PARCEL_FORM_MESSAGES.trackingInvalid)
+  assert.equal(F.buildParcelWire(st({ orderType: 'pickup', recipientName: 'נריה נוימן' })), undefined)
+  assert.equal(F.buildParcelWire(st({ enabled: false, recipientName: 'נריה נוימן' })), undefined)
+  assert.equal(F.buildParcelWire(st({ selected: false, recipientName: 'נריה נוימן' })), undefined)
+})
+await test('reset with the other parcel fields (untick, leave delivery / back to entry, success); kept on checkout ↔ menu', () => {
+  assert.deepEqual(F.EMPTY_PARCEL_FORM, { selected: false, trackingRef: '', carrier: '', recipientName: '' })
+  assert.match(PAGE, /function clearParcelForm\(\) \{[^}]*setParcelRecipientName\(EMPTY_PARCEL_FORM\.recipientName\)\n\s*\}/)
+  // only clearParcelForm, the untick handler and the input itself write it — no other navigation path touches it
+  assert.equal((PAGE.match(/setParcelRecipientName\(/g) || []).length, 3)
+  assert.match(PAGE, /<button onClick=\{\(\) => setScreen\('menu'\)\}/)                              // checkout → menu keeps parcel state
+  assert.match(PAGE, /recipientName: parcelRecipientName,\n\s*\}/)
+})
+await test('Q/R: customer name / pricing / payment code paths never reference the recipient', () => {
+  for (const line of PAGE.split('\n').filter(l => /customerName|computeDisplayTotals|deliveryFee|paymentOptions|resolvePaymentMethod|setPaymentMethod/.test(l)))
+    assert.ok(!/recipient/i.test(line), line.trim())
+  assert.ok(!/localStorage[^\n]*recipient|recipient[^\n]*localStorage/i.test(PAGE), 'never persisted')
+  assert.ok(!/console\.[a-z]+\([^)]*recipient/i.test(PAGE), 'never logged')
 })
 
 console.log(`\nAll ${passed} parcel-checkout UI checks passed.`)

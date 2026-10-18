@@ -22,6 +22,19 @@ installed and verified with a read-only query.
 | SEC-2 | `sec2_01_revoke_public_access.sql` | Revokes PUBLIC / anon / authenticated table privileges on `orders`, `order_items`, `push_subscriptions` | `sec2_01_verify.sql` |
 | 04 | `parcel_04_cancel_gate.sql` | Cancellation gate for `received` orders with a parcel (closes the "not_found → found" race) | `parcel_04_verify.sql` (12 PASS, 1 INFO) |
 
+### Prepared — NOT yet applied to Production
+
+| # | File | What it does | Checks |
+|---|---|---|---|
+| 05 | `parcel_05_recipient_name.sql` | Optional `parcel_requests.recipient_name` (NULL / 2–60 chars, trimmed, no control chars) + `create_order_with_parcel` accepts one more key, `recipient_name` (same signature, INVOKER, service_role-only). Additive only. | before: `parcel_05_production_preflight.sql` · after: `parcel_05_verify.sql` · `parcel_05_rollback.sql` = function-only, non-destructive, separate approval |
+
+**Order: install 05 BEFORE deploying the application that uses `recipient_name`** (the pre-05 wrapper rejects unknown
+parcel keys and the new kitchen query selects the column). Primary rollback = application rollback; the schema stays.
+After 05, these historical checks pin the pre-05 wrapper fingerprint (`7d491c09…` / 2474) and will FAIL by design for that
+row — use `parcel_05_verify.sql` instead: `parcel_03_production_preflight.sql`, `parcel_03_verify.sql`,
+`parcel_04_production_preflight.sql`, `parcel_04_verify.sql` (and the S4-C0-A audit query, which also flags the new
+constraint as "unexpected").
+
 The security key migration (G2–G5: new `sb_secret_` / `sb_publishable_` keys, legacy JWT keys disabled, legacy HS256
 signing key revoked) was done in the Supabase and Vercel dashboards. It has no SQL file.
 
