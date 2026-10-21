@@ -5,7 +5,7 @@ import {
   ACTIVE_DELIVERY_AREAS, DELIVERY_FEE_RANGE, DELIVERY_FIELD_LIMITS, DELIVERY_MEAL_SURCHARGE, MAX_CUSTOMER_NAME, MAX_ITEM_NOTES, MAX_LINE_QUANTITY, PAYMENT_METHOD_LABELS, PHONE_REGEX, getDeliveryFeeForArea,
   SET_ADDON_FREE, SET_ADDONS_PAID, SET_DRINK_EXTRA, SET_DRINKS_FREE, SET_DRINKS_PAID,
   isDealCategory, isDeliveryBranch, isDrinkCategory, isOrderType, isPaymentMethod, isSidesCategory, isToppingAllowedForItem,
-  allowedPaymentMethods, normalizePhone, resolvePaymentMethod, setAddonExtra, setDrinkExtra,
+  allowedPaymentMethods, normalizePhone, requiresVerifiedHouseAddress, resolvePaymentMethod, setAddonExtra, setDrinkExtra,
   type OrderType, type PaymentMethod,
 } from '@/lib/orderConfig'
 import {
@@ -18,8 +18,8 @@ import DeliveryAddressPicker from './DeliveryAddressPicker'
 import Link from 'next/link'
 import LegalFooter from '../_components/LegalFooter'
 import {
-  isAddressSelectionValid, isDeliveryAddressReady, requiresPreciseLocation, ROUTE_ONLY_MESSAGES, selectionHouseNumber, withCity,
-  type AddressPickerState,
+  ADDRESS_REJECTION_MESSAGES, isAddressSelectionValid, isDeliveryAddressReady, requiresPreciseLocation, ROUTE_ONLY_MESSAGES, selectionHouseNumber, withCity,
+  type AddressPickerState, type StrictAddressReason,
 } from '@/lib/deliveryAddressSelection'
 import {
   classifyGeolocationError, deliveryLocationWireFields, evaluateDevicePosition,
@@ -91,6 +91,9 @@ const ORDER_ERROR_MESSAGES: Partial<Record<OrderErrorCode, string>> = {
   ...PARCEL_ORDER_ERROR_MESSAGES, // parcel_checkout_disabled / invalid_parcel / parcel_duplicate (GATE S4-B)
 }
 const GENERIC_ORDER_ERROR = 'לא ניתן לשלוח את ההזמנה כרגע. נסו שוב בעוד רגע או התקשרו לסניף'
+// address_not_verified details that get their own message (S4-INTEGRATIONS-02A); any other detail keeps the generic one.
+const SPECIFIC_ADDRESS_DETAILS: readonly string[] =
+  ['settlement_conflict', 'house_address_required', 'verified_address_required', 'verification_unavailable'] satisfies (StrictAddressReason | 'settlement_conflict')[]
 // Destination-based delivery fee (lib/orderConfig DELIVERY_FEES_BY_AREA); range shown until an area is chosen.
 const DELIVERY_FEE_LABEL = `דמי משלוח ₪${DELIVERY_FEE_RANGE.min}–₪${DELIVERY_FEE_RANGE.max} לפי יישוב`
 const DELIVERY_PRICE_NOTE = `מחירי המשלוח למנות כוללים תוספת של ${DELIVERY_MEAL_SURCHARGE} ₪ למנה.`
@@ -384,9 +387,11 @@ export default function Home() {
   const cartDisplay = computeDisplayTotals(pricingInputs, displayType, deliveryForm.city)   // what the customer sees (fee by area)
   const cartCount = cart.reduce((s, c) => s + c.quantity, 0)
 
+  // נופי פרת / מצפה יריחו: only a Google-verified house address (a typed address cannot be priced safely there).
+  const verifiedAddressRequired = requiresVerifiedHouseAddress(deliveryForm.city)
   const deliveryFormValid = !!deliveryForm.city && ACTIVE_DELIVERY_AREAS.includes(deliveryForm.city)
     && deliveryForm.street.trim().length > 0 && deliveryForm.houseNumber.trim().length > 0
-    && (addressMode === 'manual' || isDeliveryAddressReady({ ...addressPicker, city: deliveryForm.city }, deviceLocation !== null))
+    && (addressMode === 'manual' ? !verifiedAddressRequired : isDeliveryAddressReady({ ...addressPicker, city: deliveryForm.city }, deviceLocation !== null))
   // Route-only Google selection: the textual address is complete but trusted device GPS is still required.
   const routeOnlyAddress = addressMode === 'google' && requiresPreciseLocation({ ...addressPicker, city: deliveryForm.city })
   const routeOnlyNeedsLocation = routeOnlyAddress && deviceLocation === null
@@ -575,9 +580,12 @@ export default function Home() {
         // The server is authoritative: if it reports parcel checkout as off, hide the section (the parcel is cleared)
         // so the customer can send the same order without a parcel.
         if (code === 'parcel_checkout_disabled') setParcelCheckoutEnabled(false)
-        setOrderError(code === 'address_not_verified' && json?.detail === 'precise_location_required'
+        const detail = typeof json?.detail === 'string' ? json.detail : ''
+        setOrderError(code === 'address_not_verified' && detail === 'precise_location_required'
           ? ROUTE_ONLY_MESSAGES.needsLocation
-          : (code && ORDER_ERROR_MESSAGES[code]) || GENERIC_ORDER_ERROR)
+          : code === 'address_not_verified' && SPECIFIC_ADDRESS_DETAILS.includes(detail)
+            ? ADDRESS_REJECTION_MESSAGES[detail as keyof typeof ADDRESS_REJECTION_MESSAGES]
+            : (code && ORDER_ERROR_MESSAGES[code]) || GENERIC_ORDER_ERROR)
         setPlacingOrder(false); return
       }
       result = json as CreateOrderResponse
@@ -949,7 +957,10 @@ export default function Home() {
                 onChange={handleAddressPickerChange}
                 onUnavailable={switchToManualAddress}
                 colors={C} labelStyle={labelStyle} inputStyle={inputStyle} />
-            ) : (
+            ) : (<>
+              {verifiedAddressRequired && (
+                <div style={{ fontSize: 14, color: C.gold, fontWeight: 700, marginBottom: 10, lineHeight: 1.5 }}>{ADDRESS_REJECTION_MESSAGES.verification_unavailable}</div>
+              )}
               <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10, marginBottom: 12 }}>
                 <div>
                   <label style={labelStyle}>רחוב *</label>
@@ -962,7 +973,7 @@ export default function Home() {
                     onChange={e => setDeliveryForm(f => ({ ...f, houseNumber: e.target.value }))} style={inputStyle(deliveryForm.houseNumber.trim().length > 0)} />
                 </div>
               </div>
-            )}
+            </>)}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 12 }}>
               {([['entrance', 'כניסה'], ['floor', 'קומה'], ['apartment', 'דירה']] as const).map(([k, label]) => (
                 <div key={k}>

@@ -30,7 +30,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ✓', na
 
 const KEY = 'test-key-not-real'
 const TOKEN = '123e4567-e89b-42d3-a456-426614174000'
-const MA = 'מעלה אדומים', MY = 'מצפה יריחו', ALON = 'אלון', KFAR = 'כפר אדומים' // MY: temporarily unavailable (08D14)
+const MA = 'מעלה אדומים', MY = 'מצפה יריחו', ALON = 'אלון', KFAR = 'כפר אדומים' // MY: unavailable (02D owner decision)
 const jsonRes = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body })
 
 console.log('Google Places POC client')
@@ -95,7 +95,7 @@ await test('P6. details mapping: street / house number / locality / coordinates 
   }
   const d = gp.mapPlaceDetails(body, MA)
   assert.deepEqual(d, { placeId: 'A1', formattedAddress: `הגעש 6, ${MA}, ישראל`, lat: 31.77, lng: 35.3, street: 'הגעש', houseNumber: '6',
-    locality: MA, types: ['street_address'], cityMatchesSelectedArea: true })
+    locality: MA, subLocalities: [], types: ['street_address'], cityMatchesSelectedArea: true })
   assert.equal(gp.mapPlaceDetails(body, MY).cityMatchesSelectedArea, false)
   const noLoc = gp.mapPlaceDetails({ id: 'A2' }, MA)
   assert.deepEqual([noLoc.lat, noLoc.lng, noLoc.locality, noLoc.cityMatchesSelectedArea], [null, null, null, false])
@@ -182,7 +182,7 @@ await test("G2. valid Ma'ale Adumim street_address accepted; typed street/house 
   assert.deepEqual(geo(d), [31.773612, 35.298346, 'geocoder', 'street'])
 })
 
-await test('G3. valid Kfar Adumim street_address accepted; Mitzpe Yericho (unavailable) rejected before any Google lookup', async () => {
+await test('G3. valid Kfar Adumim street_address accepted (₪35); Mitzpe Yericho (unavailable) rejected before any Google lookup', async () => {
   const r = await submit(orderBody(KFAR, { google_place_id: 'PLACE_2' }), async () => gPlace(KFAR, { placeId: 'PLACE_2', street: 'היהלום', houseNumber: '3', lat: 31.82, lng: 35.36 }))
   const d = r.rpcArgs.p_delivery
   assert.deepEqual([d.street, d.house_number, d.geo_precision, d.delivery_fee], ['היהלום', '3', 'street', 35])
@@ -229,14 +229,18 @@ await test('G9. valid Google address alone (no device GPS) allows the order', as
   assert.ok(r.created); assert.equal(r.rpcArgs.p_delivery.geo_source, 'geocoder')
 })
 
-await test('G10–11. trusted device GPS overrides navigation coordinates only; textual Google address unchanged', async () => {
+await test('G10–11. (02A) device GPS never replaces verified Google house coordinates; used only without them', async () => {
   const gps = { location_lat: 31.7801, location_lng: 35.3102, location_accuracy: 12, location_confirmed: true }
+  // A verified Google address lies in the SELECTED settlement; unchecked GPS (possibly elsewhere) must not override it.
   const r = await submit(orderBody(MA, { google_place_id: 'PLACE_1', ...gps }), async () => gPlace(MA))
   const d = r.rpcArgs.p_delivery
-  assert.deepEqual(geo(d), [31.7801, 35.3102, 'manual', 'street'])
+  assert.deepEqual(geo(d), [31.773612, 35.298346, 'geocoder', 'street'])
   assert.deepEqual([d.street, d.house_number, d.city], ['הגעש', '6', MA]); assert.ok(d.address.includes('הגעש 6'))
   const poor = await submit(orderBody(MA, { google_place_id: 'PLACE_1', ...gps, location_accuracy: 400 }), async () => gPlace(MA))
   assert.deepEqual(geo(poor.rpcArgs.p_delivery), [31.773612, 35.298346, 'geocoder', 'street'], 'untrusted GPS → Google coordinates')
+  // No verified house coordinates (legacy typed address, existing area): trusted GPS is still used, as before.
+  const legacy = await submit(orderBody(MA, gps), async () => null)
+  assert.deepEqual(geo(legacy.rpcArgs.p_delivery), [31.7801, 35.3102, 'manual', 'street']); assert.equal(legacy.calls.geocode, 0)
 })
 
 await test('G12. Mapbox never called after a Google selection (verified, unavailable, timeout); bogus place rejected', async () => {

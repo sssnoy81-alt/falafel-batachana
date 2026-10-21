@@ -4,8 +4,8 @@
 // header (never in a URL), and never logged or returned. Raw Google responses are mapped here and only the
 // fields the POC displays are returned.
 
-import { DELIVERY_AREAS, DELIVERY_FIELD_LIMITS } from './orderConfig'
-import { isValidCoordinatePair, localityMatches } from './geocoding'
+import { DELIVERY_AREAS, DELIVERY_FIELD_LIMITS, getDeliveryFeeForArea } from './orderConfig'
+import { deliveryAreasNamed, isValidCoordinatePair, localityMatches, NESTED_DELIVERY_AREAS } from './geocoding'
 
 type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body?: string; cache: 'no-store'; signal?: AbortSignal }) =>
   Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>
@@ -123,9 +123,14 @@ export interface PlaceDetailsDiagnostic {
   street: string | null
   houseNumber: string | null
   locality: string | null
+  /** Neighbourhood / sub-locality names Google reports for the place (e.g. "נופי פרת" under locality "כפר אדומים"). */
+  subLocalities?: string[]
   types: string[]
   cityMatchesSelectedArea: boolean
 }
+
+// Address-component types read as sub-localities (settlement-level evidence below the locality).
+const SUB_LOCALITY_TYPES = ['neighborhood', 'sublocality', 'sublocality_level_1']
 
 /** sessionToken: the UI's autocomplete session (ends it). Order-time re-verification has no session. */
 export function detailsUrl(placeId: string, sessionToken?: string): string {
@@ -144,6 +149,9 @@ export function mapPlaceDetails(body: unknown, selectedCity: string): PlaceDetai
   const loc = isObj(body.location) ? body.location : {}
   const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
   const locality = find('locality')
+  const subLocalities = comps
+    .filter(c => Array.isArray(c.types) && c.types.some(t => SUB_LOCALITY_TYPES.includes(t as string)) && typeof c.longText === 'string')
+    .map(c => c.longText as string)
   return {
     placeId: body.id,
     formattedAddress: typeof body.formattedAddress === 'string' ? body.formattedAddress : null,
@@ -152,6 +160,7 @@ export function mapPlaceDetails(body: unknown, selectedCity: string): PlaceDetai
     street: find('route'),
     houseNumber: find('street_number'),
     locality,
+    subLocalities,
     types: Array.isArray(body.types) ? body.types.filter((t): t is string => typeof t === 'string') : [],
     cityMatchesSelectedArea: localityMatches(selectedCity, locality),
   }
@@ -179,7 +188,34 @@ export async function getPlaceDetails(
 
 export const isValidPlaceId = (v: unknown): v is string => typeof v === 'string' && PLACE_ID.test(v)
 
-export type PlaceVerificationReason = 'city_mismatch' | 'missing_street' | 'missing_house_number' | 'invalid_coordinates' | 'invalid_address'
+export type PlaceVerificationReason =
+  | 'city_mismatch' | 'settlement_conflict' | 'missing_street' | 'missing_house_number' | 'invalid_coordinates' | 'invalid_address'
+
+/** Both areas are ACTIVE with the same fee, so a name difference between them cannot change the price. A missing
+ *  fee or an unavailable area (whose table entry is only a future fee) is never treated as equal. */
+const sameActiveFee = (a: string, b: string): boolean => {
+  const fa = getDeliveryFeeForArea(a), fb = getDeliveryFeeForArea(b)
+  return fa !== null && fb !== null && fa === fb
+}
+
+/**
+ * Does Google place the address in the SELECTED delivery area? Exact names / aliases only (no fuzzy matching):
+ *  - a sub-locality naming a DIFFERENT delivery area is a contradiction → settlement_conflict
+ *    (e.g. "כפר אדומים" selected, Google neighbourhood "נופי פרת": the ₪35 fee would be wrong) — unless both areas
+ *    are active with the same fee (e.g. מעלה אדומים / מישור אדומים, ₪25): then only the locality rule below decides;
+ *  - otherwise the locality must be the selected area, or — for a nested area only — its parent locality WITH the
+ *    selected area named explicitly as a sub-locality. A parent locality alone never proves the nested area.
+ */
+export function placeAreaCheck(d: Pick<PlaceDetailsDiagnostic, 'locality' | 'subLocalities'>, selectedCity: string):
+  { ok: true } | { ok: false; reason: 'city_mismatch' | 'settlement_conflict' } {
+  if (!DELIVERY_AREAS.includes(selectedCity)) return { ok: false, reason: 'city_mismatch' }
+  const subAreas = (d.subLocalities ?? []).flatMap(n => deliveryAreasNamed(n))
+  if (subAreas.some(a => a !== selectedCity && !sameActiveFee(a, selectedCity))) return { ok: false, reason: 'settlement_conflict' }
+  if (localityMatches(selectedCity, d.locality)) return { ok: true }
+  const parent = NESTED_DELIVERY_AREAS[selectedCity]
+  if (parent && localityMatches(parent, d.locality) && subAreas.includes(selectedCity)) return { ok: true }
+  return { ok: false, reason: 'city_mismatch' }
+}
 
 export interface VerifiedDeliveryPlace {
   placeId: string
@@ -196,12 +232,13 @@ const round6 = (n: number): number => Math.round(n * 1e6) / 1e6
 
 /**
  * Server-authoritative acceptance of a Google place as a delivery address (Maale needs street + house number +
- * coordinates). Requires: locality matches the selected area (exact aliases only), street, house number, valid
- * Israel coordinates. Result types are informational — a locality-only result fails on missing street / house.
+ * coordinates). Requires: the place is in the selected area (placeAreaCheck: exact aliases only), street, house
+ * number, valid Israel coordinates. Result types are informational — a locality-only result fails on missing street / house.
  */
 export function verifyDeliveryPlace(d: PlaceDetailsDiagnostic, selectedCity: string):
   { ok: true; value: VerifiedDeliveryPlace } | { ok: false; reason: PlaceVerificationReason } {
-  if (!DELIVERY_AREAS.includes(selectedCity) || !localityMatches(selectedCity, d.locality)) return { ok: false, reason: 'city_mismatch' }
+  const area = placeAreaCheck(d, selectedCity)
+  if (!area.ok) return area
   const street = (d.street ?? '').trim()
   const houseNumber = (d.houseNumber ?? '').trim()
   if (!street) return { ok: false, reason: 'missing_street' }

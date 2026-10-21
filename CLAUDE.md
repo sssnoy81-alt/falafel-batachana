@@ -39,12 +39,19 @@ A Hebrew-first (RTL) online ordering system for a falafel business with multiple
     **No discount** (the old 5% app discount was removed).
   - **delivery pricing**: +₪4 per qualifying meal unit (category allowlist; drinks never surcharged) + a
     **destination-based delivery fee** per order, from the single table `DELIVERY_FEES_BY_AREA` in `lib/orderConfig.ts`:
-    מעלה אדומים ₪25 · מישור אדומים ₪25 · כפר אדומים ₪35 · אלון ₪40 (Maale Express doc, 3 Oct 2026).
-    **נופי פרת and מצפה יריחו are temporarily unavailable** (no agreed Maale price): hidden from the selector
-    (`ACTIVE_DELIVERY_AREAS`) and rejected by the server for new orders (`delivery_area_unavailable`); they stay in
-    `DELIVERY_AREAS` for history / aliases / reactivation.
+    מעלה אדומים ₪25 · מישור אדומים ₪25 · כפר אדומים ₪35 · אלון ₪40 (Maale Express doc, 21 Oct 2026).
+    **נופי פרת (₪40) and מצפה יריחו (₪45) are unavailable** (owner decision, S4-INTEGRATIONS-02D) until reliable location
+    + pricing validation exists: listed in `UNAVAILABLE_DELIVERY_AREAS` (hidden from the selector, server rejects with
+    `delivery_area_unavailable`); their agreed fees stay in `DELIVERY_FEES_BY_AREA` for reactivation. When re-enabled
+    they require a Google-verified house address (`VERIFIED_ADDRESS_REQUIRED_AREAS`): no typed-only address, no
+    route-only + GPS, no "Google unavailable" fallback → 400 `address_not_verified` with a clear reason.
+    **Known open risk:** Google lists Nofei Prat streets as route-only under locality "כפר אדומים" (no neighbourhood), so a
+    Nofei Prat address can still be ordered as כפר אדומים at ₪35 (route-only + GPS, or typed). Gating Nofei Prat does not fix this.
+    Google place ↔ settlement: exact aliases only; a sub-locality naming another area → `settlement_conflict`; נופי פרת
+    under locality כפר אדומים only when Google names נופי פרת explicitly. Verified Google coordinates are never replaced
+    by device GPS. Agreement with Maale's own zone for an address is provider-side (no boundaries configured here).
     Customer-facing prices for delivery are shown **inclusive** of the +₪4; the area's fee is a separate line
-    (shown per area in the locality dropdown; "₪25–₪40 לפי יישוב" before an area is chosen).
+    (shown per area in the locality dropdown; "₪25–₪45 לפי יישוב" before an area is chosen).
     **Delivery payment = cash or credit** (no Cibus / Bit; pickup keeps all four). Cash: the courier collects food +
     delivery fee from the customer and pays the restaurant for the food. Credit: paid to Falafel in advance, the
     courier collects nothing (future HYP). Payment never changes the price.

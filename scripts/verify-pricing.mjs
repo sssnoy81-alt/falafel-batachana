@@ -267,13 +267,13 @@ test('skips empty optional parts', () => {
   assert.equal(formatDeliveryAddress({ city: 'אלון', street: 'הגפן', houseNumber: '5' }), 'אלון, הגפן 5')
 })
 
-console.log('Destination delivery fees (08D14 — Maale doc 3 Oct 2026)')
+console.log('Destination delivery fees (02D — Maale doc 21 Oct 2026, owner gating)')
 const FEES = { 'מעלה אדומים': 25, 'מישור אדומים': 25, 'כפר אדומים': 35, 'אלון': 40 }
+const FUTURE_FEES = { 'נופי פרת': 40, 'מצפה יריחו': 45 } // agreed, kept configured, not orderable yet
 const UNAVAILABLE = ['נופי פרת', 'מצפה יריחו']
 const deliveryReq = (city, over = {}) => baseReq({ type: 'delivery', paymentMethod: 'credit', delivery: { ...address, city }, ...over })
 
-test('DP1–4. active areas → destination fee: מעלה אדומים 25 · מישור אדומים 25 · כפר אדומים 35 · אלון 40 (config, pricing, stored)', () => {
-  assert.deepEqual({ ...cfg.DELIVERY_FEES_BY_AREA }, FEES)
+test('DP1–4. active areas → destination fee 25 · 25 · 35 · 40 (config, pricing, stored)', () => {
   for (const [city, fee] of Object.entries(FEES)) {
     assert.equal(cfg.getDeliveryFeeForArea(city), fee, city)
     assert.equal(P.computeOrderTotals([line(CAT.falafel, 20, 1)], 'delivery', city).deliveryFee, fee, city)
@@ -284,14 +284,17 @@ test('DP1–4. active areas → destination fee: מעלה אדומים 25 · מ�
   for (const old of [20]) assert.ok(!Object.values(cfg.DELIVERY_FEES_BY_AREA).includes(old), 'old ₪20 fee removed')
 })
 
-test('DP5–6. נופי פרת / מצפה יריחו temporarily unavailable: no fee, rejected by the server, config kept', () => {
+test('DP5–6. נופי פרת / מצפה יריחו unavailable: future fees 40 / 45 kept in the table, no orderable fee, server rejects', () => {
+  assert.deepEqual({ ...cfg.DELIVERY_FEES_BY_AREA }, { ...FEES, ...FUTURE_FEES }, 'future fees are not deleted')
   assert.deepEqual([...cfg.UNAVAILABLE_DELIVERY_AREAS], UNAVAILABLE)
   for (const city of UNAVAILABLE) {
     assert.ok(cfg.DELIVERY_AREAS.includes(city), `${city} kept in the full list (aliases / history / reactivation)`)
     assert.ok(!cfg.isActiveDeliveryArea(city)); assert.equal(cfg.getDeliveryFeeForArea(city), null)
     assert.equal(build(deliveryReq(city)).code, 'delivery_area_unavailable', city)
     assert.throws(() => P.computeOrderTotals([line(CAT.falafel, 20, 1)], 'delivery', city), /unknown_delivery_area/)
+    assert.ok(cfg.requiresVerifiedHouseAddress(city), `${city}: strict address rule ready for reactivation`)
   }
+  for (const city of ['מעלה אדומים', 'מישור אדומים', 'כפר אדומים', 'אלון', '', null, 'ירושלים']) assert.equal(cfg.requiresVerifiedHouseAddress(city), false, String(city))
 })
 
 test('DP7. customer selector source contains exactly the 4 active areas (selector order)', () => {
@@ -304,6 +307,7 @@ test('DP7. customer selector source contains exactly the 4 active areas (selecto
 
 test('DP8. malicious / old client requests to a hidden or unknown area are rejected', () => {
   assert.equal(build(deliveryReq('מצפה יריחו', { paymentMethod: 'cash' })).code, 'delivery_area_unavailable')
+  assert.equal(build(deliveryReq('נופי פרת', { paymentMethod: 'cash' })).code, 'delivery_area_unavailable')
   assert.equal(build(deliveryReq('ירושלים')).code, 'invalid_delivery_area')
   for (const city of ['ירושלים', '', null, undefined, 'toString', 'constructor', ' מעלה אדומים']) {
     assert.equal(cfg.getDeliveryFeeForArea(city), null, String(city))
@@ -312,7 +316,7 @@ test('DP8. malicious / old client requests to a hidden or unknown area are rejec
   assert.deepEqual(P.computeDisplayTotals([line(CAT.falafel, 20, 1)], 'delivery', ''), { itemsTotal: 24, deliveryFee: null, total: null })
 })
 
-test('DP9. fee range shown before an area is chosen = ₪25–₪40', () => {
+test('DP9. fee range shown before an area is chosen = ₪25–₪40 (active areas only)', () => {
   assert.deepEqual({ ...cfg.DELIVERY_FEE_RANGE }, { min: 25, max: 40 })
   const page = readFileSync(join(LIB, '..', 'app', 'order', 'page.tsx'), 'utf8')
   assert.ok(page.includes('דמי משלוח ₪${DELIVERY_FEE_RANGE.min}–₪${DELIVERY_FEE_RANGE.max} לפי יישוב'))

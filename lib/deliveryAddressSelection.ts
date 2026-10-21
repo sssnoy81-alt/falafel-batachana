@@ -74,8 +74,15 @@ export const requiresPreciseLocation = (state: AddressPickerState): boolean => s
 export const isDeliveryAddressReady = (state: AddressPickerState, hasTrustedLocation: boolean): boolean =>
   isAddressSelectionValid(state) && (!requiresPreciseLocation(state) || hasTrustedLocation)
 
-export const ADDRESS_REJECTION_MESSAGES: Readonly<Record<PlaceVerificationReason | 'place_not_found' | 'unknown', string>> = {
+/** Server reasons beyond PlaceVerificationReason: for areas that require a Google-verified house address. */
+export type StrictAddressReason = 'house_address_required' | 'verified_address_required' | 'verification_unavailable'
+
+export const ADDRESS_REJECTION_MESSAGES: Readonly<Record<PlaceVerificationReason | StrictAddressReason | 'place_not_found' | 'unknown', string>> = {
   city_mismatch: 'הכתובת שנבחרה אינה תואמת ליישוב המשלוח',
+  settlement_conflict: 'הכתובת שנבחרה שייכת ליישוב אחר ברשימה. נא לבחור את היישוב שבו נמצאת הכתובת',
+  house_address_required: 'ליישוב זה נדרשת כתובת מלאה עם מספר בית מהרשימה. נסו לחפש עם מספר הבית',
+  verified_address_required: 'ליישוב זה יש לבחור כתובת מאומתת מהרשימה',
+  verification_unavailable: 'לא ניתן לאמת כרגע כתובות ביישוב זה. נסו שוב בעוד רגע או התקשרו לסניף',
   missing_street: 'יש לבחור כתובת מלאה עם שם רחוב',
   missing_house_number: 'יש לבחור כתובת עם מספר בית',
   invalid_coordinates: 'לא ניתן לאמת את מיקום הכתובת. נסו כתובת אחרת',

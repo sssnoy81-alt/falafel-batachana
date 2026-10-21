@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { checkSameOriginJson } from '@/lib/kitchenAuth'
 import { classifyDeliveryPlace, getPlaceDetails, parseDetailsInput, placesApiKey, PlacesError } from '@/lib/googlePlaces'
+import { requiresVerifiedHouseAddress } from '@/lib/orderConfig'
 
 // POST /api/places/details — verifies the suggestion the customer selected (ends the autocomplete session).
 // Returns only what checkout shows (street, house number, area, formatted address, kind) — never coordinates.
@@ -23,6 +24,8 @@ export async function POST(req: NextRequest) {
     const v = classifyDeliveryPlace(await getPlaceDetails(q, apiKey, fetch), q.city)
     if (!v.ok) return json({ error: 'address_not_verified', reason: v.reason }, 422)
     if (v.kind === 'route') {
+      // Areas that need a verified house address never take the route-only + GPS path (POST /api/orders agrees).
+      if (requiresVerifiedHouseAddress(q.city)) return json({ error: 'address_not_verified', reason: 'house_address_required' }, 422)
       const { placeId, city, street, formattedAddress } = v.value
       return json({ place: { kind: 'route', placeId, city, street, houseNumber: '', formattedAddress } })
     }

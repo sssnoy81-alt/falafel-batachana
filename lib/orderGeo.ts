@@ -24,8 +24,11 @@ export const defaultOrderGeoDeps = (): OrderGeoDeps => ({
 /**
  * Delivery only; pickup (or a build without p_delivery) is returned untouched and the geocoder is never called.
  * Coordinate priority (the textual address is never changed here):
- *  1) trusted customer-confirmed device GPS (≤ 100 m) — navigation coordinates only
- *  2) server-verified Google place (resolveGoogleDeliveryAddress) → geocoder / street with Google's coordinates
+ *  1) server-verified Google place (resolveGoogleDeliveryAddress) → geocoder / street with Google's coordinates.
+ *     These were verified to lie in the SELECTED settlement, so device GPS (never checked against the settlement)
+ *     must not silently replace them (S4-INTEGRATIONS-02A).
+ *  2) trusted customer-confirmed device GPS (≤ 100 m) — only when there are no verified house coordinates
+ *     (route-only place, Google unavailable, legacy typed address)
  *  3) Google place selected but not verifiable (Google unavailable), or a route-only place without trusted GPS
  *     (rejected earlier by resolveGoogleDeliveryAddress; defensive) → explicit unresolved, Mapbox NOT called,
  *     the route centre is never used
@@ -36,15 +39,15 @@ export async function attachDeliveryGeo(
 ): Promise<BuiltOrder> {
   if (order.type !== 'delivery' || !order.delivery || !built.rpcArgs.p_delivery) return built
 
+  if (order.googleAddress?.status === 'verified') {
+    const { lat, lng } = order.googleAddress
+    return applyDeliveryGeo(built, { delivery_lat: lat, delivery_lng: lng, geo_source: 'geocoder', geo_precision: 'street' })
+  }
+
   if (order.deliveryLocation) {
     if (isTrustedDeviceLocation(order.deliveryLocation))
       return applyDeliveryGeo(built, deviceLocationGeoFields(order.deliveryLocation))
     deps.log('location_low_accuracy') // code only — never coordinates or accuracy
-  }
-
-  if (order.googleAddress?.status === 'verified') {
-    const { lat, lng } = order.googleAddress
-    return applyDeliveryGeo(built, { delivery_lat: lat, delivery_lng: lng, geo_source: 'geocoder', geo_precision: 'street' })
   }
   if (order.googleAddress?.status === 'route_only') return applyDeliveryGeo(built, UNRESOLVED_DELIVERY_GEO) // no route centre
   if (order.googlePlaceId) return applyDeliveryGeo(built, UNRESOLVED_DELIVERY_GEO) // Google chosen: never Mapbox

@@ -143,6 +143,17 @@ export function localityMatches(selectedCity: string, providerLocality: string |
 /** Areas without an alias entry (should be empty; checked by tests). */
 export const areasWithoutAliases = (): string[] => DELIVERY_AREAS.filter(a => !(a in LOCALITY_ALIASES))
 
+/** Delivery areas a provider place name denotes (exact name / alias match only); [] for any other name. */
+export const deliveryAreasNamed = (name: string | null | undefined): string[] =>
+  DELIVERY_AREAS.filter(a => localityMatches(a, name))
+
+// Delivery areas that are a neighbourhood of another delivery area, so a provider may report the PARENT as the
+// locality (e.g. Google: locality "כפר אדומים", neighbourhood "נופי פרת"). A parent locality alone never proves the
+// child area — the child must be named explicitly in the place's sub-locality components (lib/googlePlaces).
+export const NESTED_DELIVERY_AREAS: Readonly<Record<string, string>> = Object.freeze({
+  'נופי פרת': 'כפר אדומים',
+})
+
 /* ─── Query ─── */
 
 export interface GeocodeAddressInput {

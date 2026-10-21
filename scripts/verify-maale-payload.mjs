@@ -170,9 +170,13 @@ test('08D14 · 25. Maale payment method comes only from orders.payment_method (n
   assert.equal(row.order.payment_method, 'cash'); assert.ok(!('paymentMethod' in row.order))
 })
 
-test('08D14. unavailable destinations (נופי פרת / מצפה יריחו) fail closed — no agreed Maale price', () => {
-  for (const city of ['נופי פרת', 'מצפה יריחו']) assert.ok(errorsOf(withDelivery({ city })).includes('invalid_city'), city)
-  for (const city of ['מעלה אדומים', 'מישור אדומים', 'כפר אדומים', 'אלון']) assert.ok(M.buildMaaleOrderPayload(withDelivery({ city })).ok, city)
+test('02D. the four active destinations build a payload (no fee in it); unavailable / unknown areas fail closed', () => {
+  for (const city of ['מעלה אדומים', 'מישור אדומים', 'כפר אדומים', 'אלון']) {
+    const r = M.buildMaaleOrderPayload(withDelivery({ city }))
+    assert.ok(r.ok, city); assert.equal(r.payload.customer_address, `הגעש 6, ${city}`) // settlement name ends the address
+    assert.ok(!('delivery_fee' in r.payload))
+  }
+  for (const city of ['נופי פרת', 'מצפה יריחו', 'ירושלים', '', null]) assert.ok(errorsOf(withDelivery({ city })).includes('invalid_city'), String(city))
 })
 
 test('23–24. verified Google (geocoder/street) and trusted GPS (manual/street) coordinates accepted', () => {

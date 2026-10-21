@@ -13,11 +13,15 @@
 //  - Google unavailable  → typed address kept (already validated text), googleAddress = { unavailable }:
 //                          the food order is not blocked by a Google outage; coordinates stay unresolved and
 //                          Mapbox is NOT called (the customer did pick a Google address).
+// Areas in VERIFIED_ADDRESS_REQUIRED_AREAS (S4-INTEGRATIONS-02A) accept ONLY the "verified" outcome: no Google place
+// (typed address), route only, and Google unavailable are all rejected (400 address_not_verified) — fail closed
+// rather than price an address whose settlement was not confirmed.
 // Logs short codes only.
 
 import { classifyDeliveryPlace, getPlaceDetails, placesApiKey, PlacesError, type PlaceDetailsDiagnostic } from './googlePlaces'
 import { isTrustedDeviceLocation } from './deliveryLocation'
 import { normalizeManualHouseNumber } from './houseNumber'
+import { requiresVerifiedHouseAddress } from './orderConfig'
 import type { CreateOrderRequest, OrderErrorCode } from './orderRequest'
 
 export const PLACE_VERIFY_TIMEOUT_MS = 2500
@@ -48,8 +52,11 @@ export type ResolvedOrderAddress =
 export async function resolveGoogleDeliveryAddress(
   order: CreateOrderRequest, deps: OrderAddressDeps = defaultOrderAddressDeps(),
 ): Promise<ResolvedOrderAddress> {
-  if (order.type !== 'delivery' || !order.delivery || !order.googlePlaceId) return { ok: true, order }
+  if (order.type !== 'delivery' || !order.delivery) return { ok: true, order }
   const { city } = order.delivery
+  const strict = requiresVerifiedHouseAddress(city)
+  if (!order.googlePlaceId)
+    return strict ? { ok: false, code: 'address_not_verified', detail: 'verified_address_required' } : { ok: true, order }
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? PLACE_VERIFY_TIMEOUT_MS)
@@ -61,6 +68,7 @@ export async function resolveGoogleDeliveryAddress(
     if (!controller.signal.aborted && NOT_FOUND_CODES.includes(code))
       return { ok: false, code: 'address_not_verified', detail: 'place_not_found' }
     deps.log(controller.signal.aborted ? 'google_verify_timeout' : 'google_verify_unavailable')
+    if (strict) return { ok: false, code: 'address_not_verified', detail: 'verification_unavailable' }
     return { ok: true, order: { ...order, googleAddress: { status: 'unavailable' } } }
   } finally {
     clearTimeout(timer)
@@ -80,6 +88,7 @@ export async function resolveGoogleDeliveryAddress(
   }
 
   // Route only: Google's street + the customer's house number; precise coordinates only from trusted GPS.
+  if (strict) return { ok: false, code: 'address_not_verified', detail: 'house_address_required' }
   const houseNumber = normalizeManualHouseNumber(order.delivery.houseNumber)
   if (!houseNumber) return { ok: false, code: 'address_not_verified', detail: 'invalid_house_number' }
   if (!order.deliveryLocation || !isTrustedDeviceLocation(order.deliveryLocation))

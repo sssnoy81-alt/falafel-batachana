@@ -53,9 +53,10 @@ export const DELIVERY_AREAS: readonly string[] = [
   'מצפה יריחו',
 ]
 
-// Temporarily unavailable (Maale Express doc, 3 Oct 2026: no agreed price yet). Hidden from the customer
-// selector and rejected by the server for NEW orders (delivery_area_unavailable). Not deleted — reactivate by
-// moving the area back into ACTIVE_DELIVERY_AREAS and giving it a fee.
+// Kill switch: an area listed here is hidden from the customer selector and rejected by the server for NEW orders
+// (delivery_area_unavailable), without deleting its config. Owner decision (S4-INTEGRATIONS-02D): both stay closed
+// until reliable location + pricing validation exists — Google lists Nofei Prat streets under "כפר אדומים" and knows
+// no house numbers in either settlement (02B). Their fees below are kept for reactivation.
 export const UNAVAILABLE_DELIVERY_AREAS: readonly string[] = ['נופי פרת', 'מצפה יריחו']
 
 /** Areas a customer can order delivery to right now (selector order). */
@@ -64,15 +65,30 @@ export const ACTIVE_DELIVERY_AREAS: readonly string[] = DELIVERY_AREAS.filter(a 
 export const isActiveDeliveryArea = (city: unknown): city is string =>
   typeof city === 'string' && ACTIVE_DELIVERY_AREAS.includes(city)
 
-// Destination-based delivery fee (₪ per delivery order) — the ONLY source of delivery fees (Maale doc 3 Oct 2026).
-// Server-authoritative: the fee is always derived from the validated area, never accepted from a client.
-// Only ACTIVE areas have a fee.
+// Destination-based delivery fee (₪ per delivery order) — the ONLY source of delivery fees (Maale Express doc,
+// 21 Oct 2026). Server-authoritative: the fee is always derived from the validated area, never accepted from a client.
+// Only ACTIVE areas have a fee (getDeliveryFeeForArea); entries for unavailable areas are the agreed future fee.
+// PROVIDER-DEPENDENT (not provable locally): Maale prices by delivery coordinates, except that settlements with their
+// own price (אלון, נופי פרת, מצפה יריחו) are recognised by the settlement name at the end of customer_address. No
+// zone boundaries are configured here (deliveryAreasGeo stays PENDING), so agreement between this table and Maale's
+// zone for a given address is only confirmed by the provider (dry_run quote), never assumed.
 export const DELIVERY_FEES_BY_AREA: Readonly<Record<string, number>> = Object.freeze({
   'מעלה אדומים': 25,
   'מישור אדומים': 25,
   'כפר אדומים': 35,
   'אלון': 40,
+  'נופי פרת': 40,
+  'מצפה יריחו': 45,
 })
+
+// Areas where a typed or partly verified address is not enough: the order needs a Google-verified street address
+// WITH a house number in that settlement (no manual-only address, no route-only + GPS, no "Google unavailable"
+// fallback). Applies to the two destinations priced on 21 Oct 2026 once they are re-enabled (currently unavailable,
+// so they are rejected earlier). Fails closed with a clear customer message instead of guessing a price.
+export const VERIFIED_ADDRESS_REQUIRED_AREAS: readonly string[] = ['נופי פרת', 'מצפה יריחו']
+
+export const requiresVerifiedHouseAddress = (city: unknown): boolean =>
+  typeof city === 'string' && VERIFIED_ADDRESS_REQUIRED_AREAS.includes(city)
 
 /** Fee for an ACTIVE delivery area; null for anything else, incl. unavailable areas (callers must fail closed). */
 export const getDeliveryFeeForArea = (city: unknown): number | null =>
