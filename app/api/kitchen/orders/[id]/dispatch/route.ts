@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { checkSameOriginJson } from '@/lib/kitchenAuth'
 import { getKitchenSession } from '@/lib/kitchenUsers'
 import { isUuid } from '@/lib/kitchenMutations'
-import { isKitchenDispatchEnabled, parseDispatchBody, requestKitchenDispatch } from '@/lib/kitchenDispatch'
+import { consumeQuoteSlotRpc, isKitchenDispatchEnabled, parseDispatchBody, requestKitchenDispatch } from '@/lib/kitchenDispatch'
 import { defaultDispatchDeps, dispatchOrderToMaale } from '@/lib/maaleDispatch'
 import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
 
@@ -10,6 +10,7 @@ import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
 // DISABLED unless MAALE_KITCHEN_DISPATCH_ENABLED === 'true' → otherwise 404 before any session or DB access.
 // Then: same-origin JSON, DB-backed kitchen session, body + UUID; branch scope, stored fee and status from the DATABASE
 // (lib/kitchenDispatch); every Maale gate again in lib/maaleDispatch (never test mode). No automatic dispatch, no retry.
+// S4-04B: just before the provider quote, one slot of the durable rate limit (public.consume_maale_quote_slot).
 // Responses and logs: short codes only — no API key, provider body, phone, address or DB error text.
 
 const NO_STORE = { 'Cache-Control': 'no-store' }
@@ -47,7 +48,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         return { id: row.id, branch_id: row.branch_id, status: row.status, type: row.type,
           delivery_fee: typeof fee === 'number' || typeof fee === 'string' ? fee : null }
       },
-      dispatch: orderId => dispatchOrderToMaale(orderId, defaultDispatchDeps()),
+      // S4-04B: the durable quote rate limit is always wired here. Actor = the authenticated session's account; the branch
+      // is supplied by the dispatch service from the DATABASE order. Missing function / SQL error → fail closed (503).
+      dispatch: orderId => dispatchOrderToMaale(orderId, {
+        ...defaultDispatchDeps(),
+        consumeQuoteSlot: (id, branchId) => consumeQuoteSlotRpc(supabase, id, branchId, auth.session.username),
+      }),
       async loadDispatchRow(orderId) {
         const { data, error } = await supabase.from('delivery_dispatches')
           .select('status, error_code, provider_order_id, provider_status').eq('order_id', orderId).maybeSingle()

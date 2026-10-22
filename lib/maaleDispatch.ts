@@ -118,6 +118,13 @@ export interface DispatchDeps {
   isPaymentVerified: (orderId: string) => Promise<boolean>
   /** Ignored since 03F (the PENDING proximity gate was replaced by the provider quote check). */
   areaGeoConfig?: Readonly<Record<string, DeliveryAreaGeoConfig>>
+  /**
+   * S4-04B durable quote rate limit (public.consume_maale_quote_slot). The kitchen route ALWAYS supplies it, with the
+   * actor bound from the authenticated session; the branch passed here comes from the database order. Consulted only
+   * after every local gate and the existing-dispatch-state check, immediately before the provider quote. Any thrown
+   * error or unknown answer blocks (no quote, no dispatch). Absent only for the owner-run controlled-test runner / tests.
+   */
+  consumeQuoteSlot?: (orderId: string, branchId: string) => Promise<string>
   now?: () => string
   log?: (code: string) => void // short codes only — never PII, payloads or keys
 }
@@ -227,6 +234,12 @@ export type DispatchBlockedReason =
   | 'location_manual_review' | 'auth_stop_active' | 'auth_state_unknown'
   | 'quote_unavailable' | 'quote_failed' | 'quote_fee_missing' | 'fee_mismatch' | 'quote_amount_mismatch' | 'quote_warnings'
   | 'test_order_id_mismatch' | 'test_order_marker_missing'
+  /** S4-04B: local quote rate limit reached (before any provider call; the order stays dispatchable later). */
+  | 'rate_limited_local'
+  /** S4-04B: the rate-limit state could not be determined (SQL error, missing function, unknown answer). */
+  | 'rate_limit_unavailable'
+  /** S4-04B: the limiter refused the request shape (invalid input / order not found / branch mismatch). */
+  | 'rate_limit_rejected'
 
 export type DispatchResult =
   | { ok: true; outcome: 'sent'; kind: 'created' | 'duplicate' }
@@ -316,6 +329,14 @@ export async function dispatchOrderToMaale(
 
   // 5) Fresh dry_run quote — dedicated id, never stored as dispatch state.
   if (!deps.quote) return blocked('quote_unavailable')
+
+  // 5a) S4-04B durable quote rate limit — one slot per provider quote, consumed only now (after every local gate and the
+  //     existing-state check), never for a request that was already blocked. Not ok → nothing is quoted or sent.
+  if (deps.consumeQuoteSlot) {
+    const slot = await quoteSlotDecision(deps.consumeQuoteSlot, orderId, loaded.snapshot.order.branch_id)
+    if (slot !== 'ok') { log(`maale_dispatch_${slot}`); return blocked(slot) }
+  }
+
   const fee = Number(loaded.snapshot.delivery?.delivery_fee)
   const q = checkQuote(await deps.quote({ ...payload, external_order_id: newQuoteExternalId() }), payload, fee)
   if (!q.ok) {
@@ -373,6 +394,23 @@ function stateDecision(row: DispatchRow, nowMs: number): DispatchResult | null {
   // Only a never-attempted 'pending' row may proceed; anything else is an inconsistent state.
   if (row.status !== 'pending' || row.attempts !== 0) return { ok: false, outcome: 'manual_review_required', reason: 'retry_state_invalid' }
   return null
+}
+
+/** Bounded results of public.consume_maale_quote_slot (S4-04B1). */
+export const QUOTE_SLOT_LIMIT_RESULTS: readonly string[] = ['order_limit', 'branch_limit', 'global_limit']
+export const QUOTE_SLOT_REJECT_RESULTS: readonly string[] = ['invalid_request', 'order_not_found', 'branch_mismatch']
+
+/** Maps the limiter's answer to a decision. Fail closed: a throw, a missing branch or any unknown value blocks. */
+export async function quoteSlotDecision(
+  consume: (orderId: string, branchId: string) => Promise<string>, orderId: string, branchId: string | null | undefined,
+): Promise<'ok' | 'rate_limited_local' | 'rate_limit_unavailable' | 'rate_limit_rejected'> {
+  if (typeof branchId !== 'string' || !branchId) return 'rate_limit_rejected'
+  let answer: unknown
+  try { answer = await consume(orderId, branchId) } catch { return 'rate_limit_unavailable' }
+  if (answer === 'ok') return 'ok'
+  if (typeof answer === 'string' && QUOTE_SLOT_LIMIT_RESULTS.includes(answer)) return 'rate_limited_local'
+  if (typeof answer === 'string' && QUOTE_SLOT_REJECT_RESULTS.includes(answer)) return 'rate_limit_rejected'
+  return 'rate_limit_unavailable'
 }
 
 async function safeMark(fn: () => Promise<boolean>): Promise<boolean> {

@@ -28,6 +28,11 @@ installed and verified with a read-only query.
 |---|---|---|---|
 | 05 | `parcel_05_recipient_name.sql` | Optional `parcel_requests.recipient_name` (NULL / 2–60 chars, trimmed, no control chars) + `create_order_with_parcel` accepts one more key, `recipient_name` (same signature, INVOKER, service_role-only). Additive only. | before: `parcel_05_production_preflight.sql` · after: `parcel_05_verify.sql` · `parcel_05_rollback.sql` = function-only, non-destructive, separate approval |
 
+| S4-04B | `s4_04b_maale_quote_rate_limit.sql` | Durable kitchen courier **quote rate limit**: append-only ledger `public.maale_dispatch_requests` (order, branch, kitchen account, time — no customer data; RLS on, service_role SELECT+INSERT only) + `consume_maale_quote_slot(uuid, uuid, text)` (INVOKER, search_path '', lock_timeout 3s, service_role-only EXECUTE; one transaction-scoped advisory lock; 3/order/30 min, 20/branch/60 min, 40/global/60 min). Additive only; `delivery_dispatches` untouched. | before: `s4_04b_production_preflight.sql` · after: `s4_04b_verify.sql` · `s4_04b_rollback.sql` = manual, approval-only, needs `SET s4_04b.confirm_rollback = 'DROP-QUOTE-LEDGER'` · isolated test: `scripts/pgtest-s4-04b-quote-rate-limit.mjs` (Docker, `--network none`) |
+
+**S4-04B order:** install it BEFORE deploying an application that calls `consume_maale_quote_slot` (the current
+application never calls it). Primary rollback = application rollback; the schema can stay.
+
 **Order: install 05 BEFORE deploying the application that uses `recipient_name`** (the pre-05 wrapper rejects unknown
 parcel keys and the new kitchen query selects the column). Primary rollback = application rollback; the schema stays.
 After 05, these historical checks pin the pre-05 wrapper fingerprint (`7d491c09…` / 2474) and will FAIL by design for that

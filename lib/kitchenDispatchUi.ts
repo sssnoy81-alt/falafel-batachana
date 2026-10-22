@@ -185,6 +185,10 @@ export const DISPATCH_MESSAGES: Record<string, string> = {
   not_found: 'ההזמנה לא נמצאה — הרשימה רועננה',
   invalid_request: 'הבקשה לא תקינה — רעננו ונסו שוב',
   forbidden: 'אין הרשאה לפעולה זו',
+  // S4-04B local quote rate limit: decided before any provider call → nothing was sent; NOT a locking code.
+  rate_limited_local: 'יותר מדי בקשות שליח בזמן קצר — לא נשלחה בקשה. המתינו מספר דקות ונסו שוב, או הזמינו ידנית',
+  rate_limit_unavailable: 'בדיקת עומס הבקשות אינה זמינה כרגע — לא נשלחה בקשה. נסו שוב מאוחר יותר או הזמינו ידנית',
+  rate_limit_rejected: 'לא ניתן לאמת את ההזמנה לבקשת שליח — לא נשלחה בקשה. רעננו את הרשימה',
   server_error: 'שגיאת שרת — לא ברור אם השליח הוזמן. יש לבדוק מול מעלה אקספרס לפני ניסיון נוסף',
 }
 

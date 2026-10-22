@@ -102,6 +102,11 @@ export function mapDispatchResult(r: DispatchResult): KitchenDispatchResponse {
         case 'quote_unavailable': case 'quote_failed': case 'quote_fee_missing': case 'fee_mismatch':
         case 'quote_amount_mismatch': case 'quote_warnings':
           return reply(409, { error: 'quote_mismatch', reason: r.reason })
+        // S4-04B local quote rate limit — decided BEFORE any provider call, so nothing was sent and the order is not
+        // locked (distinct from the provider's 429 'rate_limited', which means the outcome is unknown).
+        case 'rate_limited_local': return reply(429, { error: 'rate_limited_local' })
+        case 'rate_limit_unavailable': return reply(503, { error: 'rate_limit_unavailable' })
+        case 'rate_limit_rejected': return reply(409, { error: 'rate_limit_rejected' })
         default: return reply(400, { error: 'invalid_request' }) // test-mode reasons: unreachable from this route
       }
     }
@@ -120,6 +125,29 @@ export function mapDispatchResult(r: DispatchResult): KitchenDispatchResponse {
       }
     }
   }
+}
+
+/* ─── S4-04B quote rate limit (public.consume_maale_quote_slot) ─── */
+
+const ACTOR_REGEX = /^[a-z0-9_-]{2,32}$/ // = kitchen_users.username rule = the function's own check
+
+/** Minimal shape of the server Supabase client used for the limiter RPC. */
+export interface QuoteSlotRpcClient {
+  rpc(fn: 'consume_maale_quote_slot', args: { p_order_id: string; p_branch_id: string; p_actor: string }): PromiseLike<{ data: unknown; error: { code?: string } | null }>
+}
+
+/**
+ * Consumes one quote slot. orderId: validated route UUID; branchId: from the DATABASE order (never the browser);
+ * actor: the authenticated kitchen session's username (an ACCOUNT, not necessarily one person).
+ * Returns the function's bounded answer; THROWS on any RPC / SQL error or an unexpected payload (caller fails closed).
+ * Error details never leave the server (short code only).
+ */
+export async function consumeQuoteSlotRpc(db: QuoteSlotRpcClient, orderId: string, branchId: string, actor: string): Promise<string> {
+  if (!ACTOR_REGEX.test(actor)) throw new Error('quote_slot_invalid_actor')
+  const { data, error } = await db.rpc('consume_maale_quote_slot', { p_order_id: orderId, p_branch_id: branchId, p_actor: actor })
+  if (error) throw new Error(`quote_slot_rpc_${typeof error.code === 'string' && /^[A-Z0-9]{1,8}$/.test(error.code) ? error.code : 'error'}`)
+  if (typeof data !== 'string') throw new Error('quote_slot_unexpected_payload')
+  return data
 }
 
 /* ─── Request ─── */
