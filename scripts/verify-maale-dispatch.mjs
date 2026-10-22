@@ -41,15 +41,18 @@ const ORDER_ID = '11111111-2222-4333-8444-555555555555'
 const KEY = 'test-maale-key-not-real'
 const MA = 'מעלה אדומים'
 const PII = ['לקוח בדיקה', '0500000000', 'הגעש', 'קוד 1234']
+// 03F: automatic dispatch is cash-only → the default fixture is a cash order; credit variants below are always blocked.
 const snapshot = () => ({
-  order: { id: ORDER_ID, type: 'delivery', branch_id: cfg.DELIVERY_BRANCH_IDS[0], payment_method: 'credit', customer_name: 'לקוח בדיקה', phone: '0500000000', total_price: 73 },
+  order: { id: ORDER_ID, type: 'delivery', branch_id: cfg.DELIVERY_BRANCH_IDS[0], payment_method: 'cash', customer_name: 'לקוח בדיקה', phone: '0500000000', total_price: 73 },
   delivery: { city: MA, street: 'הגעש', house_number: '6', apartment: '6', floor: '2', entrance: 'ב׳', notes: 'קוד 1234', delivery_fee: 20, meal_surcharge: 4,
     delivery_lat: 31.773612, delivery_lng: 35.298346, geo_source: 'geocoder', geo_precision: 'street' },
   items: [{ name: 'פלאפל בפיתה', quantity: 1, unit_price: 40 }, { name: 'קוקה קולה', quantity: 1, unit_price: 9 }],
 })
-// TEST-ONLY approved area (synthetic); the real DELIVERY_AREA_GEO stays unapproved.
+// TEST-ONLY approved area (synthetic); ignored by the dispatch service since 03F (kept to show it has no effect).
 const AREA_FIX = { ...areas.DELIVERY_AREA_GEO, [MA]: { city: MA, center: { lat: 31.773612, lng: 35.298346 }, radiusMeters: 3000, approvedForDispatch: true, source: 'TEST FIXTURE' } }
 const jsonRes = (body, status) => ({ ok: status >= 200 && status < 300, status, json: async () => body })
+// FAKE dry_run quote matching the fixture (fee ₪20 → 2000; cash food 5300; courier collects 7300).
+const okQuote = (over = {}) => ({ ok: true, kind: 'quote', status: 200, zone: 'mishor', deliveryFeeAgorot: 2000, courierPaysMerchantAgorot: 5300, courierCollectsFromCustomerAgorot: 7300, warnings: [], ...over })
 const tick = () => new Promise(r => setTimeout(r, 1))
 
 /** In-memory delivery_dispatches with the same guarantees as the SQL (unique order_id, CAS claim, from-'sending' marks). */
@@ -58,22 +61,23 @@ function memRepo({ status = 'confirmed', row = null, orderSnapshot = snapshot() 
   return {
     state,
     repo: {
-      async loadOrder(id) { state.reads++; return id === ORDER_ID ? { snapshot: orderSnapshot, status } : null },
-      async getDispatch(id) { state.reads++; return state.row && id === ORDER_ID ? { order_id: id, external_order_id: state.row.external_order_id, status: state.row.status, attempts: state.row.attempts, last_attempt_at: state.row.last_attempt_at } : null },
+      async loadOrder(id) { state.reads++; return id === ORDER_ID ? { snapshot: orderSnapshot, status, parcelStatus: null } : null },
+      async getDispatch(id) { state.reads++; return state.row && id === ORDER_ID ? { order_id: id, external_order_id: state.row.external_order_id, status: state.row.status, attempts: state.row.attempts, last_attempt_at: state.row.last_attempt_at, error_code: state.row.error_code } : null },
+      async hasRecentAuthFailure() { state.reads++; return !!state.row && state.row.error_code === 'unauthorized' },
       async insertPending(id) { state.writes++; if (!state.row) state.row = { order_id: id, external_order_id: id, status: 'pending', attempts: 0, provider_order_id: null, provider_status: null, error_code: null, dispatched_at: null, last_attempt_at: null } },
       async claim(id, seen, now) {
         state.writes++; await tick()
         if (!state.row || state.row.status !== seen.status || state.row.attempts !== seen.attempts || state.row.last_attempt_at !== seen.last_attempt_at) return false
         Object.assign(state.row, { status: 'sending', attempts: seen.attempts + 1, last_attempt_at: now, error_code: null }); return true
       },
-      async markSent(id, v, now) { state.writes++; if (state.row.status === 'sending') Object.assign(state.row, { status: 'sent', dispatched_at: now, provider_order_id: v.providerOrderId ?? null, provider_status: v.providerStatus ?? null, error_code: null }) },
-      async markFailed(id, st, code, now) { state.writes++; if (state.row.status === 'sending') Object.assign(state.row, { status: st, error_code: code, updated_at: now }) },
+      async markSent(id, v, now) { state.writes++; if (state.row.status !== 'sending') return false; Object.assign(state.row, { status: 'sent', dispatched_at: now, provider_order_id: v.providerOrderId ?? null, provider_status: v.providerStatus ?? null, error_code: null }); return true },
+      async markFailed(id, st, code, now) { state.writes++; if (state.row.status !== 'sending') return false; Object.assign(state.row, { status: st, error_code: code, updated_at: now }); return true },
     },
   }
 }
 
-/** Dispatch deps with a counting fake fetch; everything else real (client, payload builder, gates). */
-function setup({ respond = () => jsonRes({ order_id: 'MX-1', status: 'searching' }, 201), config = { status: 'ready', apiKey: KEY }, paid = true, areaGeoConfig = AREA_FIX, realAreas = false, ...repoOpts } = {}) {
+/** Dispatch deps with a counting fake fetch + FAKE quote; everything else real (client, payload builder, gates). */
+function setup({ respond = () => jsonRes({ order_id: 'MX-1', status: 'searching' }, 201), quote = okQuote(), config = { status: 'ready', apiKey: KEY }, paid = true, areaGeoConfig = AREA_FIX, realAreas = false, ...repoOpts } = {}) {
   const mem = memRepo(repoOpts)
   const calls = []
   const logs = []
@@ -81,6 +85,7 @@ function setup({ respond = () => jsonRes({ order_id: 'MX-1', status: 'searching'
   const deps = {
     config, repo: mem.repo, areaGeoConfig: realAreas ? undefined : areaGeoConfig, isPaymentVerified: async () => paid,
     send: p => client.sendMaaleOrder(p, { config, fetchImpl, timeoutMs: 40 }),
+    quote: async () => quote,
     now: () => '2026-09-30T10:00:00.000Z', log: c => logs.push(c),
   }
   return { mem, calls, logs, deps, run: () => dispatch.dispatchOrderToMaale(ORDER_ID, deps) }
@@ -119,7 +124,7 @@ await test('3–6. exact URL, headers (X-Api-Key), exact 08D9 payload forwarded,
 
 await test('7 + 25–26. 201 → created → sent; provider order id + status persisted; dispatched_at set', async () => {
   const s = setup()
-  assert.deepEqual(await s.run(), { ok: true, outcome: 'sent', kind: 'created', reclaimed: false })
+  assert.deepEqual(await s.run(), { ok: true, outcome: 'sent', kind: 'created' })
   assert.deepEqual([s.mem.state.row.status, s.mem.state.row.provider_order_id, s.mem.state.row.provider_status, s.mem.state.row.attempts, s.mem.state.row.error_code],
     ['sent', 'MX-1', 'searching', 1, null])
   assert.ok(s.mem.state.row.dispatched_at && s.mem.state.row.last_attempt_at)
@@ -127,7 +132,7 @@ await test('7 + 25–26. 201 → created → sent; provider order id + status pe
 
 await test('8. 200 → duplicate → idempotent success (sent)', async () => {
   const s = setup({ respond: () => jsonRes({ id: 777 }, 200) })
-  assert.deepEqual(await s.run(), { ok: true, outcome: 'sent', kind: 'duplicate', reclaimed: false })
+  assert.deepEqual(await s.run(), { ok: true, outcome: 'sent', kind: 'duplicate' })
   assert.deepEqual([s.mem.state.row.status, s.mem.state.row.provider_order_id, s.mem.state.row.provider_status], ['sent', '777', null])
 })
 
@@ -143,7 +148,7 @@ await test('12. 401 → unauthorized, final', async () => finalCase(() => jsonRe
 
 const retryCase = async (respond, code) => {
   const s = setup({ respond })
-  assert.deepEqual(await s.run(), { ok: false, outcome: 'failed', retryable: true, errorCode: code })
+  assert.deepEqual(await s.run(), { ok: false, outcome: 'failed', retryable: true, errorCode: code, ambiguous: true }) // 03F: outcome unknown
   assert.deepEqual([s.mem.state.row.status, s.mem.state.row.error_code], ['failed_retryable', code])
 }
 await test('13. 500 → retryable', async () => retryCase(() => jsonRes({}, 500), 'provider_5xx'))
@@ -154,7 +159,7 @@ await test('16. network error → retryable', async () => retryCase(() => { thro
 await test('17. malformed JSON handled safely (201 still success without ids; 400/500 classified by status)', async () => {
   const bad = status => ({ ok: status < 300, status, json: async () => { throw new SyntaxError('Unexpected token <') } })
   const s = setup({ respond: () => bad(201) })
-  assert.deepEqual(await s.run(), { ok: true, outcome: 'sent', kind: 'created', reclaimed: false }); assert.equal(s.mem.state.row.provider_order_id, null)
+  assert.deepEqual(await s.run(), { ok: true, outcome: 'sent', kind: 'created' }); assert.equal(s.mem.state.row.provider_order_id, null)
   assert.deepEqual(client.classifyMaaleResponse(400, null), { ok: false, retryable: false, errorCode: 'validation_error', status: 400 })
   assert.deepEqual(client.classifyMaaleResponse(502, 'x'), { ok: false, retryable: true, errorCode: 'provider_5xx', status: 502, ambiguous: true })
   assert.deepEqual(client.classifyMaaleResponse(202, {}), { ok: false, retryable: true, errorCode: 'invalid_response', status: 202, ambiguous: true })
@@ -181,22 +186,22 @@ await test('20. failed_final → no automatic retry (no network)', async () => {
   assert.deepEqual(await s.run(), { ok: false, outcome: 'final_failure_exists' }); assert.equal(s.calls.length, 0)
 })
 
-await test('21–24. failed_retryable may be retried manually: same external_order_id, attempts 1→2, success → sent', async () => {
+await test('21–24. (03F) failed_retryable after an UNKNOWN outcome (5xx) is never resent automatically; external_order_id kept', async () => {
   let n = 0
   const s = setup({ respond: () => (++n === 1 ? jsonRes({}, 503) : jsonRes({ order_id: 'MX-9' }, 201)) })
   assert.equal((await s.run()).outcome, 'failed'); assert.deepEqual([s.mem.state.row.status, s.mem.state.row.attempts], ['failed_retryable', 1])
-  assert.deepEqual(await s.run(), { ok: true, outcome: 'sent', kind: 'created', reclaimed: false })
-  assert.deepEqual([s.mem.state.row.status, s.mem.state.row.attempts, s.mem.state.row.provider_order_id], ['sent', 2, 'MX-9'])
-  const ids = s.calls.map(c => JSON.parse(c.init.body).external_order_id)
-  assert.deepEqual(ids, [ORDER_ID, ORDER_ID]); assert.equal(s.mem.state.row.external_order_id, ORDER_ID)
+  assert.deepEqual(await s.run(), { ok: false, outcome: 'manual_review_required', reason: 'previous_outcome_ambiguous' })
+  assert.equal(s.calls.length, 1, 'no second request'); assert.equal(s.mem.state.row.external_order_id, ORDER_ID)
+  assert.deepEqual(s.calls.map(c => JSON.parse(c.init.body).external_order_id), [ORDER_ID])
   const cap = setup({ row: { status: 'failed_retryable', attempts: 20 } })
   assert.deepEqual(await cap.run(), { ok: false, outcome: 'attempts_exhausted' }); assert.equal(cap.calls.length, 0)
 })
 
-await test('gates: HYP payment not verified / area not approved / order not confirmed / invalid payload → blocked, no DB writes, no network', async () => {
+await test('gates (03F): credit / order not confirmed / invalid payload / quote fee mismatch → blocked, no DB writes, no network', async () => {
+  const credit = () => ({ ...snapshot(), order: { ...snapshot().order, payment_method: 'credit' } })
   const cases = [
-    [setup({ paid: false }), 'payment_not_verified'],
-    [setup({ realAreas: true }), 'area_not_ready'],                     // REAL config: no area approved
+    [setup({ orderSnapshot: credit() }), 'credit_dispatch_disabled'],
+    [setup({ quote: okQuote({ deliveryFeeAgorot: 3500 }) }), 'fee_mismatch'], // provider fee ≠ stored fee
     [setup({ status: 'received' }), 'order_not_confirmed'],
     [setup({ status: 'cancelled' }), 'order_not_confirmed'],
     [setup({ orderSnapshot: { ...snapshot(), order: { ...snapshot().order, type: 'pickup' } } }), 'invalid_payload'],
@@ -207,44 +212,39 @@ await test('gates: HYP payment not verified / area not approved / order not conf
     assert.equal(r.outcome, 'blocked'); assert.equal(r.reason, reason)
     assert.equal(s.calls.length, 0); assert.equal(s.mem.state.writes, 0)
   }
-  const far = setup({ orderSnapshot: { ...snapshot(), delivery: { ...snapshot().delivery, delivery_lat: 31.9 } } })
-  const r = await far.run(); assert.deepEqual([r.reason, r.detail], ['area_not_ready', 'location_area_mismatch'])
+  // the old proximity fixture is ignored: the provider quote decides (a far location with a matching fee is not blocked by us)
+  const far = setup({ realAreas: true, orderSnapshot: { ...snapshot(), delivery: { ...snapshot().delivery, delivery_lat: 31.9 } } })
+  assert.equal((await far.run()).outcome, 'sent')
 })
 
-await test('08D14 · 26. normal CREDIT dispatch is blocked without HYP verification (no DB write, no network)', async () => {
-  let asked = 0
-  const s = setup({ paid: false }); const orig = s.deps.isPaymentVerified
-  s.deps.isPaymentVerified = async id => { asked++; return orig(id) }
-  const r = await s.run()
-  assert.equal(r.reason, 'payment_not_verified'); assert.equal(asked, 1); assert.equal(s.calls.length, 0); assert.equal(s.mem.state.writes, 0)
-})
+const creditSnapshot = () => ({ ...snapshot(), order: { ...snapshot().order, payment_method: 'credit' } })
 
-await test('08D14 · 27. normal CREDIT dispatch passes the payment gate when HYP is verified', async () => {
-  const s = setup({ paid: true })
-  assert.deepEqual(await s.run(), { ok: true, outcome: 'sent', kind: 'created', reclaimed: false })
-  assert.equal(JSON.parse(s.calls[0].init.body).payment_method, 'credit')
-})
-
-const cashSnapshot = () => ({ ...snapshot(), order: { ...snapshot().order, payment_method: 'cash' } })
-
-await test('08D14 · 28. normal CASH dispatch does not require HYP (never asked) and sends payment_method "cash"', async () => {
-  let asked = 0
-  const s = setup({ paid: false, orderSnapshot: cashSnapshot() })
-  s.deps.isPaymentVerified = async () => { asked++; return false }
-  assert.deepEqual(await s.run(), { ok: true, outcome: 'sent', kind: 'created', reclaimed: false })
-  assert.equal(asked, 0, 'no HYP check for cash'); assert.equal(JSON.parse(s.calls[0].init.body).payment_method, 'cash')
-})
-
-await test('08D14 · 29–30. cash AND credit still require area-ready (real config: no area approved)', async () => {
-  for (const [orderSnapshot, paid] of [[cashSnapshot(), false], [snapshot(), true]]) {
-    const s = setup({ orderSnapshot, paid, realAreas: true })
+await test('08D14 · 26–27 (03F). CREDIT is never auto-dispatched, even when a payment check would say "verified"', async () => {
+  for (const paid of [false, true]) {
+    let asked = 0
+    const s = setup({ paid, orderSnapshot: creditSnapshot() }); s.deps.isPaymentVerified = async () => { asked++; return paid }
     const r = await s.run()
-    assert.equal(r.reason, 'area_not_ready'); assert.equal(s.calls.length, 0); assert.equal(s.mem.state.writes, 0)
+    assert.equal(r.reason, 'credit_dispatch_disabled'); assert.equal(asked, 0, 'payment_method credit is not proof of payment')
+    assert.equal(s.calls.length, 0); assert.equal(s.mem.state.writes, 0)
   }
 })
 
+await test('08D14 · 28. normal CASH dispatch does not require HYP (never asked) and sends payment_method "cash"', async () => {
+  let asked = 0
+  const s = setup({ paid: false })
+  s.deps.isPaymentVerified = async () => { asked++; return false }
+  assert.deepEqual(await s.run(), { ok: true, outcome: 'sent', kind: 'created' })
+  assert.equal(asked, 0, 'no HYP check for cash'); assert.equal(JSON.parse(s.calls[0].init.body).payment_method, 'cash')
+})
+
+await test('08D14 · 29–30 (03F). the quote replaces the PENDING area gate: no quote dependency → blocked, nothing written', async () => {
+  const s = setup({ realAreas: true }); delete s.deps.quote
+  assert.deepEqual(await s.run(), { ok: false, outcome: 'blocked', reason: 'quote_unavailable' })
+  assert.equal(s.calls.length, 0); assert.equal(s.mem.state.writes, 0)
+})
+
 await test('08D14. cash and credit both still need every other gate (confirmed status, valid payload, Maale config)', async () => {
-  for (const orderSnapshot of [cashSnapshot(), snapshot()]) {
+  for (const orderSnapshot of [snapshot(), creditSnapshot()]) {
     assert.equal((await setup({ orderSnapshot, status: 'received' }).run()).reason, 'order_not_confirmed')
     assert.equal((await setup({ orderSnapshot: { ...orderSnapshot, delivery: { ...orderSnapshot.delivery, house_number: '' } } }).run()).reason, 'invalid_payload')
     assert.equal((await setup({ orderSnapshot, config: { status: 'disabled' } }).run()).reason, 'maale_disabled')

@@ -42,7 +42,7 @@ function memRepo({ status = 'confirmed', row = null, orderSnapshot = snapshot() 
   return {
     state,
     repo: {
-      async loadOrder(id) { return id === ORDER_ID ? { snapshot: orderSnapshot, status } : null },
+      async loadOrder(id) { return id === ORDER_ID ? { snapshot: orderSnapshot, status, parcelStatus: null } : null }, // like the real repo: no parcel
       async getDispatch(id) { return state.row && id === ORDER_ID ? { order_id: id, external_order_id: state.row.external_order_id, status: state.row.status, attempts: state.row.attempts, last_attempt_at: state.row.last_attempt_at } : null },
       async insertPending(id) { state.writes++; if (!state.row) state.row = { order_id: id, external_order_id: id, status: 'pending', attempts: 0, last_attempt_at: null } },
       async claim(id, seen, now) {
@@ -81,12 +81,15 @@ const DISPATCH = ['dispatch', ORDER_ID, '--confirm-test']
 
 console.log('Controlled Maale test runner')
 
-await test('1. readiness mode: zero network calls, zero writes, safe report', async () => {
+// 03F: the runner (unchanged) builds its read-only repo without hasRecentAuthFailure, so readiness cannot prove the
+// global 401 stop is clear → it fails closed with auth_state_unknown and the runner refuses to dispatch. Re-enabling the
+// runner needs a one-line pass-through in scripts/maale-controlled-test.mjs (separate approval).
+await test('1 (03F). readiness mode: zero network calls, zero writes, safe report; fails closed on unknown auth state', async () => {
   const r = await run(READY)
-  assert.equal(r.calls.length, 0); assert.equal(r.mem.state.writes, 0); assert.equal(r.code, 0)
-  for (const k of ['Order: ' + ORDER_ID, 'Order status: confirmed', 'Delivery: YES', 'Branch: Mishor Adumim', 'Test marker: PASS', 'Payment method: credit', 'HYP required: YES',
+  assert.equal(r.calls.length, 0); assert.equal(r.mem.state.writes, 0); assert.equal(r.code, 1)
+  for (const k of ['Order: ' + ORDER_ID, 'Order status: confirmed', 'Delivery: YES', 'Branch: Mishor Adumim', 'Test marker: PASS', 'Payment method: credit', 'HYP required: NO',
     'Address: complete', 'Coordinates: precise', 'Payload: valid', 'Dispatch state: none', 'Maale enabled: YES', 'Maale key configured: YES',
-    'HYP verified: NO', 'Area ready: NO', 'Controlled-test overrides required: payment = YES, area = YES', 'Result: READY FOR CONTROLLED TEST'])
+    'Area ready: YES', 'Controlled-test overrides required: payment = NO, area = NO', 'credit_dispatch_disabled', 'auth_state_unknown', 'Result: NOT READY (credit_dispatch_disabled)'])
     assert.ok(r.text.includes(k), k)
 })
 
@@ -125,14 +128,16 @@ await test('8. unconfirmed order refuses', async () => refused({ status: 'receiv
 await test('9. Maale disabled refuses', async () => refused({ config: { status: 'disabled' } }, 'maale_disabled'))
 await test('10. missing key refuses', async () => refused({ config: { status: 'not_configured' } }, 'maale_not_configured'))
 
-await test('11–13. payment / area bypass only in explicit test mode, only for a marked order', async () => {
-  const ok = await run(DISPATCH) // HYP false + real unapproved areas → still dispatched via testMode
-  assert.equal(ok.code, 0); assert.equal(ok.calls.length, 1); assert.match(ok.text, /Result: created/)
-  // Same order, normal path (no testMode): both gates still enforced.
+await test('11–13 (03F). test mode bypasses nothing: credit stays blocked; the runner refuses (no network, no writes)', async () => {
+  const blocked = await run(DISPATCH)
+  assert.equal(blocked.code, 1); assert.equal(blocked.calls.length, 0); assert.equal(blocked.mem.state.writes, 0)
+  assert.match(blocked.text, /REFUSED: readiness has blockers/)
+  // Same order, direct service call: credit is blocked whether or not a payment check says "verified".
   const m = memRepo()
   const base = { config: { status: 'ready', apiKey: KEY }, repo: m.repo, send: async () => { throw new Error('must not send') }, now: () => '2026-10-05T10:00:00.000Z' }
-  assert.equal((await D.dispatchOrderToMaale(ORDER_ID, { ...base, isPaymentVerified: async () => false })).reason, 'payment_not_verified')
-  assert.equal((await D.dispatchOrderToMaale(ORDER_ID, { ...base, isPaymentVerified: async () => true })).reason, 'area_not_ready')
+  assert.equal((await D.dispatchOrderToMaale(ORDER_ID, { ...base, isPaymentVerified: async () => false })).reason, 'credit_dispatch_disabled')
+  assert.equal((await D.dispatchOrderToMaale(ORDER_ID, { ...base, isPaymentVerified: async () => true },
+    { testMode: { orderId: ORDER_ID, bypassPaymentGate: true, bypassAreaGate: true } })).reason, 'credit_dispatch_disabled')
   // Unmarked order: the runner refuses, and testMode itself refuses too.
   await refused({ orderSnapshot: snapshot({ order: { customer_name: 'לקוח אמיתי' } }) }, 'test_order_marker_missing')
   const u = memRepo({ orderSnapshot: snapshot({ order: { customer_name: 'לקוח אמיתי' } }) })
@@ -145,25 +150,19 @@ await test('11–13. payment / area bypass only in explicit test mode, only for 
 
 await test('14. a sent order is never resent', async () => refused({ row: { status: 'sent', attempts: 1, last_attempt_at: '2026-10-05T09:00:00.000Z' } }, 'dispatch_already_sent'))
 
-await test('15. same external_order_id on every attempt (retry after a retryable failure)', async () => {
-  const first = await run(DISPATCH, { respond: () => jsonRes({}, 503) })
-  assert.match(first.text, /Result: provider_5xx \(retryable\)/); assert.match(first.text, /delivery_dispatches state: failed_retryable \(attempts 1\)/)
-  const second = await run(DISPATCH, { row: { status: 'failed_retryable', attempts: 1, last_attempt_at: '2026-10-05T09:59:00.000Z' } })
-  assert.match(second.text, /Result: created/)
-  for (const c of [...first.calls, ...second.calls]) assert.equal(JSON.parse(c.init.body).external_order_id, ORDER_ID)
-})
-
-await test('16. duplicate 200 is success → sent', async () => {
-  const r = await run(DISPATCH, { respond: () => jsonRes({ order_id: 'MX-1' }, 200) })
-  assert.equal(r.code, 0); assert.match(r.text, /Result: duplicate/); assert.match(r.text, /delivery_dispatches state: sent \(attempts 1\)/)
+await test('15–16 (03F). a previously failed row is reported, never resent by the runner (ambiguous → manual review)', async () => {
+  const cash = { orderSnapshot: snapshot({ order: { payment_method: 'cash' } }) }
+  const r = await run(DISPATCH, { ...cash, row: { status: 'failed_retryable', attempts: 1, last_attempt_at: '2026-10-05T09:59:00.000Z', error_code: 'provider_5xx' } })
+  assert.equal(r.code, 1); assert.equal(r.calls.length, 0); assert.equal(r.mem.state.writes, 0)
+  assert.match(r.text, /Dispatch state: failed_retryable/)
 })
 
 await test('17. no secrets printed (API key, service key, raw provider body)', async () => {
   const outs = [await run(READY), await run(DISPATCH), await run(DISPATCH, { respond: () => jsonRes({ message: `bad key ${KEY}`, secret: 'provider-internal' }, 401) })]
   for (const r of outs) {
     for (const s of [KEY, SERVICE_KEY, 'provider-internal', 'X-Api-Key', 'access_token']) assert.ok(!r.text.includes(s), s)
+    assert.equal(r.calls.length, 0, 'fail closed: nothing sent')
   }
-  assert.match(outs[2].text, /Result: unauthorized \(final\)/)
   const src = readFileSync(join(ROOT, 'scripts', 'maale-controlled-test.mjs'), 'utf8')
   assert.ok(!/print\([^)]*(apiKey|process\.env|SERVICE|KEY)/.test(src), 'runner never prints env / keys')
 })
@@ -184,29 +183,29 @@ await test('20. no real network call in tests (global fetch is a throwing stub)'
   await assert.rejects(() => globalThis.fetch('https://example.invalid'), /LIVE NETWORK CALL ATTEMPTED/)
 })
 
-await test('08D14 · 31. test-mode CASH order: no payment override required (only area), dispatches as cash', async () => {
+await test('08D14 · 31 (03F). test-mode CASH order: no override required; runner still fails closed on unknown auth state', async () => {
   const cashOrder = { orderSnapshot: snapshot({ order: { payment_method: 'cash' } }) }
   const r = await run(READY, cashOrder)
-  for (const k of ['Payment method: cash', 'HYP required: NO', 'HYP verified: n/a (cash)', 'Controlled-test overrides required: payment = NO, area = YES', 'Result: READY FOR CONTROLLED TEST'])
+  for (const k of ['Payment method: cash', 'HYP required: NO', 'HYP verified: n/a (cash)', 'Controlled-test overrides required: payment = NO, area = NO', 'Result: NOT READY (auth_state_unknown)'])
     assert.ok(r.text.includes(k), k)
   const d = await run(DISPATCH, cashOrder)
-  assert.equal(d.code, 0); assert.equal(JSON.parse(d.calls[0].init.body).payment_method, 'cash')
+  assert.equal(d.code, 1); assert.equal(d.calls.length, 0); assert.equal(d.mem.state.writes, 0)
 })
 
-await test('08D14 · 32. test-mode CREDIT order: payment override still required until HYP exists', async () => {
+await test('08D14 · 32 (03F). test-mode CREDIT order: blocked outright (no payment override exists)', async () => {
   const r = await run(READY)
-  for (const k of ['Payment method: credit', 'HYP required: YES', 'HYP verified: NO', 'Controlled-test overrides required: payment = YES, area = YES'])
+  for (const k of ['Payment method: credit', 'HYP required: NO', 'Controlled-test overrides required: payment = NO, area = NO', 'credit_dispatch_disabled'])
     assert.ok(r.text.includes(k), k)
   const d = await run(DISPATCH)
-  assert.equal(d.code, 0); assert.equal(JSON.parse(d.calls[0].init.body).payment_method, 'credit')
+  assert.equal(d.code, 1); assert.equal(d.calls.length, 0)
 })
 
-await test('08D14 · 33. normal (non-test) behavior is unaffected by the runner: credit still blocked by HYP, cash by area', async () => {
+await test('08D14 · 33 (03F). normal service behavior: credit blocked; cash with a legacy repo (no auth check) fails closed', async () => {
   const base = { config: { status: 'ready', apiKey: KEY }, send: async () => { throw new Error('must not send') }, now: () => '2026-10-05T10:00:00.000Z',
     isPaymentVerified: async () => false }
-  assert.equal((await D.dispatchOrderToMaale(ORDER_ID, { ...base, repo: memRepo().repo })).reason, 'payment_not_verified')
+  assert.equal((await D.dispatchOrderToMaale(ORDER_ID, { ...base, repo: memRepo().repo })).reason, 'credit_dispatch_disabled')
   const cash = memRepo({ orderSnapshot: snapshot({ order: { payment_method: 'cash' } }) })
-  assert.equal((await D.dispatchOrderToMaale(ORDER_ID, { ...base, repo: cash.repo })).reason, 'area_not_ready')
+  assert.equal((await D.dispatchOrderToMaale(ORDER_ID, { ...base, repo: cash.repo })).reason, 'auth_state_unknown')
 })
 
 await test('extra: .env.local loader fills only unset keys and prints nothing', async () => {

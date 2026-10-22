@@ -7,7 +7,7 @@ import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { execFileSync } from 'node:child_process'
+
 import assert from 'node:assert/strict'
 
 globalThis.fetch = async () => { throw new Error('LIVE NETWORK CALL ATTEMPTED') }
@@ -251,9 +251,8 @@ await test('P5. explicit limits: > 100 item lines and an address > 300 character
   assert.ok(M.buildMaaleOrderPayload(snap({ order: { total_price: 100 + 4 + 20 }, items: many.slice(0, 100) })).ok, '100 lines are allowed')
 })
 
-await test('P6. dispatch compatibility: lib/maaleDispatch.ts untouched; its default call produces the same body as before', async () => {
-  const diff = execFileSync('git', ['diff', '--name-only', '6db8a32042f060da31471db4c19e263f86fbc285', '--', 'lib/maaleDispatch.ts'], { cwd: ROOT, encoding: 'utf8' })
-  assert.equal(diff.trim(), '', 'maaleDispatch.ts must not change in 03E')
+await test('P6. dispatch compatibility: dispatch builds the payload without options → the same body as before', async () => {
+  // (03E pinned maaleDispatch.ts as unchanged; 03F hardens it but keeps the option-less builder call.)
   assert.ok(src('lib/maaleDispatch.ts').includes('payload: buildMaaleOrderPayload(loaded.snapshot),'), 'dispatch still calls the builder without options')
   assert.deepEqual(M.buildMaaleOrderPayload(snap({ order: { payment_method: 'credit' } })).payload, {
     external_order_id: ORDER_ID, payment_method: 'credit', food_total_agorot: 5300,
