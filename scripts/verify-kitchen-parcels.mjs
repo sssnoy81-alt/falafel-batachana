@@ -637,7 +637,7 @@ await test('status route maps the DB gate and the cancel-sync rule; UI offers fu
   assert.match(ui, /\{PARCEL_ORDER_CANCEL_ENABLED && onCancelOrder && \(/)
   assert.match(ui, /confirm\('ביטול הזמנה מלא: ההזמנה והחבילה יבוטלו יחד\. להמשיך\?'\)/)
   assert.match(ui, /onCancelOrder=\{\(\) => onAdvance\(order\.id, 'cancelled'\)\}/)
-  assert.match(ui, /confirm\(cancelConfirmText\(order, num\)\)/)
+  assert.match(ui, /confirm\(withCourierNotice\(cancelConfirmText\(order, num\)\)\)/) // S4-03O: one dialog incl. courier notice (no-op when no dispatch)
   assert.match(ui, /החבילה כבר יצאה מהחנות ולא תבוטל אוטומטית/)
   assert.match(ui, /if \(nextStatus === 'cancelled'\) fetchOrders\(\)/)
   assert.match(ui, /disabled title="יש לאתר את החבילה לפני אישור ההזמנה"/)

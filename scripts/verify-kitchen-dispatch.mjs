@@ -189,7 +189,11 @@ await test('R7. route source: only POST; flag → origin → awaited session →
   assert.deepEqual([...order].sort((a, b) => a - b), order, 'checks happen in this order')
   assert.ok(!/testMode|bypass|ControlledTestOptions|assessMaaleTestReadiness/.test(s))
   assert.ok(!/MAALE_EXPRESS_API_KEY|NEXT_PUBLIC_/.test(s), 'no key / public env in the route')
-  assert.ok(src('app/dashboard/orders/page.tsx').indexOf('/dispatch') === -1, 'no kitchen UI yet')
+  // S4-03M: the kitchen UI calls this route once, with the confirmed fee only, and never imports server modules.
+  const page = src('app/dashboard/orders/page.tsx')
+  assert.equal(page.split('/dispatch`').length - 1, 1, 'exactly one call site')
+  assert.ok(page.includes('/dispatch`, { expectedFeeAgorot: fee })'), 'body is { expectedFeeAgorot }')
+  assert.ok(!/from '@\/lib\/(kitchenDispatch|kitchenOrders|kitchenAuth|kitchenUsers|supabaseServer)'/.test(page), 'no server module in the client page')
 })
 
 /* ─── B) lib/kitchenDispatch + REAL lib/maaleDispatch over an in-memory delivery_dispatches ─── */

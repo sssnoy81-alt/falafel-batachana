@@ -11,6 +11,12 @@ import {
   availableParcelActions, isOrderCancellationAllowedForParcel, isParcelReadyForAcceptance, isParcelStatus, isParcelSyncedOnCancel, PARCEL_ACTION_LABELS, PARCEL_ORDER_CANCEL_ENABLED,
   PARCEL_STATUS_LABELS, type ParcelAction,
 } from '@/lib/parcelRequest'
+import {
+  canConfirmDispatch, combinedCancelConfirmText, DISPATCH_LOCKS_KEY, DISPATCH_VIEW_LABELS, dispatchConfirmLines, dispatchHint,
+  effectiveDispatchNote, expectedFeeAgorot, interpretDispatchResponse, isDispatchButtonVisible, MANUAL_COURIER_ACK_LABEL,
+  MANUAL_COURIER_CHECK, NETWORK_OUTCOME, needsReadyWarning, parseDispatchLocks, READY_WITHOUT_COURIER_WARNING,
+  reconcileDispatchNotes, runExclusive, serializeDispatchLocks, type DispatchNote, type DispatchOutcome,
+} from '@/lib/kitchenDispatchUi'
 
 /* ─── API helpers (same-origin; the session cookie is sent automatically) ─── */
 class UnauthorizedError extends Error {}
@@ -27,6 +33,16 @@ async function kitchenFetch<T>(path: string, init?: { method?: string; body?: un
   const json = await res.json().catch(() => null)
   if (!res.ok) throw Object.assign(new Error(json?.error ?? 'request_failed'), { status: res.status, code: json?.error })
   return json as T
+}
+
+/** POST that keeps the HTTP status and parsed body (the courier request needs error + reason, not just a code). */
+async function kitchenPost(path: string, body: unknown): Promise<{ status: number; body: unknown }> {
+  const res = await fetch(path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    cache: 'no-store', credentials: 'same-origin',
+  })
+  if (res.status === 401) throw new UnauthorizedError()
+  return { status: res.status, body: await res.json().catch(() => null) }
 }
 
 /* ─── AUTH ─── */
@@ -452,10 +468,77 @@ function KitchenReminders({ order, large }: { order: Order; large?: boolean }) {
   )
 }
 
-function OrderCard({ order, onAdvance, onKitchenOpen, onEdit, onParcelAction, parcelBusy }: {
+// Locked notes survive a page reload on this tablet. Display-only convenience (never a server-side guarantee);
+// storage may be unavailable. Parsing / retention rules live in lib/kitchenDispatchUi.
+function loadDispatchLocks(): Record<string, DispatchNote> {
+  try { return parseDispatchLocks(localStorage.getItem(DISPATCH_LOCKS_KEY), Date.now()) } catch { return {} }
+}
+function saveDispatchLocks(notes: Record<string, DispatchNote>) {
+  try { localStorage.setItem(DISPATCH_LOCKS_KEY, serializeDispatchLocks(notes, localStorage.getItem(DISPATCH_LOCKS_KEY), Date.now())) } catch {}
+}
+
+// Manual Maale Express courier request (S4-03M). Shown only while kitchen dispatch is enabled. The hint is indicative:
+// the server re-checks every gate. After an unknown outcome the button stays off and staff contact the provider.
+// S4-03O: a server-confirmed 'sent' overrides a stale local lock; any other state keeps it (fail closed).
+function DispatchPanel({ order, busy, note: localNote, onDispatch }: {
+  order: Order; busy: boolean; note?: DispatchNote; onDispatch: (order: Order) => void
+}) {
+  const view = order.dispatch?.view ?? 'not_dispatched'
+  const note = effectiveDispatchNote(view, localNote)
+  const hint = dispatchHint(order)
+  const locked = note?.locked === true
+  const manual = locked || view === 'needs_manual_check' || view === 'rate_limited_manual_check'
+  const color = view === 'sent' ? '#4ADE80' : manual || view === 'failed' ? '#FF6B6B' : '#60A5FA'
+  return (
+    <div onClick={e => e.stopPropagation()} style={{ border: `1px solid ${color}`, borderRadius: 8, padding: '6px 10px', marginBottom: 8, fontSize: 12, cursor: 'default' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+        <span style={{ color, fontWeight: 800 }}>🛵 {busy ? 'שולח בקשה למעלה אקספרס…' : DISPATCH_VIEW_LABELS[view]}</span>
+        {isDispatchButtonVisible(order, note) && (
+          <button disabled={busy} onClick={() => onDispatch(order)} style={{ background: busy ? '#2A2A2A' : '#60A5FA', color: busy ? '#9CA3AF' : '#000', border: 'none', borderRadius: 6, padding: '4px 10px', fontWeight: 800, fontSize: 12, cursor: busy ? 'wait' : 'pointer', fontFamily: 'Heebo, sans-serif', whiteSpace: 'nowrap' }}>
+            הזמן שליח
+          </button>
+        )}
+      </div>
+      {order.dispatch?.providerOrderId && <div style={{ color: '#D1D5DB', marginTop: 3 }}>מס׳ משלוח במעלה אקספרס: <span style={{ direction: 'ltr', display: 'inline-block' }}>{order.dispatch.providerOrderId}</span></div>}
+      {view === 'not_dispatched' && !hint.canRequest && !locked && <div style={{ color: '#9CA3AF', marginTop: 3 }}>{hint.reason}</div>}
+      {note && <div style={{ color: note.ok ? '#4ADE80' : '#FBBF24', fontWeight: 700, marginTop: 3 }}>{note.message}</div>}
+      {manual && <div style={{ color: '#FF6B6B', fontWeight: 800, marginTop: 3 }}>⚠️ אין לנסות שוב מהמערכת — יש לבדוק מול מעלה אקספרס טלפונית</div>}
+    </div>
+  )
+}
+
+// Final confirmation before a courier request (S4-03O): order details + an explicit acknowledgment that no courier was
+// booked by phone. The final button stays disabled until it is ticked. UI-only — the server does not rely on it.
+function DispatchConfirmModal({ order, num, busy, onCancel, onConfirm }: {
+  order: Order; num: string; busy: boolean; onCancel: () => void; onConfirm: (acknowledged: boolean) => void
+}) {
+  const [acknowledged, setAcknowledged] = useState(false)
+  const lines = dispatchConfirmLines(order, num)
+  const allowed = canConfirmDispatch(acknowledged) && !busy
+  return (
+    <div onClick={onCancel} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, direction: 'rtl' }}>
+      <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" style={{ background: '#1A1A1A', border: '1px solid #60A5FA', borderRadius: 14, padding: 20, width: '100%', maxWidth: 420, fontFamily: 'Heebo, sans-serif' }}>
+        <div style={{ color: '#fff', fontSize: 17, fontWeight: 800, marginBottom: 10 }}>🛵 {lines[0]}</div>
+        {lines.slice(1, -1).map(l => <div key={l} style={{ color: '#D1D5DB', fontSize: 14, marginBottom: 4 }}>{l}</div>)}
+        <div style={{ background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.45)', color: '#FBBF24', borderRadius: 8, padding: '8px 10px', fontSize: 14, fontWeight: 700, margin: '12px 0 10px' }}>⚠️ {MANUAL_COURIER_CHECK}</div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#fff', fontSize: 14, fontWeight: 700, cursor: 'pointer', marginBottom: 14 }}>
+          <input type="checkbox" checked={acknowledged} onChange={e => setAcknowledged(e.target.checked)} style={{ width: 20, height: 20 }} />
+          {MANUAL_COURIER_ACK_LABEL}
+        </label>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button type="button" disabled={!allowed} onClick={() => { if (allowed) onConfirm(acknowledged) }} style={{ flex: 1, background: allowed ? '#60A5FA' : '#2A2A2A', color: allowed ? '#000' : '#6B7280', border: 'none', borderRadius: 8, padding: '10px 0', fontWeight: 800, fontSize: 15, cursor: allowed ? 'pointer' : 'not-allowed', fontFamily: 'Heebo, sans-serif' }}>הזמן שליח</button>
+          <button type="button" onClick={onCancel} style={{ flex: 1, background: 'transparent', color: '#D1D5DB', border: '1px solid #4B5563', borderRadius: 8, padding: '10px 0', fontWeight: 700, fontSize: 15, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>ביטול</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function OrderCard({ order, onAdvance, onKitchenOpen, onEdit, onParcelAction, parcelBusy, dispatchEnabled, dispatchBusy, dispatchNote, onDispatch }: {
   order: Order; onAdvance: (id: string, next: OrderStatus) => void
   onKitchenOpen?: (order: Order) => void; onEdit?: (order: Order) => void
   onParcelAction?: (orderId: string, action: ParcelAction) => void; parcelBusy?: boolean
+  dispatchEnabled?: boolean; dispatchBusy?: boolean; dispatchNote?: DispatchNote; onDispatch?: (order: Order) => void
 }) {
   const cfg = STATUS_CONFIG[order.status]
   const parcelBlocks = isParcelBlockingAcceptance(order)
@@ -463,6 +546,10 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit, onParcelAction, pa
   const isNew = order.status === 'received'
   const isPreparing = order.status === 'preparing'
   const num = order.dailyNumber ? String(order.dailyNumber).padStart(4, '0') : order.id.slice(-4).toUpperCase()
+  // S4-03O: ONE cancellation confirmation, with the courier notice when a dispatch exists or is uncertain. (The parcel
+  // panel's full-cancel exists only for 'received' orders, which can never have a courier request — left unchanged.)
+  const dispatchLocked = effectiveDispatchNote(order.dispatch?.view ?? 'not_dispatched', dispatchNote)?.locked === true
+  const withCourierNotice = (text: string) => combinedCancelConfirmText(text, order, dispatchLocked, dispatchEnabled === true)
 
   return (
     <div
@@ -484,6 +571,7 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit, onParcelAction, pa
         </div>
       </div>
       {isDeliveryOrder(order) && <DeliveryDetails order={order} />}
+      {dispatchEnabled && onDispatch && isDeliveryOrder(order) && <DispatchPanel order={order} busy={dispatchBusy === true} note={dispatchNote} onDispatch={onDispatch} />}
       {order.parcel && <ParcelPanel order={order} busy={parcelBusy} onAction={onParcelAction} onCancelOrder={() => onAdvance(order.id, 'cancelled')} />}
       <KitchenReminders order={order} />
       <div style={{ marginBottom: 10 }}>
@@ -560,7 +648,7 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit, onParcelAction, pa
             <button onClick={e => { e.stopPropagation(); onEdit(order) }} style={{ background: 'transparent', color: '#FFD700', border: '1px solid #FFD700', borderRadius: 6, padding: '4px 8px', fontWeight: 700, fontSize: 11, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', whiteSpace: 'nowrap' }}>✏️</button>
           )}
           {(order.status === 'confirmed' || order.status === 'preparing') && !cancelBlockedByParcel && (
-            <button onClick={e => { e.stopPropagation(); if(confirm(cancelConfirmText(order, num))) onAdvance(order.id, 'cancelled') }} style={{ background: 'transparent', color: '#FF6B6B', border: '1px solid #FF6B6B', borderRadius: 6, padding: '4px 8px', fontWeight: 700, fontSize: 11, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', whiteSpace: 'nowrap' }}>✕</button>
+            <button onClick={e => { e.stopPropagation(); if(confirm(withCourierNotice(cancelConfirmText(order, num)))) onAdvance(order.id, 'cancelled') }} style={{ background: 'transparent', color: '#FF6B6B', border: '1px solid #FF6B6B', borderRadius: 6, padding: '4px 8px', fontWeight: 700, fontSize: 11, cursor: 'pointer', fontFamily: 'Heebo, sans-serif', whiteSpace: 'nowrap' }}>✕</button>
           )}
           {(order.status === 'confirmed' || order.status === 'preparing') && cancelBlockedByParcel && (
             <button disabled title="ביטול הזמנה עם חבילה בחנות אינו זמין כרגע" onClick={e => e.stopPropagation()} style={{ background: 'transparent', color: '#6B7280', border: '1px dashed #4B5563', borderRadius: 6, padding: '4px 8px', fontWeight: 700, fontSize: 11, cursor: 'not-allowed', fontFamily: 'Heebo, sans-serif', whiteSpace: 'nowrap' }}>✕</button>
@@ -644,14 +732,15 @@ export default function OrdersPage() {
   if (!session) return <LoginScreen onLogin={setSession} />
 
   return <Dashboard key={session.user.username} user={session.user} branches={session.branches}
+    dispatchEnabled={session.maaleKitchenDispatchEnabled === true}
     onLogout={handleLogout} onUnauthorized={handleUnauthorized} />
 }
 
 /* ══════════════════════════════════════════════════
    DASHBOARD
 ══════════════════════════════════════════════════ */
-function Dashboard({ user, branches, onLogout, onUnauthorized }: {
-  user: AuthUser; branches: KitchenBranch[]; onLogout: () => void; onUnauthorized: () => void
+function Dashboard({ user, branches, dispatchEnabled, onLogout, onUnauthorized }: {
+  user: AuthUser; branches: KitchenBranch[]; dispatchEnabled: boolean; onLogout: () => void; onUnauthorized: () => void
 }) {
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
@@ -764,6 +853,13 @@ function Dashboard({ user, branches, onLogout, onUnauthorized }: {
   // Status change through the secure API. The server validates the transition, updates conditionally
   // (conflict-safe across tablets) and sends the "ready" push itself — no separate push call here.
   const handleAdvance = async (orderId: string, nextStatus: OrderStatus) => {
+    if (dispatchEnabled) {
+      // S4-03M/03O warning only (eligible orders with no courier request). The cancellation courier notice is part of
+      // the single cancel confirmation on the card; nothing is ever cancelled at the courier provider from here.
+      const order = orders.find(o => o.id === orderId)
+      const locked = order ? effectiveDispatchNote(order.dispatch?.view ?? 'not_dispatched', dispatchNotes[orderId])?.locked === true : false
+      if (order && needsReadyWarning(order, nextStatus, locked) && !confirm(READY_WITHOUT_COURIER_WARNING)) return
+    }
     setActionError('')
     setKitchenOrder(prev => prev?.id === orderId ? null : prev)
     try {
@@ -808,6 +904,55 @@ function Dashboard({ user, branches, onLogout, onUnauthorized }: {
       fetchOrders()
     }
   }
+
+  // Manual courier request (S4-03M). One request at a time; staff confirm the stored fee, the server re-checks it.
+  // An unknown outcome locks this order on this tablet (kept across reloads) — staff then contact the provider.
+  // S4-03O: the button only opens the confirmation; sending needs the explicit acknowledgment and passes a synchronous
+  // ref guard (React state updates are async, so a fast second click could otherwise slip through).
+  const [dispatchBusyId, setDispatchBusyId] = useState<string | null>(null)
+  const [dispatchNotes, setDispatchNotes] = useState<Record<string, DispatchNote>>(loadDispatchLocks)
+  const [confirmDispatchId, setConfirmDispatchId] = useState<string | null>(null)
+  const dispatchInFlight = useRef(false)
+  const isDispatchLocked = (order: Order) =>
+    effectiveDispatchNote(order.dispatch?.view ?? 'not_dispatched', dispatchNotes[order.id])?.locked === true
+  const handleDispatch = (order: Order) => {
+    if (dispatchInFlight.current || dispatchBusyId || isDispatchLocked(order)) return
+    setConfirmDispatchId(order.id)
+  }
+  const submitDispatch = (order: Order, acknowledged: boolean) => runExclusive(dispatchInFlight, async () => {
+    setConfirmDispatchId(null)
+    if (!canConfirmDispatch(acknowledged) || isDispatchLocked(order)) return
+    const fee = expectedFeeAgorot(order)
+    if (fee === null) return
+    setActionError('')
+    setDispatchBusyId(order.id)
+    let outcome: DispatchOutcome
+    try {
+      const res = await kitchenPost(`/api/kitchen/orders/${encodeURIComponent(order.id)}/dispatch`, { expectedFeeAgorot: fee })
+      outcome = interpretDispatchResponse(res.status, res.body)
+    } catch (e) {
+      if (e instanceof UnauthorizedError) { setDispatchBusyId(null); onUnauthorized(); return }
+      outcome = NETWORK_OUTCOME // no answer: the request may still have reached the provider
+    }
+    setDispatchNotes(prev => {
+      const next = { ...prev, [order.id]: { message: outcome.message, ok: outcome.ok, locked: outcome.lock || prev[order.id]?.locked === true } }
+      saveDispatchLocks(next)
+      return next
+    })
+    setDispatchBusyId(null)
+    fetchOrders() // stale_confirmation and every other outcome: show the server's current state
+  })
+  // A server-confirmed 'sent' clears this tablet's stale lock (S4-03O); ambiguous states keep it.
+  useEffect(() => {
+    setDispatchNotes(prev => {
+      const next = reconcileDispatchNotes(prev, orders)
+      if (next !== prev) saveDispatchLocks(next)
+      return next
+    })
+  }, [orders])
+  // The confirmation always shows the latest polled order; it closes if a courier request is no longer possible.
+  const confirmDispatchOrder = confirmDispatchId ? orders.find(o => o.id === confirmDispatchId) ?? null : null
+  const confirmDispatchOpen = dispatchEnabled && confirmDispatchOrder !== null && isDispatchButtonVisible(confirmDispatchOrder, dispatchNotes[confirmDispatchOrder.id])
 
   async function saveNotes() {
     setActionError('')
@@ -873,6 +1018,12 @@ function Dashboard({ user, branches, onLogout, onUnauthorized }: {
 
       {kitchenOrder && (
         <KitchenModal order={kitchenOrder} onClose={() => setKitchenOrder(null)} onDone={(id) => handleAdvance(id, 'ready')} />
+      )}
+
+      {confirmDispatchOpen && confirmDispatchOrder && (
+        <DispatchConfirmModal key={confirmDispatchOrder.id} order={confirmDispatchOrder} busy={dispatchBusyId !== null}
+          num={confirmDispatchOrder.dailyNumber ? String(confirmDispatchOrder.dailyNumber).padStart(4, '0') : confirmDispatchOrder.id.slice(-4).toUpperCase()}
+          onCancel={() => setConfirmDispatchId(null)} onConfirm={ack => { void submitDispatch(confirmDispatchOrder, ack) }} />
       )}
 
       <div style={{ minHeight: '100vh', background: '#0D0D0D', color: '#fff', fontFamily: 'Heebo, sans-serif', direction: 'rtl' }}>
@@ -1009,7 +1160,9 @@ function Dashboard({ user, branches, onLogout, onUnauthorized }: {
                       ? <div style={{ color: '#374151', textAlign: 'center', fontSize: 12, padding: '20px 0' }}>אין הזמנות</div>
                       : colOrders.map(order => (
                         <OrderCard key={order.id} order={order} onAdvance={handleAdvance} onKitchenOpen={status === 'preparing' ? setKitchenOrder : undefined} onEdit={setEditOrder}
-                          onParcelAction={handleParcelAction} parcelBusy={parcelBusyId === order.id} />
+                          onParcelAction={handleParcelAction} parcelBusy={parcelBusyId === order.id}
+                          dispatchEnabled={dispatchEnabled} dispatchBusy={dispatchBusyId === order.id} dispatchNote={dispatchNotes[order.id]}
+                          onDispatch={handleDispatch} />
                       ))}
                   </div>
                 </div>

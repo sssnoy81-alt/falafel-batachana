@@ -2,7 +2,8 @@
 // Pure (no Supabase / network). Server-side use only — imports lib/kitchenAuth (node:crypto).
 
 import { KITCHEN_BRANCH_IDS, type KitchenSession } from './kitchenAuth'
-import type { KitchenOrder } from './kitchenTypes'
+import type { KitchenDispatch, KitchenOrder } from './kitchenTypes'
+import { kitchenDispatchView } from './kitchenDispatchUi'
 
 /* ─── Branch scope ─── */
 
@@ -48,9 +49,15 @@ export const KITCHEN_ORDER_SELECT = [
   'parcel_requests(status, tracking_ref, carrier, recipient_name)',
 ].join(', ')
 
+// S4-03M — courier request state, embedded ONLY while kitchen dispatch is enabled (the disabled read is unchanged).
+// delivery_dispatches.order_id is UNIQUE + FK → orders(id): a one-to-one embed like deliveries / parcel_requests.
+export const KITCHEN_DISPATCH_EMBED = 'delivery_dispatches(status, error_code, provider_order_id, provider_status, last_attempt_at)'
+export const kitchenOrderSelect = (dispatchEnabled: boolean): string =>
+  dispatchEnabled ? `${KITCHEN_ORDER_SELECT}, ${KITCHEN_DISPATCH_EMBED}` : KITCHEN_ORDER_SELECT
+
 /* ─── Response contract (types live in lib/kitchenTypes.ts, shared with the kitchen UI) ─── */
 
-export type { KitchenDelivery, KitchenOrder, KitchenOrderItem, KitchenParcel } from './kitchenTypes'
+export type { KitchenDelivery, KitchenDispatch, KitchenOrder, KitchenOrderItem, KitchenParcel } from './kitchenTypes'
 
 /* ─── Normalization (explicit field-by-field; raw rows are never passed through) ─── */
 
@@ -65,7 +72,24 @@ const num = (v: unknown, fallback = 0): number => {
   return Number.isFinite(n) ? n : fallback
 }
 
-export function normalizeKitchenOrder(raw: unknown): KitchenOrder | null {
+export interface NormalizeOptions {
+  /** Include `dispatch` (kitchen dispatch enabled). Off → the key is absent, exactly as before 03M. */
+  dispatch?: boolean
+  nowMs?: number
+}
+
+function normalizeDispatch(v: unknown, nowMs: number): KitchenDispatch | null {
+  const r = one(v)
+  if (!r) return null
+  return {
+    view: kitchenDispatchView({ status: str(r.status), error_code: str(r.error_code), last_attempt_at: str(r.last_attempt_at) }, nowMs),
+    errorCode: str(r.error_code),
+    providerOrderId: str(r.provider_order_id),
+    providerStatus: str(r.provider_status),
+  }
+}
+
+export function normalizeKitchenOrder(raw: unknown, opts: NormalizeOptions = {}): KitchenOrder | null {
   if (!isRow(raw)) return null
   const id = str(raw.id), status = str(raw.status), createdAt = str(raw.created_at), branchId = str(raw.branch_id)
   if (!id || !status || !createdAt || !branchId) return null
@@ -114,9 +138,10 @@ export function normalizeKitchenOrder(raw: unknown): KitchenOrder | null {
           recipientName: str(p.recipient_name) || null, // NULL before Migration 05 / without a recipient ('' never shown)
         }
       : null,
+    ...(opts.dispatch ? { dispatch: type === 'delivery' ? normalizeDispatch(raw.delivery_dispatches, opts.nowMs ?? Date.now()) : null } : {}),
   }
 }
 
-export function normalizeKitchenOrders(rows: unknown): KitchenOrder[] {
-  return (Array.isArray(rows) ? rows : []).map(normalizeKitchenOrder).filter((o): o is KitchenOrder => o !== null)
+export function normalizeKitchenOrders(rows: unknown, opts: NormalizeOptions = {}): KitchenOrder[] {
+  return (Array.isArray(rows) ? rows : []).map(r => normalizeKitchenOrder(r, opts)).filter((o): o is KitchenOrder => o !== null)
 }

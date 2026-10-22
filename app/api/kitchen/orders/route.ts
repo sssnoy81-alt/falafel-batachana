@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getKitchenSession } from '@/lib/kitchenUsers'
-import { KITCHEN_ORDER_SELECT, normalizeKitchenOrders, resolveBranchScope } from '@/lib/kitchenOrders'
+import { kitchenOrderSelect, normalizeKitchenOrders, resolveBranchScope } from '@/lib/kitchenOrders'
+import { isKitchenDispatchEnabled } from '@/lib/kitchenDispatch'
 import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
 import { israelDayBounds } from '@/lib/hours'
 
 // GET /api/kitchen/orders[?branch=all|<branch uuid>] — READ ONLY (06C).
 // Requires a kitchen session. Returns today's orders (Asia/Jerusalem day) for the session's branch scope,
 // with a minimal explicit field set. Delivery details are only included for delivery orders.
+// S4-03M: courier request state (delivery_dispatches) is added only while kitchen dispatch is enabled.
 
 const NO_STORE = { 'Cache-Control': 'no-store' }
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: NO_STORE })
@@ -21,9 +23,10 @@ export async function GET(req: NextRequest) {
   try {
     const supabase = getServerSupabase()
     const { start, end } = israelDayBounds()
+    const dispatchEnabled = isKitchenDispatchEnabled(process.env)
     const { data, error } = await supabase
       .from('orders')
-      .select(KITCHEN_ORDER_SELECT)
+      .select(kitchenOrderSelect(dispatchEnabled))
       .in('branch_id', scope.branchIds)
       .gte('created_at', start.toISOString())
       .lt('created_at', end.toISOString())
@@ -33,7 +36,7 @@ export async function GET(req: NextRequest) {
       console.error('kitchen orders: query failed', error.code) // no payloads / PII in logs
       return json({ error: 'server_error' }, 500)
     }
-    return json({ orders: normalizeKitchenOrders(data) })
+    return json({ orders: normalizeKitchenOrders(data, { dispatch: dispatchEnabled }) })
   } catch (e) {
     if (e instanceof ServerConfigError) {
       console.error('kitchen orders: server config error')

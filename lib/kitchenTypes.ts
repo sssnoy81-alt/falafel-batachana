@@ -17,6 +17,18 @@ export interface KitchenSessionResponse {
   user: KitchenPublicUser
   expiresAt: string
   branches: KitchenBranch[] // admin only; [] for branch users
+  /** Manual Maale Express courier requests (S4-03M). false unless MAALE_KITCHEN_DISPATCH_ENABLED === 'true'. */
+  maaleKitchenDispatchEnabled: boolean
+}
+
+export type KitchenDispatchView = 'not_dispatched' | 'in_progress' | 'sent' | 'rate_limited_manual_check' | 'needs_manual_check' | 'failed'
+
+/** Courier request state of a delivery order (delivery_dispatches row). Present only while kitchen dispatch is enabled. */
+export interface KitchenDispatch {
+  view: KitchenDispatchView
+  errorCode: string | null       // short internal code (e.g. 'timeout'); never a provider body
+  providerOrderId: string | null
+  providerStatus: string | null
 }
 
 export interface KitchenOrderItem { id: string; name: string; quantity: number; notes: string | null }
@@ -53,4 +65,6 @@ export interface KitchenOrder {
   items: KitchenOrderItem[]
   delivery: KitchenDelivery | null
   parcel: KitchenParcel | null // delivery orders only; null when no parcel was requested
+  /** Only when kitchen dispatch is enabled (key absent otherwise); null = no courier request yet / not a delivery. */
+  dispatch?: KitchenDispatch | null
 }
