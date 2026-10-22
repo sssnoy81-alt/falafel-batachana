@@ -48,6 +48,13 @@ signing key revoked) was done in the Supabase and Vercel dashboards. It has no S
 | `parcel_04_verify.sql` | Post-install check for 04 (also re-checks 03, 01b and neighbouring functions) |
 | `sec2_01_verify.sql` | Post-install check for SEC-2 |
 | `parcel_99_verify.sql` | Original verification for 01/02. **Superseded for the 03 rows** (it expects the old received→confirmed-only gate). |
+| `s4_03_dispatch_readiness_verify.sql` | `public.delivery_dispatches` shape vs `lib/maaleDispatch.ts` (columns, uniques, FK, CHECKs, RLS, grants, row counts per status) + orders payment columns / deliveries geo constraint (S4-INTEGRATIONS-03B). Safe when the table is missing. |
+
+## Schema documented outside migrations
+
+| Object | File | Status |
+|---|---|---|
+| `public.delivery_dispatches` | `../schema/delivery_dispatches.baseline.sql` | **Exists in Production, created outside this repository (no migration was recorded).** The baseline is **documentation only — NOT a migration**: it starts with a `RAISE EXCEPTION` and must never be applied to Production. Columns, defaults, constraint / index names and security are transcribed from the owner's Production verification (03J2); the few remaining inferred / unverified details (FK action, exact CHECK spelling, triggers, owner) are marked inline. A fresh environment or any change to the Production table needs its own reviewed migration (preflight / verify / rollback). |
 
 They return one table of PASS / FAIL / INFO rows and print no function bodies, tracking numbers or customer data.
 
