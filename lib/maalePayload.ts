@@ -20,7 +20,8 @@ export const MAALE_ORDERS_URL = 'https://express.maalehamishlohim.co.il/api/v1/e
 export interface MaaleOrderItem { name: string; quantity: number }
 
 /** Exact outgoing body. Deliberately NO delivery_fee / delivery_area / delivery_price (Maale prices from lat/lng),
- *  no no_house_number (our checkout requires a house number) and no prep_minutes (Maale defaults to 20). */
+ *  no no_house_number (our checkout requires a house number) and NO dry_run (only lib/maaleClient.quoteMaaleOrder adds
+ *  it). prep_minutes only when the caller passes it (otherwise Maale's default of 20 applies). */
 export interface MaaleOrderPayload {
   external_order_id: string   // orders.id — idempotency key, identical on every retry
   /** cash → the courier collects food + delivery fee from the customer and pays the restaurant for the food;
@@ -33,13 +34,30 @@ export interface MaaleOrderPayload {
   customer_address: string    // "<street> <house number>, <city>"
   lat: number
   lng: number
-  drop_description?: string   // entrance / floor / apartment / notes; omitted when empty
+  drop_description?: string   // entrance / floor / apartment / notes; omitted when empty; fitted to the provider limit
+  prep_minutes?: number       // integer 0..240, only when explicitly requested by the caller
 }
 
 export const MAALE_PAYLOAD_KEYS = [
   'external_order_id', 'payment_method', 'food_total_agorot', 'items', 'customer_name', 'customer_phone',
   'customer_address', 'lat', 'lng', 'drop_description',
 ] as const
+/** Documented optional key, present only when the caller asks for it (see buildMaaleOrderPayload options). */
+export const MAALE_OPTIONAL_PAYLOAD_KEYS = ['prep_minutes'] as const
+
+/* ─── Provider limits (doc 21 Oct 2026) ─── */
+
+export const MAALE_CASH_FOOD_CAP_AGOROT = 60_000   // ₪600 food per cash order; credit has no cap
+export const MAALE_MAX_ITEMS = 100
+export const MAALE_MAX_CUSTOMER_NAME = 100
+export const MAALE_MAX_ADDRESS = 300
+export const MAALE_DROP_DESCRIPTION_MAX = 300
+/** The provider prefixes the note with "הערת לקוח: " (11 characters). Until they confirm whether it counts toward the
+ *  300-character limit, reserve it conservatively (with margin) and keep our text within the remainder. */
+export const MAALE_DROP_LABEL_RESERVE = 20
+export const MAALE_DROP_DESCRIPTION_BUDGET = MAALE_DROP_DESCRIPTION_MAX - MAALE_DROP_LABEL_RESERVE // 280
+export const MAALE_PREP_MINUTES_MIN = 0
+export const MAALE_PREP_MINUTES_MAX = 240
 
 /* ─── Server snapshot (DB rows) ─── */
 
@@ -114,8 +132,22 @@ export type MaalePayloadError =
   | 'invalid_lat' | 'invalid_lng' | 'coordinates_not_precise'
   | 'empty_items' | 'invalid_item_name' | 'invalid_item_quantity' | 'invalid_item_price'
   | 'invalid_amounts' | 'food_total_mismatch' | 'invalid_food_total'
+  | 'cash_amount_too_high'    // cash food total above ₪600 (provider: arrange by phone)
+  | 'too_many_items'          // more than 100 item lines
+  | 'address_too_long'        // customer_address above 300 characters
+  | 'invalid_prep_minutes'    // requested prep_minutes not an integer 0..240
 
-export type MaalePayloadResult = { ok: true; payload: MaaleOrderPayload } | { ok: false; errors: MaalePayloadError[] }
+/** Non-blocking notes about the built body (never personal data). */
+export type MaalePayloadWarning = 'drop_description_truncated'
+
+export type MaalePayloadResult =
+  | { ok: true; payload: MaaleOrderPayload; warnings?: MaalePayloadWarning[] }
+  | { ok: false; errors: MaalePayloadError[] }
+
+export interface MaalePayloadOptions {
+  /** Minutes until the food is ready (0..240). Omitted → not sent (provider default 20). */
+  prepMinutes?: number
+}
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const MAX_ITEM_NAME = 120
@@ -125,20 +157,41 @@ const toNum = (v: unknown): number | null => {
 }
 const clean = (s: string | null | undefined): string => (s ?? '').replace(/\s+/g, ' ').trim()
 
-/** "כניסה ב׳, קומה 2, דירה 6, קוד 1234" — empty fragments skipped; undefined when nothing to say. */
-export function buildDropDescription(d: Pick<NonNullable<MaaleOrderSnapshot['delivery']>, 'entrance' | 'floor' | 'apartment' | 'notes'>): string | undefined {
-  const parts = [
+const chars = (s: string): number => [...s].length // code points, like the provider's character limits
+const ELLIPSIS = '…'
+
+type DropFields = Pick<NonNullable<MaaleOrderSnapshot['delivery']>, 'entrance' | 'floor' | 'apartment' | 'notes'>
+
+/** Description + whether the customer's note had to be shortened to fit MAALE_DROP_DESCRIPTION_BUDGET.
+ *  The structured parts (entrance / floor / apartment — 20 chars each at most) always fit; only the free-text note is cut. */
+export function fitDropDescription(d: DropFields): { text: string | undefined; truncated: boolean } {
+  const fixed = [
     clean(d.entrance) && `כניסה ${clean(d.entrance)}`,
     clean(d.floor) && `קומה ${clean(d.floor)}`,
     clean(d.apartment) && `דירה ${clean(d.apartment)}`,
-    clean(d.notes),
-  ].filter(Boolean)
-  return parts.length > 0 ? parts.join(', ') : undefined
+  ].filter(Boolean) as string[]
+  let note = clean(d.notes)
+  const head = fixed.join(', ')
+  const sep = head && note ? ', ' : ''
+  let truncated = false
+  const room = MAALE_DROP_DESCRIPTION_BUDGET - chars(head) - chars(sep)
+  if (note && chars(note) > room) {
+    note = room > 1 ? [...note].slice(0, room - 1).join('').trimEnd() + ELLIPSIS : ''
+    truncated = true
+  }
+  const text = head + (note ? (head ? ', ' : '') + note : '')
+  return { text: text || undefined, truncated }
 }
 
-/** Builds the Maale payload or fails closed with every problem found. */
-export function buildMaaleOrderPayload(s: MaaleOrderSnapshot): MaalePayloadResult {
+/** "כניסה ב׳, קומה 2, דירה 6, קוד 1234" — empty fragments skipped; undefined when nothing to say; fitted to the budget. */
+export function buildDropDescription(d: DropFields): string | undefined {
+  return fitDropDescription(d).text
+}
+
+/** Builds the Maale payload or fails closed with every problem found. Never adds dry_run. */
+export function buildMaaleOrderPayload(s: MaaleOrderSnapshot, opts: MaalePayloadOptions = {}): MaalePayloadResult {
   const errors: MaalePayloadError[] = []
+  const warnings: MaalePayloadWarning[] = []
   const o = s.order
   const d = s.delivery
 
@@ -165,7 +218,10 @@ export function buildMaaleOrderPayload(s: MaaleOrderSnapshot): MaalePayloadResul
     if (!street) errors.push('missing_street')
     if (!house) errors.push('missing_house_number')
     address = `${street} ${house}, ${city}`
-    drop = buildDropDescription(d)
+    if (chars(address) > MAALE_MAX_ADDRESS) errors.push('address_too_long')
+    const fitted = fitDropDescription(d)
+    drop = fitted.text
+    if (fitted.truncated) warnings.push('drop_description_truncated')
 
     lat = toNum(d.delivery_lat)
     lng = toNum(d.delivery_lng)
@@ -179,6 +235,7 @@ export function buildMaaleOrderPayload(s: MaaleOrderSnapshot): MaalePayloadResul
   const items: MaaleOrderItem[] = []
   let itemsSubtotal = 0
   if (s.items.length === 0) errors.push('empty_items')
+  if (s.items.length > MAALE_MAX_ITEMS) errors.push('too_many_items')
   for (const it of s.items) {
     const itemName = clean(it.name)
     const q = toNum(it.quantity)
@@ -199,7 +256,13 @@ export function buildMaaleOrderPayload(s: MaaleOrderSnapshot): MaalePayloadResul
     food = roundMoney(total - fee)                                 // what the customer paid for food (incl. +₪4)
     if (food < 0) errors.push('invalid_food_total')
     if (Math.abs(food - roundMoney(itemsSubtotal + surcharge)) > 0.005) errors.push('food_total_mismatch')
+    // Provider cap: cash food total ≤ ₪600 (60000 agorot); above it the order is arranged by phone. Credit: no cap.
+    if (food >= 0 && paymentMethod === 'cash' && Math.round(food * 100) > MAALE_CASH_FOOD_CAP_AGOROT) errors.push('cash_amount_too_high')
   }
+
+  const prep = opts.prepMinutes
+  if (prep !== undefined && (!Number.isInteger(prep) || prep < MAALE_PREP_MINUTES_MIN || prep > MAALE_PREP_MINUTES_MAX))
+    errors.push('invalid_prep_minutes')
 
   const uniq = [...new Set(errors)]
   if (uniq.length > 0 || food === null || lat === null || lng === null || !paymentMethod) return { ok: false, errors: uniq.length ? uniq : ['invalid_amounts'] }
@@ -215,6 +278,7 @@ export function buildMaaleOrderPayload(s: MaaleOrderSnapshot): MaalePayloadResul
     lat,
     lng,
     ...(drop ? { drop_description: drop } : {}),
+    ...(prep !== undefined ? { prep_minutes: prep } : {}),
   }
-  return { ok: true, payload }
+  return warnings.length ? { ok: true, payload, warnings } : { ok: true, payload }
 }

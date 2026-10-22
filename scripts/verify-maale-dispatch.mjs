@@ -138,7 +138,7 @@ const finalCase = async (respond, code) => {
 }
 await test('9. 400 code=zone_unknown → failed_final', async () => finalCase(() => jsonRes({ code: 'zone_unknown' }, 400), 'zone_unknown'))
 await test('10. 400 dispatch_closed=true → failed_final', async () => finalCase(() => jsonRes({ dispatch_closed: true }, 400), 'dispatch_closed'))
-await test('11. generic 400 → failed_final (provider_rejected)', async () => finalCase(() => jsonRes({ error: 'lat required' }, 400), 'provider_rejected'))
+await test('11. generic 400 → failed_final (validation_error, 03E)', async () => finalCase(() => jsonRes({ error: 'lat required' }, 400), 'validation_error'))
 await test('12. 401 → unauthorized, final', async () => finalCase(() => jsonRes({}, 401), 'unauthorized'))
 
 const retryCase = async (respond, code) => {
@@ -155,9 +155,9 @@ await test('17. malformed JSON handled safely (201 still success without ids; 40
   const bad = status => ({ ok: status < 300, status, json: async () => { throw new SyntaxError('Unexpected token <') } })
   const s = setup({ respond: () => bad(201) })
   assert.deepEqual(await s.run(), { ok: true, outcome: 'sent', kind: 'created', reclaimed: false }); assert.equal(s.mem.state.row.provider_order_id, null)
-  assert.deepEqual(client.classifyMaaleResponse(400, null), { ok: false, retryable: false, errorCode: 'provider_rejected', status: 400 })
-  assert.deepEqual(client.classifyMaaleResponse(502, 'x'), { ok: false, retryable: true, errorCode: 'provider_5xx', status: 502 })
-  assert.deepEqual(client.classifyMaaleResponse(202, {}), { ok: false, retryable: true, errorCode: 'invalid_response', status: 202 })
+  assert.deepEqual(client.classifyMaaleResponse(400, null), { ok: false, retryable: false, errorCode: 'validation_error', status: 400 })
+  assert.deepEqual(client.classifyMaaleResponse(502, 'x'), { ok: false, retryable: true, errorCode: 'provider_5xx', status: 502, ambiguous: true })
+  assert.deepEqual(client.classifyMaaleResponse(202, {}), { ok: false, retryable: true, errorCode: 'invalid_response', status: 202, ambiguous: true })
   assert.equal(client.classifyMaaleResponse(429, {}).retryable, true); assert.equal(client.classifyMaaleResponse(404, {}).retryable, false)
   assert.equal(client.classifyMaaleResponse(201, { status: 'Bad Value!', order_id: 'x'.repeat(101) }).providerStatus, undefined)
 })
