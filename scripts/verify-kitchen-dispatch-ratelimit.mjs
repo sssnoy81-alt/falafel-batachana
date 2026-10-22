@@ -310,8 +310,9 @@ const post = async (body = { expectedFeeAgorot: 2000 }, user = 'mishor') => {
   return { status: res.status, body: await res.json() }
 }
 const env = on => {
-  for (const k of ['MAALE_KITCHEN_DISPATCH_ENABLED', 'MAALE_EXPRESS_ENABLED', 'MAALE_EXPRESS_API_KEY']) delete process.env[k]
-  if (on.kitchen) process.env.MAALE_KITCHEN_DISPATCH_ENABLED = 'true'
+  for (const k of ['MAALE_KITCHEN_DISPATCH_ENABLED', 'MAALE_KITCHEN_DISPATCH_USERS', 'MAALE_EXPRESS_ENABLED', 'MAALE_EXPRESS_API_KEY']) delete process.env[k]
+  // S4-04C: the flag alone authorizes nobody — both fixture accounts are allowlisted for the enabled-path tests.
+  if (on.kitchen) { process.env.MAALE_KITCHEN_DISPATCH_ENABLED = 'true'; process.env.MAALE_KITCHEN_DISPATCH_USERS = 'mishor,other' }
   if (on.maale) { process.env.MAALE_EXPRESS_ENABLED = 'true'; process.env.MAALE_EXPRESS_API_KEY = KEY }
 }
 

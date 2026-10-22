@@ -1,14 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getKitchenSession } from '@/lib/kitchenUsers'
 import { kitchenOrderSelect, normalizeKitchenOrders, resolveBranchScope } from '@/lib/kitchenOrders'
-import { isKitchenDispatchEnabled } from '@/lib/kitchenDispatch'
+import { isKitchenDispatchAllowedFor } from '@/lib/kitchenDispatch'
 import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
 import { israelDayBounds } from '@/lib/hours'
 
 // GET /api/kitchen/orders[?branch=all|<branch uuid>] — READ ONLY (06C).
 // Requires a kitchen session. Returns today's orders (Asia/Jerusalem day) for the session's branch scope,
 // with a minimal explicit field set. Delivery details are only included for delivery orders.
-// S4-03M: courier request state (delivery_dispatches) is added only while kitchen dispatch is enabled.
+// S4-03M / 04C: courier request state (delivery_dispatches) is added only for an account authorized for dispatch.
 
 const NO_STORE = { 'Cache-Control': 'no-store' }
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: NO_STORE })
@@ -23,7 +23,7 @@ export async function GET(req: NextRequest) {
   try {
     const supabase = getServerSupabase()
     const { start, end } = israelDayBounds()
-    const dispatchEnabled = isKitchenDispatchEnabled(process.env)
+    const dispatchEnabled = isKitchenDispatchAllowedFor(process.env, auth.session.username)
     const { data, error } = await supabase
       .from('orders')
       .select(kitchenOrderSelect(dispatchEnabled))

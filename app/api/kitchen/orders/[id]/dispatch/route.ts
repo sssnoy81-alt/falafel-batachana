@@ -2,12 +2,15 @@ import { NextRequest, NextResponse } from 'next/server'
 import { checkSameOriginJson } from '@/lib/kitchenAuth'
 import { getKitchenSession } from '@/lib/kitchenUsers'
 import { isUuid } from '@/lib/kitchenMutations'
-import { consumeQuoteSlotRpc, isKitchenDispatchEnabled, parseDispatchBody, requestKitchenDispatch } from '@/lib/kitchenDispatch'
+import {
+  consumeQuoteSlotRpc, isKitchenDispatchAllowedFor, isKitchenDispatchEnabled, parseDispatchBody, requestKitchenDispatch,
+} from '@/lib/kitchenDispatch'
 import { defaultDispatchDeps, dispatchOrderToMaale } from '@/lib/maaleDispatch'
 import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
 
 // POST /api/kitchen/orders/[id]/dispatch — { expectedFeeAgorot }   (S4-INTEGRATIONS-03K, MANUAL courier request)
 // DISABLED unless MAALE_KITCHEN_DISPATCH_ENABLED === 'true' → otherwise 404 before any session or DB access.
+// The ONLY production dispatch entry point; kitchen-operated and manual (no automatic trigger anywhere).
 // Then: same-origin JSON, DB-backed kitchen session, body + UUID; branch scope, stored fee and status from the DATABASE
 // (lib/kitchenDispatch); every Maale gate again in lib/maaleDispatch (never test mode). No automatic dispatch, no retry.
 // S4-04B: just before the provider quote, one slot of the durable rate limit (public.consume_maale_quote_slot).
@@ -22,6 +25,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!checkSameOriginJson(req)) return json({ error: 'invalid_request' }, 400)
   const auth = await getKitchenSession(req)
   if (!auth.ok) return json({ error: auth.error }, auth.status)
+  // S4-04C: only accounts listed exactly in MAALE_KITCHEN_DISPATCH_USERS. Everyone else gets the same 404 as "feature
+  // off", before the body is read or any order / dispatch data is touched (no probing of orders or branches).
+  if (!isKitchenDispatchAllowedFor(process.env, auth.session.username)) return json({ error: 'not_found' }, 404)
 
   let body: unknown
   try {

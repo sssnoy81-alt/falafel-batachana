@@ -122,7 +122,8 @@ export interface DispatchDeps {
    * S4-04B durable quote rate limit (public.consume_maale_quote_slot). The kitchen route ALWAYS supplies it, with the
    * actor bound from the authenticated session; the branch passed here comes from the database order. Consulted only
    * after every local gate and the existing-dispatch-state check, immediately before the provider quote. Any thrown
-   * error or unknown answer blocks (no quote, no dispatch). Absent only for the owner-run controlled-test runner / tests.
+   * error or unknown answer blocks (no quote, no dispatch). S4-04C: REQUIRED — an ordinary call without it is blocked
+   * (rate_limit_unavailable) before any quote; only the marker-checked testMode of the owner runner may omit it.
    */
   consumeQuoteSlot?: (orderId: string, branchId: string) => Promise<string>
   now?: () => string
@@ -332,9 +333,14 @@ export async function dispatchOrderToMaale(
 
   // 5a) S4-04B durable quote rate limit — one slot per provider quote, consumed only now (after every local gate and the
   //     existing-state check), never for a request that was already blocked. Not ok → nothing is quoted or sent.
+  //     S4-04C: REQUIRED for every ordinary call. The only exemption is the explicit testMode of the owner-run
+  //     controlled runner (one named UUID that must carry the "🧪 בדיקה" marker, checked above). No silent skip.
   if (deps.consumeQuoteSlot) {
     const slot = await quoteSlotDecision(deps.consumeQuoteSlot, orderId, loaded.snapshot.order.branch_id)
     if (slot !== 'ok') { log(`maale_dispatch_${slot}`); return blocked(slot) }
+  } else if (!test) {
+    log('maale_dispatch_rate_limit_missing')
+    return blocked('rate_limit_unavailable')
   }
 
   const fee = Number(loaded.snapshot.delivery?.delivery_fee)

@@ -86,6 +86,7 @@ function setup({ respond = () => jsonRes({ order_id: 'MX-1', status: 'searching'
     config, repo: mem.repo, areaGeoConfig: realAreas ? undefined : areaGeoConfig, isPaymentVerified: async () => paid,
     send: p => client.sendMaaleOrder(p, { config, fetchImpl, timeoutMs: 40 }),
     quote: async () => quote,
+    consumeQuoteSlot: async () => 'ok', // S4-04C: required for ordinary calls (the kitchen route always injects it)
     now: () => '2026-09-30T10:00:00.000Z', log: c => logs.push(c),
   }
   return { mem, calls, logs, deps, run: () => dispatch.dispatchOrderToMaale(ORDER_ID, deps) }

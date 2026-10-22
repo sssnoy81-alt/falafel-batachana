@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { KITCHEN_BRANCH_IDS, publicUser } from '@/lib/kitchenAuth'
 import { getKitchenSession } from '@/lib/kitchenUsers'
-import { isKitchenDispatchEnabled } from '@/lib/kitchenDispatch'
+import { isKitchenDispatchAllowedFor } from '@/lib/kitchenDispatch'
 import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
 
 // GET /api/kitchen/session — returns the authenticated kitchen user, or 401.
 // Admin only: also returns the branch filter list [{ id, name }] for the known kitchen branches.
 // Branch users get branches: [] (no DB access).
-// maaleKitchenDispatchEnabled (S4-03M): whether the kitchen UI shows courier-request controls (default false).
+// maaleKitchenDispatchEnabled (S4-03M / 04C): whether THIS account may see courier-request controls — flag on AND the
+// account is in the server-only allowlist (default false). The allowlist itself is never returned.
 
 const NO_STORE = { 'Cache-Control': 'no-store' }
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: NO_STORE })
@@ -19,7 +20,7 @@ export async function GET(req: NextRequest) {
   const base = {
     user: publicUser(auth.session),
     expiresAt: new Date(auth.session.exp * 1000).toISOString(),
-    maaleKitchenDispatchEnabled: isKitchenDispatchEnabled(process.env),
+    maaleKitchenDispatchEnabled: isKitchenDispatchAllowedFor(process.env, auth.session.username),
   }
   if (auth.session.role !== 'admin') return json({ ...base, branches: [] })
 

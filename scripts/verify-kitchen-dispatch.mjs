@@ -108,7 +108,11 @@ const post = async (orderId, body, { session = SESS.mishor, origin = ORIGIN, con
   const res = await route.POST(req, { params: Promise.resolve({ id: orderId }) })
   return { status: res.status, body: await res.json(), cache: res.headers.get('cache-control') }
 }
-const withFlag = async (fn) => { process.env.MAALE_KITCHEN_DISPATCH_ENABLED = 'true'; try { return await fn() } finally { delete process.env.MAALE_KITCHEN_DISPATCH_ENABLED } }
+// S4-04C: the flag alone authorizes nobody — the fixture accounts are allowlisted for the enabled-path tests.
+const withFlag = async (fn) => {
+  process.env.MAALE_KITCHEN_DISPATCH_ENABLED = 'true'; process.env.MAALE_KITCHEN_DISPATCH_USERS = 'mishor,other,boss'
+  try { return await fn() } finally { delete process.env.MAALE_KITCHEN_DISPATCH_ENABLED; delete process.env.MAALE_KITCHEN_DISPATCH_USERS }
+}
 
 console.log('Kitchen dispatch route (real route, fake DB, provider unreachable)')
 
@@ -233,6 +237,7 @@ function harness({ status = 'confirmed', snap = snapshot(), parcelStatus = null,
     config, repo, isPaymentVerified: async () => true,
     send: p => client.sendMaaleOrder(p, { config, fetchImpl, timeoutMs: 40 }),
     quote: async () => { st.quotes++; await tick(); return quote }, now: () => '2026-10-22T10:00:00.000Z', log: () => {},
+    consumeQuoteSlot: async () => 'ok', // S4-04C: required for ordinary calls (the kitchen route always injects it)
   }
   const deps = {
     async loadOrder(id) { return id === ORDER_ID ? { id, branch_id: branch, status, type: 'delivery', delivery_fee: kitchenFee } : null },

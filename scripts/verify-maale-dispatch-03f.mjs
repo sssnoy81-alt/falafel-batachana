@@ -107,6 +107,7 @@ function setup({ respond = () => jsonRes({ order: { id: 'MX-1', status: 'searchi
     send: p => client.sendMaaleOrder(p, { config, fetchImpl, timeoutMs: 40 }),
     ...(noQuote ? {} : { quote: async p => { quotes.push(p); await tick(); return typeof quote === 'function' ? quote(p) : quote } }),
     isPaymentVerified: async () => true, // must never matter in 03F
+    consumeQuoteSlot: async () => 'ok', // S4-04C: required for ordinary calls (the kitchen route always injects it)
     now: () => clock, log: c => logs.push(c),
   }
   return { mem, sends, quotes, logs, deps, setNow: t => { clock = t }, run: opts => D.dispatchOrderToMaale(ORDER_ID, deps, opts) }

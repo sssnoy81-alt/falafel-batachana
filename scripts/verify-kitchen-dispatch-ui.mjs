@@ -96,7 +96,11 @@ const get = async (route, path, session = SESS.mishor) => {
   const res = await route.GET(req)
   return { status: res.status, body: await res.json() }
 }
-const setFlag = v => { if (v === undefined) delete process.env.MAALE_KITCHEN_DISPATCH_ENABLED; else process.env.MAALE_KITCHEN_DISPATCH_ENABLED = v }
+// S4-04C: the flag alone authorizes nobody — both fixture accounts are allowlisted whenever a flag value is set.
+const setFlag = v => {
+  if (v === undefined) { delete process.env.MAALE_KITCHEN_DISPATCH_ENABLED; delete process.env.MAALE_KITCHEN_DISPATCH_USERS }
+  else { process.env.MAALE_KITCHEN_DISPATCH_ENABLED = v; process.env.MAALE_KITCHEN_DISPATCH_USERS = 'mishor,boss' }
+}
 
 const NOW = Date.parse('2026-10-22T12:00:00Z')
 const ago = ms => new Date(NOW - ms).toISOString()

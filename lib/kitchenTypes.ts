@@ -17,7 +17,8 @@ export interface KitchenSessionResponse {
   user: KitchenPublicUser
   expiresAt: string
   branches: KitchenBranch[] // admin only; [] for branch users
-  /** Manual Maale Express courier requests (S4-03M). false unless MAALE_KITCHEN_DISPATCH_ENABLED === 'true'. */
+  /** Manual Maale Express courier requests (S4-03M / 04C): true only when the feature flag is on AND THIS account is
+   *  in the server-side allowlist. Derived per session; the allowlist itself is never sent. */
   maaleKitchenDispatchEnabled: boolean
 }
 

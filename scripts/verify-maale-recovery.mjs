@@ -86,6 +86,7 @@ function setup({ respond = () => jsonRes({ order_id: 'MX-1' }, 201), config = { 
   const deps = {
     config, repo: mem.repo, areaGeoConfig: realAreas ? undefined : AREA_FIX, isPaymentVerified: async () => paid,
     send: p => client.sendMaaleOrder(p, { config, fetchImpl, timeoutMs: 40 }), quote: async () => okQuote, now: () => NOW, log: c => logs.push(c),
+    consumeQuoteSlot: async () => 'ok', // S4-04C: required for ordinary calls (the kitchen route always injects it)
   }
   return { mem, calls, logs, deps, run: opts => D.dispatchOrderToMaale(ORDER_ID, deps, opts) }
 }

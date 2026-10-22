@@ -3,6 +3,7 @@
 //
 // DISABLED unless MAALE_KITCHEN_DISPATCH_ENABLED === 'true' (checked by the route on every request; the variable is
 // not set in any environment). Live sending additionally needs MAALE_EXPRESS_ENABLED + key (lib/maaleClient).
+// S4-04C: even then, only accounts listed exactly in MAALE_KITCHEN_DISPATCH_USERS may see or use it (default: nobody).
 // The route authenticates the kitchen session first; this module then, from the DATABASE only:
 //   loads the order → branch scope (out of scope ≡ not found) → delivery + stored fee → staff-confirmed fee must equal
 //   it (stale screen → 409, nothing sent) → kitchen status confirmed / preparing → lib/maaleDispatch, which re-checks
@@ -22,6 +23,37 @@ import {
 /** Only the exact string 'true' enables kitchen dispatch; anything else (incl. unset) is OFF. */
 export const isKitchenDispatchEnabled = (env: Record<string, string | undefined>): boolean =>
   env.MAALE_KITCHEN_DISPATCH_ENABLED === 'true'
+
+/* ─── Authorized accounts (S4-04C) ─── */
+
+/** Same rule as kitchen_users.username / lib/kitchenAuth USERNAME_REGEX (lower-case, already normalized at login). */
+const USERNAME_RULE = /^[a-z0-9_-]{2,32}$/
+export const MAX_DISPATCH_USERS = 50
+
+export type DispatchAllowlist = { ok: true; users: ReadonlySet<string> } | { ok: false }
+
+/**
+ * MAALE_KITCHEN_DISPATCH_USERS: comma-separated kitchen account usernames, e.g. "mishor,boss". SERVER-ONLY.
+ * Unset / blank → valid and EMPTY (nobody). Any malformed entry (empty item, wildcard, upper case, spaces inside, other
+ * characters, > MAX_DISPATCH_USERS) rejects the WHOLE value → nobody (fail closed). No wildcards, no prefixes.
+ */
+export function parseDispatchAllowlist(raw: string | undefined): DispatchAllowlist {
+  if (raw === undefined || raw.trim() === '') return { ok: true, users: new Set() }
+  const parts = raw.split(',').map(p => p.trim())
+  if (parts.length > MAX_DISPATCH_USERS || parts.some(p => !USERNAME_RULE.test(p))) return { ok: false }
+  return { ok: true, users: new Set(parts) }
+}
+
+/**
+ * The ONLY authorization check for courier controls and requests: feature flag on AND this authenticated account is
+ * listed exactly (Set membership — no substring / case folding). The feature flag alone never authorizes anyone.
+ */
+export function isKitchenDispatchAllowedFor(env: Record<string, string | undefined>, username: unknown): boolean {
+  if (!isKitchenDispatchEnabled(env)) return false
+  if (typeof username !== 'string' || !USERNAME_RULE.test(username)) return false
+  const list = parseDispatchAllowlist(env.MAALE_KITCHEN_DISPATCH_USERS)
+  return list.ok && list.users.has(username)
+}
 
 /** Kitchen statuses from which staff may request a courier. 'ready' is deliberately NOT included (03K): adding it needs
  *  explicit approval plus provider confirmation of prep_minutes: 0, and the same change in lib/maaleDispatch. */
@@ -129,7 +161,7 @@ export function mapDispatchResult(r: DispatchResult): KitchenDispatchResponse {
 
 /* ─── S4-04B quote rate limit (public.consume_maale_quote_slot) ─── */
 
-const ACTOR_REGEX = /^[a-z0-9_-]{2,32}$/ // = kitchen_users.username rule = the function's own check
+const ACTOR_REGEX = USERNAME_RULE // = kitchen_users.username rule = the function's own check
 
 /** Minimal shape of the server Supabase client used for the limiter RPC. */
 export interface QuoteSlotRpcClient {
