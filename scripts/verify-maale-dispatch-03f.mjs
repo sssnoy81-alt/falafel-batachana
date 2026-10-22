@@ -405,8 +405,12 @@ await test('D21. logs are short codes only; real repo checks exact-row updates; 
   assert.ok(d.includes('parcel_requests(status)'))
   assert.ok(!/^let\s|^var\s/m.test(d), 'no mutable module state')
   const walk = (dir) => require('node:fs').readdirSync(dir, { withFileTypes: true }).flatMap(e => e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)])
-  for (const f of walk(join(ROOT, 'app')).filter(p => /\.(tsx?|jsx?)$/.test(p)))
-    assert.ok(!/maaleDispatch|dispatchOrderToMaale|quoteMaaleOrder/.test(readFileSync(f, 'utf8')), f)
+  const ALLOWED = join(ROOT, 'app', 'api', 'kitchen', 'orders', '[id]', 'dispatch', 'route.ts') // S4-03K: flag-gated manual route only
+  for (const f of walk(join(ROOT, 'app')).filter(p => /\.(tsx?|jsx?)$/.test(p))) {
+    const s = readFileSync(f, 'utf8')
+    assert.ok(!/quoteMaaleOrder|testMode/.test(s), f)
+    if (f !== ALLOWED) assert.ok(!/maaleDispatch|dispatchOrderToMaale/.test(s), f)
+  }
 })
 
 console.log(`\nAll ${passed} Maale 03F dispatch checks passed.`)

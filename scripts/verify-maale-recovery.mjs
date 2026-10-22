@@ -250,9 +250,13 @@ await test('readiness: full field report + blockers (normal name, pickup, locali
 })
 
 const walk = dir => readdirSync(dir).flatMap(n => { const p = join(dir, n); return statSync(p).isDirectory() ? walk(p) : [p] })
-await test('25. no browser/public route imports the dispatch / test helpers', async () => {
-  for (const f of walk(join(ROOT, 'app')).filter(p => /\.(tsx?|jsx?)$/.test(p)))
-    assert.ok(!/maaleDispatch|maaleClient|assessMaaleTestReadiness|ControlledTestOptions|testMode/.test(readFileSync(f, 'utf8')), f)
+await test('25. no browser/public route imports the dispatch / test helpers (only the flag-gated kitchen route, never test mode)', async () => {
+  const ALLOWED = join(ROOT, 'app', 'api', 'kitchen', 'orders', '[id]', 'dispatch', 'route.ts') // S4-03K
+  for (const f of walk(join(ROOT, 'app')).filter(p => /\.(tsx?|jsx?)$/.test(p))) {
+    const s = readFileSync(f, 'utf8')
+    assert.ok(!/maaleClient|assessMaaleTestReadiness|ControlledTestOptions|testMode/.test(s), f)
+    if (f !== ALLOWED) assert.ok(!/maaleDispatch/.test(s), f)
+  }
   for (const f of walk(LIB).filter(p => p.endsWith('.ts') && !/maale(Dispatch|Client|Payload)\.ts$/.test(p)))
     assert.ok(!/dispatchOrderToMaale|assessMaaleTestReadiness/.test(readFileSync(f, 'utf8')), f)
 })

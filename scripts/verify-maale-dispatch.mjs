@@ -269,9 +269,16 @@ await test('27–28. logs are short codes only: no API key, no customer PII', as
 })
 
 const walk = dir => readdirSync(dir).flatMap(n => { const p = join(dir, n); return statSync(p).isDirectory() ? walk(p) : [p] })
-await test('29. no browser/client import of the Maale modules; nothing in the app calls dispatch yet', async () => {
+await test('29. no browser/client import of the Maale modules; only the flag-gated kitchen dispatch route calls dispatch', async () => {
+  // S4-03K: exactly one app file may import the dispatch service — the protected, flag-gated manual kitchen route.
+  const ALLOWED = join(ROOT, 'app', 'api', 'kitchen', 'orders', '[id]', 'dispatch', 'route.ts')
   for (const f of walk(join(ROOT, 'app')).filter(p => /\.(tsx?|jsx?)$/.test(p))) {
     const s = readFileSync(f, 'utf8')
+    if (f === ALLOWED) {
+      assert.ok(s.indexOf('isKitchenDispatchEnabled(process.env)') > 0 && s.indexOf('isKitchenDispatchEnabled(process.env)') < s.indexOf('dispatchOrderToMaale(orderId'), 'flag checked first')
+      assert.ok(!/maaleClient|maalePayload|testMode/.test(s), `${f}: no direct client / payload import, no test mode`)
+      continue
+    }
     assert.ok(!/maaleClient|maaleDispatch|maalePayload/.test(s), `${f} must not import Maale modules (no trigger yet)`)
   }
   for (const f of walk(LIB).filter(p => p.endsWith('.ts') && !/maale(Dispatch|Client|Payload)\.ts$/.test(p)))
