@@ -17,6 +17,9 @@
 //      as proof of settlement.
 //
 // Idempotency: external_order_id = orders.id, never regenerated. The DB claim is a compare-and-set.
+// S4-04E2: the claim is public.claim_maale_dispatch (one short transaction under the per-order coordination lock shared
+// with manual courier records); a direct UPDATE out of 'pending' is refused by the database. Every answer is mapped
+// explicitly; an RPC error or an unknown answer fails closed — nothing is sent unless the claim COMMITTED.
 // NO AUTOMATIC RETRY (03G): once a real request has been submitted for an order, it is never submitted again by this
 // service — whatever the answer (429 rate limit, timeout, network, 5xx, unexpected 2xx, 409) or a stale 'sending' row
 // after a crash. The schema has no immutable request snapshot, so a second body cannot be proven identical to the first
@@ -98,9 +101,11 @@ export interface ReadOnlyDispatchRepo {
 export interface DispatchRepo extends ReadOnlyDispatchRepo {
   /** INSERT … ON CONFLICT (order_id) DO NOTHING with status 'pending' and external_order_id = order_id. */
   insertPending(orderId: string): Promise<void>
-  /** Compare-and-set → 'sending', attempts + 1, last_attempt_at = now — only if status, attempts AND
-   *  last_attempt_at are exactly what the caller read. Returns true for exactly one concurrent caller. */
-  claim(orderId: string, seen: Pick<DispatchRow, 'status' | 'attempts' | 'last_attempt_at'>, nowIso: string): Promise<boolean>
+  /** S4-04E2: public.claim_maale_dispatch — compare-and-set → 'sending', attempts + 1, last_attempt_at = now, only if
+   *  attempts AND last_attempt_at are exactly what the caller read, the row is pending / never attempted, and no manual
+   *  courier / open review is recorded. Returns the function's answer ('claimed' for exactly one concurrent caller —
+   *  see CLAIM_RESULTS); THROWS on any RPC / SQL error. nowIso is ignored by the database (it uses its own clock). */
+  claim(orderId: string, seen: Pick<DispatchRow, 'status' | 'attempts' | 'last_attempt_at'>, nowIso: string): Promise<string>
   /** Only from 'sending'. Returns true only when exactly one row was updated. */
   markSent(orderId: string, v: { providerOrderId?: string; providerStatus?: string }, nowIso: string): Promise<boolean>
   /** Only from 'sending'. Returns true only when exactly one row was updated. */
@@ -241,6 +246,8 @@ export type DispatchBlockedReason =
   | 'rate_limit_unavailable'
   /** S4-04B: the limiter refused the request shape (invalid input / order not found / branch mismatch). */
   | 'rate_limit_rejected'
+  /** S4-04E2: refused by the atomic claim — a manual courier / an open manual review is recorded for the order. */
+  | 'manual_courier_recorded' | 'manual_review_open'
 
 export type DispatchResult =
   | { ok: true; outcome: 'sent'; kind: 'created' | 'duplicate' }
@@ -359,8 +366,10 @@ export async function dispatchOrderToMaale(
   if (again) return again
 
   // 7) Claim (compare-and-set on status + attempts + last_attempt_at) — exactly one concurrent caller wins.
-  const claimed = await deps.repo.claim(orderId, { status: row.status, attempts: row.attempts, last_attempt_at: row.last_attempt_at }, now())
-  if (!claimed) return { ok: false, outcome: 'dispatch_in_progress' }
+  //    S4-04E2: the database claim function; only a committed 'claimed' proceeds to the send.
+  const seen = { status: row.status, attempts: row.attempts, last_attempt_at: row.last_attempt_at }
+  const claim = await claimDecision(() => deps.repo.claim(orderId, seen, now()))
+  if (claim !== 'claimed') { log(`maale_dispatch_claim_${claim.code}`); return claim.result }
 
   // 8) One real HTTP attempt; the outcome is reported only after it is persisted.
   const res = await deps.send(payload)
@@ -402,6 +411,28 @@ function stateDecision(row: DispatchRow, nowMs: number): DispatchResult | null {
   return null
 }
 
+/** Bounded answers of public.claim_maale_dispatch (S4-04E). */
+export const CLAIM_RESULTS: readonly string[] = ['claimed', 'claim_lost', 'not_claimable', 'manual_courier_recorded', 'manual_review_open', 'dispatch_row_missing', 'invalid_request']
+
+/**
+ * Runs the claim and maps EVERY answer explicitly. Only 'claimed' may lead to a send. Fail closed: a thrown RPC error,
+ * a non-string / unknown answer, a missing row or an invalid request → failed (db_error), nothing sent, never retried.
+ */
+export async function claimDecision(run: () => Promise<unknown>): Promise<'claimed' | { code: string; result: DispatchResult }> {
+  let answer: unknown
+  try { answer = await run() } catch { answer = 'rpc_error' }
+  const failClosed = (code: string) => ({ code, result: { ok: false, outcome: 'failed', retryable: false, errorCode: 'db_error' } as DispatchResult })
+  switch (answer) {
+    case 'claimed': return 'claimed'
+    // another caller claimed first / the row is no longer pending-never-attempted: nothing sent by this caller
+    case 'claim_lost': case 'not_claimable': return { code: answer, result: { ok: false, outcome: 'dispatch_in_progress' } }
+    case 'manual_courier_recorded': case 'manual_review_open':
+      return { code: answer, result: { ok: false, outcome: 'blocked', reason: answer } }
+    case 'dispatch_row_missing': case 'invalid_request': case 'rpc_error': return failClosed(answer)
+    default: return failClosed('unknown')
+  }
+}
+
 /** Bounded results of public.consume_maale_quote_slot (S4-04B1). */
 export const QUOTE_SLOT_LIMIT_RESULTS: readonly string[] = ['order_limit', 'branch_limit', 'global_limit']
 export const QUOTE_SLOT_REJECT_RESULTS: readonly string[] = ['invalid_request', 'order_not_found', 'branch_mismatch']
@@ -428,8 +459,9 @@ async function safeMark(fn: () => Promise<boolean>): Promise<boolean> {
 async function recordAuthFailure(orderId: string, row: DispatchRow | null, deps: DispatchDeps, now: () => string, log: (c: string) => void): Promise<DispatchResult> {
   if (!row) { await deps.repo.insertPending(orderId); row = await deps.repo.getDispatch(orderId) }
   if (!row || row.external_order_id !== orderId) return { ok: false, outcome: 'failed', retryable: true, errorCode: 'db_error' }
-  const claimed = await deps.repo.claim(orderId, { status: row.status, attempts: row.attempts, last_attempt_at: row.last_attempt_at }, now())
-  if (!claimed) return { ok: false, outcome: 'dispatch_in_progress' }
+  const seen = { status: row.status, attempts: row.attempts, last_attempt_at: row.last_attempt_at }
+  const claim = await claimDecision(() => deps.repo.claim(orderId, seen, now()))
+  if (claim !== 'claimed') { log(`maale_dispatch_auth_failure_unrecorded_${claim.code}`); return claim.result }
   const saved = await safeMark(() => deps.repo.markFailed(orderId, 'failed_final', 'unauthorized', now()))
   if (!saved) { log('maale_dispatch_state_lost'); return { ok: false, outcome: 'persistence_failed', providerOutcome: 'failed' } }
   return { ok: false, outcome: 'failed', retryable: false, errorCode: 'unauthorized' }
@@ -586,14 +618,14 @@ export function supabaseDispatchRepo(): DispatchRepo {
       )
       if (error) throw new Error(`maale_dispatch: insert ${error.code}`)
     },
-    async claim(orderId, seen, nowIso) {
-      let q = table()
-        .update({ status: 'sending', attempts: seen.attempts + 1, last_attempt_at: nowIso, error_code: null, updated_at: nowIso })
-        .eq('order_id', orderId).eq('status', seen.status).eq('attempts', seen.attempts)
-      q = seen.last_attempt_at === null ? q.is('last_attempt_at', null) : q.eq('last_attempt_at', seen.last_attempt_at)
-      const { data, error } = await q.select('order_id')
+    async claim(orderId, seen) {
+      // S4-04E2: never a direct UPDATE — the coordination function (DB clock, per-order lock, ledger checks).
+      const { data, error } = await db.rpc('claim_maale_dispatch', {
+        p_order_id: orderId, p_seen_attempts: seen.attempts, p_seen_last_attempt_at: seen.last_attempt_at,
+      })
       if (error) throw new Error(`maale_dispatch: claim ${error.code}`)
-      return one(data)
+      if (typeof data !== 'string') throw new Error('maale_dispatch: claim unexpected payload')
+      return data
     },
     async markSent(orderId, v, nowIso) {
       const { data, error } = await table()

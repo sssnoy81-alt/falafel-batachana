@@ -67,8 +67,8 @@ function memRepo({ status = 'confirmed', row = null, orderSnapshot = snapshot() 
       async insertPending(id) { state.writes++; if (!state.row) state.row = { order_id: id, external_order_id: id, status: 'pending', attempts: 0, provider_order_id: null, provider_status: null, error_code: null, dispatched_at: null, last_attempt_at: null } },
       async claim(id, seen, now) {
         state.writes++; await tick()
-        if (!state.row || state.row.status !== seen.status || state.row.attempts !== seen.attempts || state.row.last_attempt_at !== seen.last_attempt_at) return false
-        Object.assign(state.row, { status: 'sending', attempts: seen.attempts + 1, last_attempt_at: now, error_code: null }); return true
+        if (!state.row || state.row.status !== seen.status || state.row.attempts !== seen.attempts || state.row.last_attempt_at !== seen.last_attempt_at) return 'claim_lost'
+        Object.assign(state.row, { status: 'sending', attempts: seen.attempts + 1, last_attempt_at: now, error_code: null }); return 'claimed'
       },
       async markSent(id, v, now) { state.writes++; if (state.row.status !== 'sending') return false; Object.assign(state.row, { status: 'sent', dispatched_at: now, provider_order_id: v.providerOrderId ?? null, provider_status: v.providerStatus ?? null, error_code: null }); return true },
       async markFailed(id, st, code, now) { state.writes++; if (state.row.status !== 'sending') return false; Object.assign(state.row, { status: st, error_code: code, updated_at: now }); return true },

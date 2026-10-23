@@ -77,9 +77,9 @@ function memRepo({ status = 'confirmed', row = null, orderSnapshot = snapshot(),
     async claim(id, seen, now) {
       state.writes++; await tick()
       const r = state.row
-      if (!r || r.status !== seen.status || r.attempts !== seen.attempts || r.last_attempt_at !== seen.last_attempt_at) return false
+      if (!r || r.status !== seen.status || r.attempts !== seen.attempts || r.last_attempt_at !== seen.last_attempt_at) return 'claim_lost'
       if (seen.attempts + 1 > 20) throw new Error('attempts_check')
-      Object.assign(r, { status: 'sending', attempts: seen.attempts + 1, last_attempt_at: now, error_code: null, updated_at: now }); return true
+      Object.assign(r, { status: 'sending', attempts: seen.attempts + 1, last_attempt_at: now, error_code: null, updated_at: now }); return 'claimed'
     },
     async markSent(id, v, now) {
       state.writes++

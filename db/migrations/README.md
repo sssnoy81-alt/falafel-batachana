@@ -30,8 +30,24 @@ installed and verified with a read-only query.
 
 | S4-04B | `s4_04b_maale_quote_rate_limit.sql` | Durable kitchen courier **quote rate limit**: append-only ledger `public.maale_dispatch_requests` (order, branch, kitchen account, time — no customer data; RLS on, service_role SELECT+INSERT only) + `consume_maale_quote_slot(uuid, uuid, text)` (INVOKER, search_path '', lock_timeout 3s, service_role-only EXECUTE; one transaction-scoped advisory lock; 3/order/30 min, 20/branch/60 min, 40/global/60 min). Additive only; `delivery_dispatches` untouched. | before: `s4_04b_production_preflight.sql` · after: `s4_04b_verify.sql` · `s4_04b_rollback.sql` = manual, approval-only, needs `SET s4_04b.confirm_rollback = 'DROP-QUOTE-LEDGER'` · isolated test: `scripts/pgtest-s4-04b-quote-rate-limit.mjs` (Docker, `--network none`) |
 
+| S4-04D | `s4_04d_maale_dispatch_reconciliations.sql` | Append-only **courier reconciliation / cancellation audit ledger** `public.maale_dispatch_reconciliations` (order → orders(id) RESTRICT, closed `event_type` list, kitchen-account actor, safe provider id / status, bounded `reason_code`; **no free text, no customer data, no dispatch_id**). RLS on, service_role SELECT+INSERT only. Never changes `delivery_dispatches`; no functions / triggers. | before: `s4_04d_production_preflight.sql` · after: `s4_04d_verify.sql` · `s4_04d_rollback.sql` = manual, approval-only, needs `SET s4_04d.confirm_rollback = 'DROP-RECONCILIATION-LEDGER'` (+ `s4_04d.confirm_history_exported = 'yes'` when rows exist) · isolated test: `scripts/pgtest-s4-04d-reconciliations.mjs` (Docker, `--network none`) |
+
+| S4-04E | `s4_04e_courier_coordination.sql` | **Atomic courier coordination** (requires 04B + 04D installed and verified). Dedicated role `maale_dispatch_coordinator` (NOLOGIN NOINHERIT BYPASSRLS, member of nothing; COLUMN-level grants only — `delivery_dispatches` SELECT of the 6 claim / consistency columns + UPDATE of the 5 claim columns, ledger SELECT + INSERT of the 7 payload columns, `orders` SELECT (id) only; USAGE on `public`; BYPASSRLS needed because these tables have RLS and no policies, and it reaches nothing else) owns both SECURITY DEFINER functions: `claim_maale_dispatch(uuid, integer, timestamptz)` and `record_maale_reconciliation_event(…7 args)`. They share one per-order transaction-scoped advisory lock, so a committed manual courier blocks a later claim and a committed claim (`sending` / `sent`) blocks an ordinary manual courier. Guard trigger on `delivery_dispatches`: new rows pending/0 only, `sent` immutable, leaving `pending` / entering `sending` only when `current_user` is the coordinator (service_role cannot become it). Revokes service_role's direct INSERT on the ledger (writes only through the function). No table / row changes. | before: `s4_04e_production_preflight.sql` · after: `s4_04e_verify.sql` + **`s4_04_combined_verify.sql`** · `s4_04e_rollback.sql` = manual, approval-only, `SET s4_04e.confirm_rollback = 'DROP-COURIER-COORDINATION'` (also drops the role) · isolated test (repeated real concurrency trials): `scripts/pgtest-s4-04e-courier-coordination.mjs` |
+
+**S4-04E order:** install 04B → 04D → 04E (each followed by its verify), together with the application change that calls
+the two functions (S4-04E2; the app fails closed without them). For the whole courier schema use the version-aware
+**`s4_04_combined_verify.sql`** (detects pre-04E / post-04E and applies the matching privileges; a partial install FAILs).
+After 04E, the per-migration **04D verify row 05 reports FAIL by design** (service_role keeps only SELECT on the ledger);
+the combined verify checks that state explicitly instead of ignoring it. Residual (documented, tested): the project owner /
+installer role (`postgres`, which holds SET on the coordinator) and superusers can still act as the coordinator; no
+application role can. 04E1's writable transaction-setting marker was removed — it was never an authorization boundary.
+
 **S4-04B order:** install it BEFORE deploying an application that calls `consume_maale_quote_slot` (the current
 application never calls it). Primary rollback = application rollback; the schema can stay.
+
+**S4-04D meaning:** a ledger row is an operational record entered by a kitchen ACCOUNT (usually after a phone call with
+Maale Express), not independently verified provider truth. A `sent` dispatch stays `sent`; "cancelled at the provider"
+exists only as a ledger row. Install it BEFORE deploying an application that reads or writes it.
 
 **Order: install 05 BEFORE deploying the application that uses `recipient_name`** (the pre-05 wrapper rejects unknown
 parcel keys and the new kitchen query selects the column). Primary rollback = application rollback; the schema stays.

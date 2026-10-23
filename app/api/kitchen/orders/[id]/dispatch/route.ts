@@ -6,6 +6,8 @@ import {
   consumeQuoteSlotRpc, isKitchenDispatchAllowedFor, isKitchenDispatchEnabled, parseDispatchBody, requestKitchenDispatch,
 } from '@/lib/kitchenDispatch'
 import { defaultDispatchDeps, dispatchOrderToMaale } from '@/lib/maaleDispatch'
+import { isReconciliationEnabled } from '@/lib/kitchenReconciliation'
+import { dispatchBlockReason } from '@/lib/kitchenReconciliationUi'
 import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
 
 // POST /api/kitchen/orders/[id]/dispatch — { expectedFeeAgorot }   (S4-INTEGRATIONS-03K, MANUAL courier request)
@@ -67,6 +69,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         return (data as { status: 'pending' | 'sending' | 'sent' | 'failed_retryable' | 'failed_final'; error_code: string | null;
           provider_order_id: string | null; provider_status: string | null } | null) ?? null
       },
+      // S4-04D3: with the reconciliation feature on, a recorded manual courier / open review blocks a new request;
+      // a missing or unreadable ledger blocks too (fail closed). Feature off → unchanged behavior (no ledger read).
+      ...(isReconciliationEnabled(process.env) ? {
+        async dispatchBlockingRecord(orderId: string) {
+          const { data, error } = await supabase.from('maale_dispatch_reconciliations').select('event_type').eq('order_id', orderId)
+          if (error) throw new Error(`ledger ${error.code}`)
+          return dispatchBlockReason((Array.isArray(data) ? data : []).map(r => (r as { event_type?: unknown }).event_type))
+        },
+      } : {}),
       log: code => console.warn('kitchen dispatch:', code),
     }, auth.session, id, parsed.expectedFeeAgorot)
     return json(result.body, result.status)

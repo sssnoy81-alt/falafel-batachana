@@ -89,6 +89,12 @@ export interface KitchenDispatchDeps {
   dispatch(orderId: string): Promise<DispatchResult>
   /** Read-only: current dispatch row for display (provider id / status / view); null when none. */
   loadDispatchRow(orderId: string): Promise<(Pick<DispatchRow, 'status' | 'error_code'> & { provider_order_id: string | null; provider_status: string | null }) | null>
+  /**
+   * S4-04D3: reconciliation records that forbid a new courier request (manual courier / open review), or null.
+   * The route supplies it whenever the reconciliation feature is on; a failed lookup blocks (fail closed).
+   * Consulted BEFORE the dispatch service, i.e. before the quote slot, the provider quote, the claim and the send.
+   */
+  dispatchBlockingRecord?: (orderId: string) => Promise<'manual_courier_recorded' | 'manual_review_open' | null>
   log?: (code: string) => void // short codes only
 }
 
@@ -139,6 +145,8 @@ export function mapDispatchResult(r: DispatchResult): KitchenDispatchResponse {
         case 'rate_limited_local': return reply(429, { error: 'rate_limited_local' })
         case 'rate_limit_unavailable': return reply(503, { error: 'rate_limit_unavailable' })
         case 'rate_limit_rejected': return reply(409, { error: 'rate_limit_rejected' })
+        // S4-04E2: refused atomically by the claim (a manual courier / open review committed first) — nothing sent.
+        case 'manual_courier_recorded': case 'manual_review_open': return reply(409, { error: 'not_eligible', reason: r.reason })
         default: return reply(400, { error: 'invalid_request' }) // test-mode reasons: unreachable from this route
       }
     }
@@ -202,6 +210,15 @@ export async function requestKitchenDispatch(
   // The staff confirmation must refer to the fee stored now (stale screen / tampered request → nothing is sent).
   if (Math.round(fee * 100) !== expectedFeeAgorot) return reply(409, { error: 'stale_confirmation' })
   if (!KITCHEN_DISPATCH_STATUSES.includes(order.status)) return reply(409, { error: 'not_eligible', reason: 'order_status' })
+
+  // S4-04D3: a recorded manual courier / open review forbids a new request — early exit before any quote / slot. The
+  // race-free decision is the atomic claim (S4-04E2: claim_maale_dispatch re-checks the ledger under the shared lock).
+  // Never unlocks anything; a failed lookup blocks before any quote / slot / claim / send.
+  if (deps.dispatchBlockingRecord) {
+    let block: 'manual_courier_recorded' | 'manual_review_open' | null
+    try { block = await deps.dispatchBlockingRecord(orderId) } catch { log('kitchen_dispatch_reconciliation_unavailable'); return reply(503, { error: 'reconciliation_unavailable' }) }
+    if (block) { log(`kitchen_dispatch_${block}`); return reply(409, { error: 'not_eligible', reason: block }) }
+  }
 
   const result = await deps.dispatch(orderId)
   const mapped = mapDispatchResult(result)

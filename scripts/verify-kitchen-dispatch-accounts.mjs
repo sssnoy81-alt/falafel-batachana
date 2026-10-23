@@ -32,7 +32,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 /* ─── FAKE supabaseServer (counts tables touched) ─── */
 class ServerConfigError extends Error { constructor(m) { super(m); this.name = 'ServerConfigError' } }
-const db = { users: [], order: null, dispatches: [], touched: [], rpcCalls: [], selects: [] }
+const db = { users: [], order: null, dispatches: [], touched: [], rpcCalls: [], claimCalls: [], selects: [] }
 function from(table) {
   db.touched.push(table)
   const q = { filters: [], patch: null, upsert: null, wantRows: false }
@@ -58,7 +58,19 @@ function from(table) {
   }
   return b
 }
-const fakeSupabaseServer = { ServerConfigError, getServerSupabase() { return { from, async rpc(fn, args) { db.touched.push('rpc'); db.rpcCalls.push(args); return { data: 'ok', error: null } } } } }
+/* S4-04E2: emulation of public.claim_maale_dispatch on the in-memory rows — pending / never attempted + CAS → 'sending'
+   (the real function also checks the ledger under the per-order lock; see scripts/pgtest-s4-04e-courier-coordination.mjs). */
+function fakeClaim(a) {
+  const r = db.dispatches.find(x => x.order_id === a.p_order_id)
+  if (!r) return 'dispatch_row_missing'
+  if (r.status !== 'pending' || r.attempts !== 0 || r.last_attempt_at !== null) return 'not_claimable'
+  if (r.attempts !== a.p_seen_attempts || r.last_attempt_at !== a.p_seen_last_attempt_at) return 'claim_lost'
+  Object.assign(r, { status: 'sending', attempts: r.attempts + 1, last_attempt_at: new Date().toISOString(), error_code: null })
+  return 'claimed'
+}
+const fakeSupabaseServer = { ServerConfigError, getServerSupabase() { return { from, async rpc(fn, args) {
+  if (fn === 'claim_maale_dispatch') { db.touched.push('rpc:claim'); db.claimCalls.push(args); return { data: fakeClaim(args), error: null } }
+  db.touched.push('rpc'); db.rpcCalls.push(args); return { data: 'ok', error: null } } } } }
 
 const cache = new Map()
 function loadFile(file) {
@@ -134,12 +146,12 @@ const ORIGIN = 'https://app.example'
 const cookieFor = name => { const u = db.users.find(x => x.username === name); return `kitchen_session=${K.signSession({ username: u.username, role: u.role, branchId: u.branch_id, label: u.label }, SECRET)}` }
 const resetDb = () => {
   db.order = { id: ORDER_ID, type: 'delivery', branch_id: MISHOR, payment_method: 'cash', customer_name: 'לקוח בדיקה', phone: '0501234567', total_price: '73.00', status: 'confirmed',
-    created_at: '2026-10-22T09:00:00Z', daily_number: 1, branches: { name: 'מישור' },
+    created_at: new Date().toISOString(), daily_number: 1, branches: { name: 'מישור' }, // "today" (the orders read filters by Israel day)
     deliveries: [{ city: 'מעלה אדומים', street: 'הגעש', house_number: '6', apartment: '6', floor: '2', entrance: 'ב׳', notes: null, delivery_fee: '20.00', meal_surcharge: '4.00',
       delivery_lat: 31.773612, delivery_lng: 35.298346, geo_source: 'geocoder', geo_precision: 'street', address: 'מעלה אדומים, הגעש 6' }],
     order_items: [{ id: 'i1', quantity: 1, unit_price: 40, notes: null, menu_items: { name_he: 'פלאפל בפיתה' } }, { id: 'i2', quantity: 1, unit_price: 9, notes: null, menu_items: { name_he: 'קוקה קולה' } }],
     parcel_requests: [], delivery_dispatches: [] }
-  db.dispatches = []; db.touched = []; db.rpcCalls = []; db.selects = []; maale.calls = []
+  db.dispatches = []; db.touched = []; db.rpcCalls = []; db.claimCalls = []; db.selects = []; maale.calls = []
 }
 const post = async ({ user = 'mishor', cookie, id = ORDER_ID, body = { expectedFeeAgorot: 2000 } } = {}) => {
   const headers = { origin: ORIGIN, 'content-type': 'application/json' }
@@ -153,7 +165,7 @@ const get = async (route, path, user) => {
   return { status: res.status, body: await res.json() }
 }
 const onlyAuth = label => assert.deepEqual([...new Set(db.touched)], ['kitchen_users'], `${label}: only the session lookup (${db.touched.join(',')})`)
-const noWork = label => { assert.deepEqual([db.rpcCalls.length, maale.calls.length, db.dispatches.length], [0, 0, 0], label); assert.ok(!db.touched.includes('orders') && !db.touched.includes('delivery_dispatches'), label) }
+const noWork = label => { assert.deepEqual([db.rpcCalls.length, db.claimCalls.length, maale.calls.length, db.dispatches.length], [0, 0, 0, 0], label); assert.ok(!db.touched.includes('orders') && !db.touched.includes('delivery_dispatches'), label) }
 const LIVE = { MAALE_KITCHEN_DISPATCH_ENABLED: 'true', MAALE_EXPRESS_ENABLED: 'true', MAALE_EXPRESS_API_KEY: KEY }
 
 await test('B1. main flag off (even with an allowlist) → 404 before ANY DB access', async () => {
@@ -203,7 +215,7 @@ await test('B7. session endpoint: derived boolean per account only; allowlist ne
   setEnv({ ...LIVE, MAALE_KITCHEN_DISPATCH_USERS: 'mishor,boss' })
   const me = await get(sessionRoute, '/api/kitchen/session', 'mishor'), them = await get(sessionRoute, '/api/kitchen/session', 'other'), admin = await get(sessionRoute, '/api/kitchen/session', 'boss')
   assert.deepEqual([me.body.maaleKitchenDispatchEnabled, them.body.maaleKitchenDispatchEnabled, admin.body.maaleKitchenDispatchEnabled], [true, false, true])
-  for (const r of [me, them, admin]) assert.deepEqual(Object.keys(r.body).sort(), ['branches', 'expiresAt', 'maaleKitchenDispatchEnabled', 'user'])
+  for (const r of [me, them, admin]) assert.deepEqual(Object.keys(r.body).sort(), ['branches', 'expiresAt', 'maaleKitchenDispatchEnabled', 'maaleKitchenReconciliationEnabled', 'user'])
   assert.ok(!JSON.stringify(them.body).includes('boss') && !JSON.stringify(them.body).includes('mishor'), 'no other account names')
   assert.ok(!/MAALE_|DISPATCH_USERS/.test(JSON.stringify([me.body, them.body, admin.body])))
   for (const users of [undefined, 'mishor,*']) {
@@ -237,7 +249,7 @@ function svc({ name = 'לקוח', gate } = {}) {
     async loadOrder() { return { snapshot: snap(name), status: 'confirmed', parcelStatus: null } },
     async getDispatch() { return st.row ? { ...st.row } : null }, async hasRecentAuthFailure() { return false },
     async insertPending(id) { st.writes++; st.row = { order_id: id, external_order_id: id, status: 'pending', attempts: 0, last_attempt_at: null, error_code: null } },
-    async claim(id, seen, now) { st.writes++; if (st.row.status !== seen.status) return false; Object.assign(st.row, { status: 'sending', attempts: 1, last_attempt_at: now }); return true },
+    async claim(id, seen, now) { st.writes++; if (st.row.status !== seen.status) return 'claim_lost'; Object.assign(st.row, { status: 'sending', attempts: 1, last_attempt_at: now }); return 'claimed' },
     async markSent() { st.writes++; st.row.status = 'sent'; return true }, async markFailed() { st.writes++; return true },
   }
   const config = { status: 'ready', apiKey: KEY }

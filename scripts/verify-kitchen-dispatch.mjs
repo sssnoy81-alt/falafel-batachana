@@ -225,8 +225,8 @@ function harness({ status = 'confirmed', snap = snapshot(), parcelStatus = null,
     async claim(id, seen, now) {
       st.writes++; await tick()
       const r = st.row
-      if (!r || r.status !== seen.status || r.attempts !== seen.attempts || r.last_attempt_at !== seen.last_attempt_at) return false
-      Object.assign(r, { status: 'sending', attempts: r.attempts + 1, last_attempt_at: now }); return true
+      if (!r || r.status !== seen.status || r.attempts !== seen.attempts || r.last_attempt_at !== seen.last_attempt_at) return 'claim_lost'
+      Object.assign(r, { status: 'sending', attempts: r.attempts + 1, last_attempt_at: now }); return 'claimed'
     },
     async markSent(id, v) { st.writes++; if (!marks || st.row?.status !== 'sending') return false; Object.assign(st.row, { status: 'sent', provider_order_id: v.providerOrderId ?? null, provider_status: v.providerStatus ?? null }); return true },
     async markFailed(id, s, code, now, v) { st.writes++; if (!marks || st.row?.status !== 'sending') return false; Object.assign(st.row, { status: s, error_code: code, ...(v?.providerOrderId ? { provider_order_id: v.providerOrderId } : {}) }); return true },

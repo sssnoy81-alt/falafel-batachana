@@ -133,7 +133,7 @@ await test('U1. maaleKitchenDispatchEnabled: false unless the env value is exact
       assert.equal(r.status, 200)
       assert.equal(r.body.maaleKitchenDispatchEnabled, want, `${v} / ${s.role}`)
       assert.equal(typeof r.body.maaleKitchenDispatchEnabled, 'boolean')
-      assert.deepEqual(Object.keys(r.body).sort(), ['branches', 'expiresAt', 'maaleKitchenDispatchEnabled', 'user'])
+      assert.deepEqual(Object.keys(r.body).sort(), ['branches', 'expiresAt', 'maaleKitchenDispatchEnabled', 'maaleKitchenReconciliationEnabled', 'user'])
     }
   }
   setFlag(undefined)

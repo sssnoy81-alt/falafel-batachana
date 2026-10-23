@@ -30,7 +30,7 @@ const events = []
 
 /* ─── FAKE supabaseServer for part B ─── */
 class ServerConfigError extends Error { constructor(m) { super(m); this.name = 'ServerConfigError' } }
-const db = { users: [], order: null, dispatches: [], queries: 0, rpcCalls: [], rpc: null }
+const db = { users: [], order: null, dispatches: [], queries: 0, rpcCalls: [], claimCalls: [], claimAnswer: null, rpc: null }
 function from(table) {
   db.queries++
   const q = { table, filters: [], patch: null, upsert: null, wantRows: false }
@@ -55,9 +55,23 @@ function from(table) {
   }
   return b
 }
+/* S4-04E2: emulation of public.claim_maale_dispatch on the in-memory rows — pending / never attempted + CAS → 'sending'
+   (the real function also checks the ledger under the per-order lock; see scripts/pgtest-s4-04e-courier-coordination.mjs). */
+function fakeClaim(a) {
+  const r = db.dispatches.find(x => x.order_id === a.p_order_id)
+  if (!r) return 'dispatch_row_missing'
+  if (r.status !== 'pending' || r.attempts !== 0 || r.last_attempt_at !== null) return 'not_claimable'
+  if (r.attempts !== a.p_seen_attempts || r.last_attempt_at !== a.p_seen_last_attempt_at) return 'claim_lost'
+  Object.assign(r, { status: 'sending', attempts: r.attempts + 1, last_attempt_at: new Date().toISOString(), error_code: null })
+  return 'claimed'
+}
 const fakeSupabase = {
   from,
-  async rpc(fn, args) { db.queries++; db.rpcCalls.push({ fn, args }); events.push('rpc'); return db.rpc(args) },
+  async rpc(fn, args) {
+    db.queries++
+    if (fn === 'claim_maale_dispatch') { db.claimCalls.push(args); events.push('claim'); return db.claimAnswer ? db.claimAnswer(args) : { data: fakeClaim(args), error: null } }
+    db.rpcCalls.push({ fn, args }); events.push('rpc'); return db.rpc(args)
+  },
 }
 const fakeSupabaseServer = { ServerConfigError, getServerSupabase() { return fakeSupabase } }
 
@@ -114,8 +128,8 @@ function harness({ status = 'confirmed', snap = snapshot(), parcelStatus = null,
     async hasRecentAuthFailure() { return authFailure || st.row?.error_code === 'unauthorized' },
     async insertPending(id) { st.writes++; if (!st.row) st.row = { order_id: id, external_order_id: id, status: 'pending', attempts: 0, last_attempt_at: null, error_code: null, provider_order_id: null, provider_status: null } },
     async claim(id, seen, now) { st.writes++; await tick(); const r = st.row
-      if (!r || r.status !== seen.status || r.attempts !== seen.attempts || r.last_attempt_at !== seen.last_attempt_at) return false
-      Object.assign(r, { status: 'sending', attempts: r.attempts + 1, last_attempt_at: now }); return true },
+      if (!r || r.status !== seen.status || r.attempts !== seen.attempts || r.last_attempt_at !== seen.last_attempt_at) return 'claim_lost'
+      Object.assign(r, { status: 'sending', attempts: r.attempts + 1, last_attempt_at: now }); return 'claimed' },
     async markSent(id, v) { st.writes++; if (st.row?.status !== 'sending') return false; Object.assign(st.row, { status: 'sent', provider_order_id: v.providerOrderId ?? null, provider_status: v.providerStatus ?? null }); return true },
     async markFailed(id, s, code) { st.writes++; if (st.row?.status !== 'sending') return false; Object.assign(st.row, { status: s, error_code: code }); return true },
   }
@@ -294,7 +308,7 @@ const resetDb = (over = {}) => {
   db.order = { id: ORDER_ID, type: 'delivery', branch_id: MISHOR, payment_method: 'cash', customer_name: s.order.customer_name, phone: s.order.phone, total_price: '73.00',
     status: 'confirmed', deliveries: [{ ...s.delivery, delivery_fee: '20.00', meal_surcharge: '4.00' }],
     order_items: s.items.map(i => ({ quantity: i.quantity, unit_price: i.unit_price, menu_items: { name_he: i.name } })), parcel_requests: [], ...over }
-  db.dispatches = []; db.queries = 0; db.rpcCalls = []; db.rpc = async () => ({ data: 'ok', error: null })
+  db.dispatches = []; db.queries = 0; db.rpcCalls = []; db.claimCalls = []; db.claimAnswer = null; db.rpc = async () => ({ data: 'ok', error: null })
   maale.calls = []; events.length = 0
   maale.respond = body => body.dry_run === true
     ? jsonRes({ ok: true, would_create: { zone: 'mishor', delivery_fee_agorot: 2000, courier_pays_merchant_agorot: 5300, courier_collects_from_customer_agorot: 7300 }, warnings: [] }, 200)
@@ -326,9 +340,36 @@ await test('B2. enabled + valid → one RPC (route UUID, DB branch, session acco
   resetDb(); env({ kitchen: true, maale: true })
   const r = await post()
   assert.equal(r.status, 200, JSON.stringify(r)); assert.equal(r.body.result, 'dispatched'); assert.equal(r.body.providerOrderId, 'MX-77')
-  assert.deepEqual(events, ['rpc', 'quote', 'send'])
+  // S4-04E2: the real send happens only AFTER the committed database claim (claim_maale_dispatch), never before
+  assert.deepEqual(events, ['rpc', 'quote', 'claim', 'send'])
   assert.deepEqual(db.rpcCalls, [{ fn: 'consume_maale_quote_slot', args: { p_order_id: ORDER_ID, p_branch_id: MISHOR, p_actor: 'mishor' } }])
+  assert.deepEqual(db.claimCalls, [{ p_order_id: ORDER_ID, p_seen_attempts: 0, p_seen_last_attempt_at: null }])
   assert.deepEqual(db.dispatches.map(d => [d.status, d.attempts]), [['sent', 1]]); noLeak(r)
+})
+
+await test('B2b. S4-04E2: every claim answer mapped; anything but a committed "claimed" → NO send, no retry (fail closed)', async () => {
+  const cases = [
+    ['claim_lost', 409, { error: 'dispatch_in_progress', view: 'in_progress' }],
+    ['not_claimable', 409, { error: 'dispatch_in_progress', view: 'in_progress' }],
+    ['manual_courier_recorded', 409, { error: 'not_eligible', reason: 'manual_courier_recorded' }],
+    ['manual_review_open', 409, { error: 'not_eligible', reason: 'manual_review_open' }],
+    ['dispatch_row_missing', 500, { error: 'server_error' }], ['invalid_request', 500, { error: 'server_error' }],
+    ['something_new', 500, { error: 'server_error' }], [true, 500, { error: 'server_error' }], [null, 500, { error: 'server_error' }],
+  ]
+  for (const [answer, status, body] of cases) {
+    resetDb(); env({ kitchen: true, maale: true }); db.claimAnswer = async () => ({ data: answer, error: null })
+    assert.deepEqual(await post(), { status, body }, String(answer))
+    assert.deepEqual(events, ['rpc', 'quote', 'claim'], `${answer}: no send after a refused claim`)
+    assert.equal(db.claimCalls.length, 1, 'never retried')
+    assert.deepEqual(db.dispatches.map(d => [d.status, d.attempts]), [['pending', 0]], 'nothing written by the app after the refusal')
+  }
+  // RPC error / function missing (04E not installed) / transport failure → 500, no send, no detail leak
+  for (const claimAnswer of [async () => ({ data: null, error: { code: 'PGRST202', message: 'Could not find the function SECRET-SQL' } }),
+    async () => ({ data: null, error: { code: '55P03', message: 'lock timeout SECRET-SQL' } }), async () => { throw new Error('fetch failed SECRET') }]) {
+    resetDb(); env({ kitchen: true, maale: true }); db.claimAnswer = claimAnswer
+    const r = await post()
+    assert.equal(r.status, 500); assert.ok(!events.includes('send')); noLeak(r); assert.ok(!JSON.stringify(r).includes('SECRET'))
+  }
 })
 
 await test('B3. branch / actor can never come from the browser: extra body fields → 400, no RPC', async () => {

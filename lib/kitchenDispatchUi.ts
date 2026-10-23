@@ -54,7 +54,11 @@ export const isPossiblyDispatchedView = (view: KitchenDispatchView) =>
 
 /* ─── Indicative eligibility (display only) ─── */
 
-type DispatchOrder = Pick<KitchenOrder, 'type' | 'status' | 'paymentMethod' | 'totalPrice' | 'delivery' | 'parcel'> & { dispatch?: KitchenDispatch | null }
+type DispatchOrder = Pick<KitchenOrder, 'type' | 'status' | 'paymentMethod' | 'totalPrice' | 'delivery' | 'parcel'> & {
+  dispatch?: KitchenDispatch | null
+  /** S4-04D: a recorded manual courier hides the in-app request (avoids a second courier). */
+  reconciliation?: { summary: { manualCourier: boolean; reviewOpen?: boolean } } | null
+}
 
 /** Settlement = prefix of the stored address ("city, street N"). */
 export const addressSettlement = (address: string): string => address.split(',')[0].trim()
@@ -71,6 +75,8 @@ export function dispatchHint(order: DispatchOrder): DispatchHint {
   if (order.type !== 'delivery' || !order.delivery) return no('לא הזמנת משלוח')
   const view = order.dispatch?.view ?? 'not_dispatched'
   if (isDispatchFinalView(view)) return no(DISPATCH_VIEW_LABELS[view])
+  if (order.reconciliation?.summary.manualCourier) return no('נרשם ששליח הוזמן מחוץ למערכת — אין להזמין שליח נוסף')
+  if (order.reconciliation?.summary.reviewOpen) return no('בירור ידני פתוח — אין להזמין שליח עד לסגירתו')
   if (!UI_DISPATCH_STATUSES.includes(order.status)) return no('ניתן להזמין שליח רק להזמנה שאושרה או בהכנה')
   if (order.paymentMethod !== 'cash') return no('תשלום באשראי — יש להזמין שליח ידנית')
   if (!PARCEL_OK(order.parcel?.status)) return no('יש חבילה בהזמנה — יש להזמין שליח ידנית')
@@ -189,6 +195,8 @@ export const DISPATCH_MESSAGES: Record<string, string> = {
   rate_limited_local: 'יותר מדי בקשות שליח בזמן קצר — לא נשלחה בקשה. המתינו מספר דקות ונסו שוב, או הזמינו ידנית',
   rate_limit_unavailable: 'בדיקת עומס הבקשות אינה זמינה כרגע — לא נשלחה בקשה. נסו שוב מאוחר יותר או הזמינו ידנית',
   rate_limit_rejected: 'לא ניתן לאמת את ההזמנה לבקשת שליח — לא נשלחה בקשה. רעננו את הרשימה',
+  // S4-04D3: the reconciliation ledger could not be read — nothing was sent; NOT a locking code.
+  reconciliation_unavailable: 'לא ניתן לבדוק את רישומי ההתאמה כרגע — לא נשלחה בקשה. נסו שוב מאוחר יותר או הזמינו ידנית',
   server_error: 'שגיאת שרת — לא ברור אם השליח הוזמן. יש לבדוק מול מעלה אקספרס לפני ניסיון נוסף',
 }
 
@@ -201,6 +209,8 @@ const NOT_ELIGIBLE_REASONS: Record<string, string> = {
   location_unverified: 'מיקום הכתובת לא אומת — יש להזמין שליח ידנית',
   order_data_invalid: 'נתוני ההזמנה אינם תקינים למשלוח אוטומטי — יש להזמין ידנית',
   not_delivery: 'לא הזמנת משלוח',
+  manual_courier_recorded: 'נרשם ששליח הוזמן מחוץ למערכת — אין להזמין שליח נוסף',
+  manual_review_open: 'בירור ידני פתוח להזמנה זו — אין להזמין שליח עד לסגירתו',
 }
 
 /** Codes after which the kitchen must not try again for this order (the outcome at the provider may be unknown). */

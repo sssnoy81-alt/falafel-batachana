@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { KITCHEN_BRANCH_IDS, publicUser } from '@/lib/kitchenAuth'
 import { getKitchenSession } from '@/lib/kitchenUsers'
 import { isKitchenDispatchAllowedFor } from '@/lib/kitchenDispatch'
+import { isReconciliationAllowedFor } from '@/lib/kitchenReconciliation'
 import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
 
 // GET /api/kitchen/session — returns the authenticated kitchen user, or 401.
@@ -21,6 +22,8 @@ export async function GET(req: NextRequest) {
     user: publicUser(auth.session),
     expiresAt: new Date(auth.session.exp * 1000).toISOString(),
     maaleKitchenDispatchEnabled: isKitchenDispatchAllowedFor(process.env, auth.session.username),
+    // S4-04D: may THIS account record reconciliation events (manager allowlist). The list itself is never returned.
+    maaleKitchenReconciliationEnabled: isReconciliationAllowedFor(process.env, auth.session.username),
   }
   if (auth.session.role !== 'admin') return json({ ...base, branches: [] })
 

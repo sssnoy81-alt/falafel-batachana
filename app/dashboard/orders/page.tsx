@@ -17,6 +17,12 @@ import {
   MANUAL_COURIER_CHECK, NETWORK_OUTCOME, needsReadyWarning, parseDispatchLocks, READY_WITHOUT_COURIER_WARNING,
   reconcileDispatchNotes, runExclusive, serializeDispatchLocks, type DispatchNote, type DispatchOutcome,
 } from '@/lib/kitchenDispatchUi'
+import {
+  CANCELLATION_CONFIRM_LABEL, CANCELLATION_RECORD_WARNING, EVENTS_FORBIDDING_PROVIDER_ID, EVENTS_REQUIRING_PROVIDER_ID,
+  RECONCILIATION_EVENT_LABELS, RECONCILIATION_EVENT_TYPES, RECONCILIATION_MESSAGES, RECONCILIATION_REASON_CODES,
+  RECONCILIATION_REASON_LABELS, reconciliationMessage, REPORTED_NOT_VERIFIED_NOTE, validateReconciliationInput,
+  type ReconciliationInput,
+} from '@/lib/kitchenReconciliationUi'
 
 /* ─── API helpers (same-origin; the session cookie is sent automatically) ─── */
 class UnauthorizedError extends Error {}
@@ -534,11 +540,131 @@ function DispatchConfirmModal({ order, num, busy, onCancel, onConfirm }: {
   )
 }
 
-function OrderCard({ order, onAdvance, onKitchenOpen, onEdit, onParcelAction, parcelBusy, dispatchEnabled, dispatchBusy, dispatchNote, onDispatch }: {
+// Courier reconciliation (S4-04D). Shown only when the server included reconciliation data for this account. Three
+// separate things: the provider SUBMISSION state (delivery_dispatches), what staff REPORTED (ledger — never a live or
+// verified provider status), and whether a manual review is open. Derived from all records, not only the latest one.
+/** retry: kept only when the outcome is uncertain — the SAME action (payload + requestId) can be resent safely (S4-04D3). */
+type ReconciliationNote = { message: string; ok: boolean; retry?: { input: ReconciliationInput; requestId: string } }
+/** One idempotency key per user-confirmed action (lower-case RFC 4122 v4). */
+const newReconciliationRequestId = (): string => crypto.randomUUID()
+const formatClock = (iso: string) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }) }
+
+function ReconciliationPanel({ order, canRecord, busy, note, onRecord, onRetry }: {
+  order: Order; canRecord: boolean; busy: boolean; note?: ReconciliationNote; onRecord?: (order: Order) => void
+  onRetry?: (order: Order) => void
+}) {
+  const rec = order.reconciliation
+  if (!rec) return null
+  const s = rec.summary
+  const view = order.dispatch?.view ?? 'not_dispatched'
+  const reported = [
+    s.confirmedSent && 'דווח: מעלה אקספרס אישרה קבלת ההזמנה',
+    s.cancelledAtProvider && 'דווח: מעלה אקספרס אישרה ביטול השליח',
+    s.notReceived && 'דווח: אין אצל מעלה אקספרס הזמנה כזו',
+    s.manualCourier && 'דווח: הוזמן שליח מחוץ למערכת',
+  ].filter((x): x is string => typeof x === 'string')
+  return (
+    <div onClick={e => e.stopPropagation()} style={{ border: '1px solid #4B5563', borderRadius: 8, padding: '6px 10px', marginBottom: 8, fontSize: 12, cursor: 'default' }}>
+      <div style={{ color: '#D1D5DB', fontWeight: 800, marginBottom: 3 }}>📋 התאמת שליח</div>
+      <div style={{ color: '#9CA3AF' }}>בקשת השליח במערכת: {DISPATCH_VIEW_LABELS[view]}</div>
+      {reported.map(t => <div key={t} style={{ color: t.includes('ביטול') ? '#FBBF24' : '#D1D5DB', fontWeight: 700, marginTop: 2 }}>{t}</div>)}
+      {s.lastCheckedProviderStatus && <div style={{ color: '#9CA3AF', marginTop: 2 }}>סטטוס אחרון שנבדק ידנית: <span style={{ direction: 'ltr', display: 'inline-block' }}>{s.lastCheckedProviderStatus}</span></div>}
+      {reported.length > 0 && <div style={{ color: '#6B7280', fontSize: 11, marginTop: 2 }}>{REPORTED_NOT_VERIFIED_NOTE}</div>}
+      {s.reviewOpen && <div style={{ color: '#FF6B6B', fontWeight: 800, marginTop: 3 }}>⚠️ בירור ידני פתוח</div>}
+      {!s.reviewOpen && s.reviewResolved && <div style={{ color: '#4ADE80', marginTop: 3 }}>✓ הבירור הידני נסגר</div>}
+      {rec.events.length > 0 && (
+        <div style={{ marginTop: 4, borderTop: '1px solid #2A2A2A', paddingTop: 3 }}>
+          {rec.events.slice(0, 5).map(ev => (
+            <div key={ev.id} style={{ color: '#9CA3AF', fontSize: 11 }}>
+              {formatClock(ev.createdAt)} · {RECONCILIATION_EVENT_LABELS[ev.eventType]} · {ev.actor}
+              {ev.providerOrderId ? <> · <span style={{ direction: 'ltr', display: 'inline-block' }}>#{ev.providerOrderId}</span></> : null}
+            </div>
+          ))}
+        </div>
+      )}
+      {note && <div style={{ color: note.ok ? '#4ADE80' : '#FBBF24', fontWeight: 700, marginTop: 3 }}>{note.message}</div>}
+      {canRecord && note?.retry && onRetry && (
+        <button type="button" disabled={busy} onClick={() => onRetry(order)} style={{ marginTop: 5, marginLeft: 6, background: 'transparent', color: busy ? '#6B7280' : '#FBBF24', border: '1px solid #FBBF24', borderRadius: 6, padding: '3px 8px', fontSize: 11, fontWeight: 700, cursor: busy ? 'wait' : 'pointer', fontFamily: 'Heebo, sans-serif' }}>
+          ניסיון חוזר לאותה פעולה
+        </button>
+      )}
+      {canRecord && onRecord && (
+        <button type="button" disabled={busy} onClick={() => onRecord(order)} style={{ marginTop: 5, background: 'transparent', color: busy ? '#6B7280' : '#D1D5DB', border: '1px solid #4B5563', borderRadius: 6, padding: '3px 8px', fontSize: 11, fontWeight: 700, cursor: busy ? 'wait' : 'pointer', fontFamily: 'Heebo, sans-serif' }}>
+          {busy ? 'שומר…' : 'רישום התאמה (מנהל)'}
+        </button>
+      )}
+    </div>
+  )
+}
+
+// Manager-only form. The final button stays disabled until the shared rules pass; provider cancellation additionally
+// needs the explicit confirmation checkbox. The server re-validates everything (actor / branch never sent).
+function ReconciliationModal({ order, busy, onCancel, onSubmit }: {
+  order: Order; busy: boolean; onCancel: () => void; onSubmit: (input: ReconciliationInput) => void
+}) {
+  const [eventType, setEventType] = useState('')
+  const [providerOrderIdText, setProviderOrderIdText] = useState(order.dispatch?.providerOrderId ?? '')
+  const [checkedStatusText, setCheckedStatusText] = useState('')
+  const [reasonCode, setReasonCode] = useState('')
+  const [confirmCancellation, setConfirmCancellation] = useState(false)
+  const forbidsId = EVENTS_FORBIDDING_PROVIDER_ID.includes(eventType)
+  const input: ReconciliationInput = {
+    eventType,
+    providerOrderId: forbidsId ? null : (providerOrderIdText.trim() || null),
+    providerStatus: eventType === 'provider_status_checked' ? (checkedStatusText.trim() || null) : null,
+    reasonCode: reasonCode || null,
+    confirmCancellation,
+  }
+  const allowed = validateReconciliationInput(input).ok && !busy
+  const field = { width: '100%', padding: 8, borderRadius: 8, border: '1px solid #4B5563', background: '#0D0D0D', color: '#fff', fontFamily: 'Heebo, sans-serif', fontSize: 14, boxSizing: 'border-box' as const, marginBottom: 8 }
+  return (
+    <div onClick={onCancel} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, direction: 'rtl' }}>
+      <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" style={{ background: '#1A1A1A', border: '1px solid #4B5563', borderRadius: 14, padding: 20, width: '100%', maxWidth: 440, fontFamily: 'Heebo, sans-serif' }}>
+        <div style={{ color: '#fff', fontSize: 17, fontWeight: 800, marginBottom: 10 }}>📋 רישום התאמת שליח</div>
+        <select value={eventType} onChange={e => { setEventType(e.target.value); setConfirmCancellation(false) }} style={field}>
+          <option value="">בחרו מה דווח…</option>
+          {RECONCILIATION_EVENT_TYPES.map(t => <option key={t} value={t}>{RECONCILIATION_EVENT_LABELS[t]}</option>)}
+        </select>
+        {eventType && !forbidsId && (
+          <input value={providerOrderIdText} onChange={e => setProviderOrderIdText(e.target.value)} dir="ltr" style={field}
+            placeholder={EVENTS_REQUIRING_PROVIDER_ID.includes(eventType) ? 'מספר הזמנה במעלה אקספרס (חובה)' : 'מספר הזמנה במעלה אקספרס (אופציונלי)'} />
+        )}
+        {eventType === 'provider_status_checked' && (
+          <input value={checkedStatusText} onChange={e => setCheckedStatusText(e.target.value)} dir="ltr" style={field} placeholder="status (e.g. searching)" />
+        )}
+        {eventType && (
+          <select value={reasonCode} onChange={e => setReasonCode(e.target.value)} style={field}>
+            <option value="">סיבה / מקור (אופציונלי)</option>
+            {RECONCILIATION_REASON_CODES.map(r => <option key={r} value={r}>{RECONCILIATION_REASON_LABELS[r]}</option>)}
+          </select>
+        )}
+        {eventType === 'cancelled_at_provider' && (
+          <>
+            <div style={{ background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.45)', color: '#FBBF24', borderRadius: 8, padding: '8px 10px', fontSize: 13, fontWeight: 700, marginBottom: 8 }}>⚠️ {CANCELLATION_RECORD_WARNING}</div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#fff', fontSize: 14, fontWeight: 700, cursor: 'pointer', marginBottom: 10 }}>
+              <input type="checkbox" checked={confirmCancellation} onChange={e => setConfirmCancellation(e.target.checked)} style={{ width: 20, height: 20 }} />
+              {CANCELLATION_CONFIRM_LABEL}
+            </label>
+          </>
+        )}
+        <div style={{ color: '#6B7280', fontSize: 11, marginBottom: 10 }}>{REPORTED_NOT_VERIFIED_NOTE}. הרישום אינו משנה את בקשת השליח ואינו פונה לספק.</div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button type="button" disabled={!allowed} onClick={() => { if (allowed) onSubmit(input) }} style={{ flex: 1, background: allowed ? '#D1D5DB' : '#2A2A2A', color: allowed ? '#000' : '#6B7280', border: 'none', borderRadius: 8, padding: '10px 0', fontWeight: 800, fontSize: 15, cursor: allowed ? 'pointer' : 'not-allowed', fontFamily: 'Heebo, sans-serif' }}>שמירת רישום</button>
+          <button type="button" onClick={onCancel} style={{ flex: 1, background: 'transparent', color: '#D1D5DB', border: '1px solid #4B5563', borderRadius: 8, padding: '10px 0', fontWeight: 700, fontSize: 15, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>ביטול</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function OrderCard({ order, onAdvance, onKitchenOpen, onEdit, onParcelAction, parcelBusy, dispatchEnabled, dispatchBusy, dispatchNote, onDispatch,
+  reconciliationEnabled, reconciliationBusy, reconciliationNote, onReconcile, onReconcileRetry }: {
   order: Order; onAdvance: (id: string, next: OrderStatus) => void
   onKitchenOpen?: (order: Order) => void; onEdit?: (order: Order) => void
   onParcelAction?: (orderId: string, action: ParcelAction) => void; parcelBusy?: boolean
   dispatchEnabled?: boolean; dispatchBusy?: boolean; dispatchNote?: DispatchNote; onDispatch?: (order: Order) => void
+  reconciliationEnabled?: boolean; reconciliationBusy?: boolean; reconciliationNote?: ReconciliationNote; onReconcile?: (order: Order) => void
+  onReconcileRetry?: (order: Order) => void
 }) {
   const cfg = STATUS_CONFIG[order.status]
   const parcelBlocks = isParcelBlockingAcceptance(order)
@@ -572,6 +698,10 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit, onParcelAction, pa
       </div>
       {isDeliveryOrder(order) && <DeliveryDetails order={order} />}
       {dispatchEnabled && onDispatch && isDeliveryOrder(order) && <DispatchPanel order={order} busy={dispatchBusy === true} note={dispatchNote} onDispatch={onDispatch} />}
+      {order.reconciliation && isDeliveryOrder(order) && (
+        <ReconciliationPanel order={order} canRecord={reconciliationEnabled === true} busy={reconciliationBusy === true} note={reconciliationNote}
+          onRecord={onReconcile} onRetry={onReconcileRetry} />
+      )}
       {order.parcel && <ParcelPanel order={order} busy={parcelBusy} onAction={onParcelAction} onCancelOrder={() => onAdvance(order.id, 'cancelled')} />}
       <KitchenReminders order={order} />
       <div style={{ marginBottom: 10 }}>
@@ -733,14 +863,15 @@ export default function OrdersPage() {
 
   return <Dashboard key={session.user.username} user={session.user} branches={session.branches}
     dispatchEnabled={session.maaleKitchenDispatchEnabled === true}
+    reconciliationEnabled={session.maaleKitchenReconciliationEnabled === true}
     onLogout={handleLogout} onUnauthorized={handleUnauthorized} />
 }
 
 /* ══════════════════════════════════════════════════
    DASHBOARD
 ══════════════════════════════════════════════════ */
-function Dashboard({ user, branches, dispatchEnabled, onLogout, onUnauthorized }: {
-  user: AuthUser; branches: KitchenBranch[]; dispatchEnabled: boolean; onLogout: () => void; onUnauthorized: () => void
+function Dashboard({ user, branches, dispatchEnabled, reconciliationEnabled, onLogout, onUnauthorized }: {
+  user: AuthUser; branches: KitchenBranch[]; dispatchEnabled: boolean; reconciliationEnabled: boolean; onLogout: () => void; onUnauthorized: () => void
 }) {
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
@@ -950,6 +1081,41 @@ function Dashboard({ user, branches, dispatchEnabled, onLogout, onUnauthorized }
       return next
     })
   }, [orders])
+  // Courier reconciliation records (S4-04D, manager accounts only — the server enforces it again). One submission at a
+  // time (synchronous ref guard); a lost answer is reported as UNKNOWN (refresh and check the history before retrying).
+  const [reconciliationOrderId, setReconciliationOrderId] = useState<string | null>(null)
+  const [reconciliationBusyId, setReconciliationBusyId] = useState<string | null>(null)
+  const [reconciliationNotes, setReconciliationNotes] = useState<Record<string, ReconciliationNote>>({})
+  const reconciliationInFlight = useRef(false)
+  const openReconciliation = (order: Order) => {
+    if (!reconciliationEnabled || reconciliationInFlight.current || reconciliationBusyId) return
+    setReconciliationOrderId(order.id)
+  }
+  // S4-04D3: requestId is created ONCE per user-confirmed action (the modal) and reused ONLY by the explicit
+  // "retry the same action" button after an uncertain outcome, so the server / database can return the original record.
+  const submitReconciliation = (order: Order, input: ReconciliationInput, requestId: string) => runExclusive(reconciliationInFlight, async () => {
+    setReconciliationOrderId(null)
+    if (!reconciliationEnabled || !validateReconciliationInput(input).ok) return
+    setReconciliationBusyId(order.id)
+    let outcome: ReconciliationNote
+    try {
+      const res = await kitchenPost(`/api/kitchen/orders/${encodeURIComponent(order.id)}/reconciliation`, { ...input, requestId })
+      const m = reconciliationMessage(res.status, res.body)
+      outcome = res.status === 500 ? { ...m, retry: { input, requestId } } : m // 500: unknown whether it was stored
+    } catch (e) {
+      if (e instanceof UnauthorizedError) { setReconciliationBusyId(null); onUnauthorized(); return }
+      outcome = { ok: false, message: RECONCILIATION_MESSAGES.network_error, retry: { input, requestId } }
+    }
+    setReconciliationNotes(prev => ({ ...prev, [order.id]: outcome }))
+    setReconciliationBusyId(null)
+    fetchOrders()
+  })
+  const retryReconciliation = (order: Order) => {
+    const retry = reconciliationNotes[order.id]?.retry
+    if (retry) void submitReconciliation(order, retry.input, retry.requestId) // same payload, same requestId
+  }
+  const reconciliationOrder = reconciliationOrderId ? orders.find(o => o.id === reconciliationOrderId) ?? null : null
+
   // The confirmation always shows the latest polled order; it closes if a courier request is no longer possible.
   const confirmDispatchOrder = confirmDispatchId ? orders.find(o => o.id === confirmDispatchId) ?? null : null
   const confirmDispatchOpen = dispatchEnabled && confirmDispatchOrder !== null && isDispatchButtonVisible(confirmDispatchOrder, dispatchNotes[confirmDispatchOrder.id])
@@ -1024,6 +1190,11 @@ function Dashboard({ user, branches, dispatchEnabled, onLogout, onUnauthorized }
         <DispatchConfirmModal key={confirmDispatchOrder.id} order={confirmDispatchOrder} busy={dispatchBusyId !== null}
           num={confirmDispatchOrder.dailyNumber ? String(confirmDispatchOrder.dailyNumber).padStart(4, '0') : confirmDispatchOrder.id.slice(-4).toUpperCase()}
           onCancel={() => setConfirmDispatchId(null)} onConfirm={ack => { void submitDispatch(confirmDispatchOrder, ack) }} />
+      )}
+
+      {reconciliationEnabled && reconciliationOrder && reconciliationOrder.reconciliation && (
+        <ReconciliationModal key={reconciliationOrder.id} order={reconciliationOrder} busy={reconciliationBusyId !== null}
+          onCancel={() => setReconciliationOrderId(null)} onSubmit={input => { void submitReconciliation(reconciliationOrder, input, newReconciliationRequestId()) }} />
       )}
 
       <div style={{ minHeight: '100vh', background: '#0D0D0D', color: '#fff', fontFamily: 'Heebo, sans-serif', direction: 'rtl' }}>
@@ -1162,7 +1333,9 @@ function Dashboard({ user, branches, dispatchEnabled, onLogout, onUnauthorized }
                         <OrderCard key={order.id} order={order} onAdvance={handleAdvance} onKitchenOpen={status === 'preparing' ? setKitchenOrder : undefined} onEdit={setEditOrder}
                           onParcelAction={handleParcelAction} parcelBusy={parcelBusyId === order.id}
                           dispatchEnabled={dispatchEnabled} dispatchBusy={dispatchBusyId === order.id} dispatchNote={dispatchNotes[order.id]}
-                          onDispatch={handleDispatch} />
+                          onDispatch={handleDispatch}
+                          reconciliationEnabled={reconciliationEnabled} reconciliationBusy={reconciliationBusyId === order.id}
+                          reconciliationNote={reconciliationNotes[order.id]} onReconcile={openReconciliation} onReconcileRetry={retryReconciliation} />
                       ))}
                   </div>
                 </div>
