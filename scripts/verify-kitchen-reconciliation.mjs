@@ -571,7 +571,7 @@ await test('E5. a cancellation (or any record) never unlocks: a sent dispatch st
   const serviceDeps = {
     config, isPaymentVerified: async () => false, now: () => '2026-10-22T10:00:00.000Z', log: () => {},
     repo: { async loadOrder() { return { snapshot: snap, status: 'confirmed', parcelStatus: null } }, async getDispatch() { return { ...row } }, async hasRecentAuthFailure() { return false },
-      async insertPending() { throw new Error('must not write') }, async claim() { throw new Error('must not claim') }, async markSent() { throw new Error('x') }, async markFailed() { throw new Error('x') } },
+      async insertPending() { throw new Error('must not write') }, async claim() { throw new Error('must not claim') }, async markAuthFailure() { throw new Error('must not mark') }, async markSent() { throw new Error('x') }, async markFailed() { throw new Error('x') } },
     quote: async () => { quotes++; throw new Error('must not quote') }, send: async () => { sends++; throw new Error('must not send') },
     consumeQuoteSlot: async () => { slots++; return 'ok' },
   }

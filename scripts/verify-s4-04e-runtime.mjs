@@ -23,10 +23,17 @@ const src = f => readFileSync(join(ROOT, f), 'utf8').replace(/\r\n/g, '\n')
 
 /* ─── FAKE supabaseServer: records every rpc / table call; answers the claim from `fake.claim` ─── */
 class ServerConfigError extends Error { constructor(m) { super(m); this.name = 'ServerConfigError' } }
-const fake = { calls: [], claim: async () => ({ data: 'claimed', error: null }) }
+const fake = { calls: [], claim: async () => ({ data: 'claimed', error: null }), tableAnswer: null }
 const fakeClient = {
   async rpc(fn, args) { fake.calls.push(['rpc', fn, args]); return fn === 'claim_maale_dispatch' ? fake.claim(args) : { data: null, error: { code: 'X' } } },
-  from(table) { fake.calls.push(['from', table]); throw new Error(`unexpected table access: ${table}`) },
+  from(table) {
+    fake.calls.push(['from', table])
+    if (!fake.tableAnswer) throw new Error(`unexpected table access: ${table}`)
+    const b = {}
+    for (const m of ['update', 'eq', 'is', 'select']) b[m] = (...a) => { fake.calls.push([m, ...a]); return b }
+    b.then = (ok, ko) => Promise.resolve(fake.tableAnswer).then(ok, ko)
+    return b
+  },
 }
 const fakeSupabaseServer = { ServerConfigError, getServerSupabase: () => fakeClient }
 
@@ -64,13 +71,25 @@ const QUOTE_OK = { ok: true, kind: 'quote', status: 200, deliveryFeeAgorot: 2000
  * Service harness. The repo's claim is the REAL supabaseDispatchRepo().claim (→ fake rpc); every other repo method is
  * in-memory. `events` proves the order of quote / claim / send / marks.
  */
-function harness({ name, quote = async () => QUOTE_OK, slot = async () => 'ok', withSlot = true } = {}) {
+function harness({ name, quote = async () => QUOTE_OK, slot = async () => 'ok', withSlot = true, mark = 'ok', authRead = 'row',
+  send = async () => ({ ok: true, kind: 'created', providerOrderId: 'MX-1', providerStatus: 'searching' }) } = {}) {
   const st = { row: null, events: [], sends: 0 }
   const real = D.supabaseDispatchRepo()
   const repo = {
     async loadOrder() { return { snapshot: snapshot(name), status: 'confirmed', parcelStatus: null } },
     async getDispatch() { return st.row ? { ...st.row } : null },
-    async hasRecentAuthFailure() { return false },
+    async hasRecentAuthFailure() {
+      if (authRead === 'throw') throw new Error('db down')
+      return st.row?.error_code === 'unauthorized' // the real query: error_code 'unauthorized' + recent updated_at, ANY status
+    },
+    async markAuthFailure(id, now) {
+      st.events.push('markAuthFailure')
+      if (mark === 'throw') throw new Error('db down')
+      if (mark === 'false') return false
+      const r = st.row
+      if (!r || r.status !== 'pending' || r.attempts !== 0 || r.last_attempt_at !== null) return false
+      Object.assign(r, { error_code: 'unauthorized', updated_at: now }); return true
+    },
     async insertPending(id) { st.events.push('insertPending'); if (!st.row) st.row = { order_id: id, external_order_id: id, status: 'pending', attempts: 0, last_attempt_at: null, error_code: null } },
     async claim(id, seen, now) {
       st.events.push('claim')
@@ -85,7 +104,7 @@ function harness({ name, quote = async () => QUOTE_OK, slot = async () => 'ok', 
   const deps = {
     config: { status: 'ready', apiKey: 'test-key-not-real' }, repo, isPaymentVerified: async () => false, now: () => new Date().toISOString(), log: () => {},
     quote: async p => { st.events.push('quote'); return quote(p) },
-    send: async () => { st.sends++; st.events.push('send'); return { ok: true, kind: 'created', providerOrderId: 'MX-1', providerStatus: 'searching' } },
+    send: async p => { st.sends++; st.events.push('send'); return send(p) },
     ...(withSlot ? { consumeQuoteSlot: async () => { st.events.push('slot'); return slot() } } : {}),
   }
   return { st, run: opts => D.dispatchOrderToMaale(ORDER_ID, deps, opts) }
@@ -157,16 +176,72 @@ await test('A5. controlled runner testMode: same claim RPC, NO bypass — a refu
   }
 })
 
-await test('A6. quote 401 → the auth failure is recorded only after a committed claim; a refused claim records nothing', async () => {
-  const q401 = async () => ({ ok: false, errorCode: 'unauthorized', status: 401, retryable: false })
+const Q401 = async () => ({ ok: false, errorCode: 'unauthorized', status: 401, retryable: false })
+const UNAUTH = { ok: false, outcome: 'failed', retryable: false, errorCode: 'unauthorized' }
+
+await test('A6. S4-04F2 quote 401 → recorded WITHOUT a claim: row stays pending / 0, error_code unauthorized; no send, no claim RPC', async () => {
+  // even when a claim WOULD be refused (manual courier recorded) the failure is recorded — the claim is never asked
+  for (const claimAnswer of ['claimed', 'manual_courier_recorded', 'claim_lost']) {
+    resetFake(async () => ({ data: claimAnswer, error: null }))
+    const h = harness({ quote: Q401 })
+    assert.deepEqual(await h.run(), UNAUTH, claimAnswer)
+    assert.deepEqual(h.st.events, ['slot', 'quote', 'insertPending', 'markAuthFailure'], claimAnswer)
+    assert.equal(claimCalls().length, 0); assert.equal(h.st.sends, 0)
+    assert.deepEqual([h.st.row.status, h.st.row.attempts, h.st.row.last_attempt_at, h.st.row.error_code], ['pending', 0, null, 'unauthorized'])
+  }
+})
+
+await test('A6b. the existing 30-min global stop then blocks EVERY request before the limiter / quote (no retry of the 401)', async () => {
   resetFake(async () => ({ data: 'claimed', error: null }))
-  let h = harness({ quote: q401 })
-  assert.deepEqual(await h.run(), { ok: false, outcome: 'failed', retryable: false, errorCode: 'unauthorized' })
-  assert.deepEqual(h.st.events.slice(-3), ['claim', 'claim:claimed', 'markFailed:unauthorized']); assert.equal(h.st.sends, 0)
-  resetFake(async () => ({ data: 'manual_courier_recorded', error: null }))
-  h = harness({ quote: q401 })
-  assert.deepEqual(await h.run(), { ok: false, outcome: 'blocked', reason: 'manual_courier_recorded' })
-  assert.ok(!h.st.events.some(e => e.startsWith('mark'))); assert.equal(h.st.sends, 0)
+  const h = harness({ quote: Q401 })
+  await h.run(); h.st.events.length = 0
+  for (let i = 0; i < 3; i++) assert.deepEqual(await h.run(), { ok: false, outcome: 'blocked', reason: 'auth_stop_active' })
+  assert.deepEqual(h.st.events, [], 'no slot, no quote, no claim, no write while the stop is active')
+  assert.equal(D.AUTH_FAILURE_STOP_MS, 30 * 60 * 1000)
+  // an existing never-attempted row is marked in place (no second row, nothing reset)
+  const e = harness({ quote: Q401 }); e.st.row = { order_id: ORDER_ID, external_order_id: ORDER_ID, status: 'pending', attempts: 0, last_attempt_at: null, error_code: null }
+  assert.deepEqual(await e.run(), UNAUTH); assert.deepEqual(e.st.events, ['slot', 'quote', 'markAuthFailure'])
+})
+
+await test('A6c. marker write fails (throws / 0 rows) → still "unauthorized", nothing sent, no claim, written once, never retried', async () => {
+  for (const mark of ['throw', 'false']) {
+    resetFake(async () => ({ data: 'claimed', error: null }))
+    const h = harness({ quote: Q401, mark })
+    assert.deepEqual(await h.run(), UNAUTH, mark)
+    assert.equal(h.st.events.filter(x => x === 'markAuthFailure').length, 1); assert.equal(h.st.sends, 0); assert.equal(claimCalls().length, 0)
+    assert.equal(h.st.row.status, 'pending'); assert.equal(h.st.row.attempts, 0)
+  }
+})
+
+await test('A6d. the stop state cannot be read → blocked (auth_state_unknown) before the limiter / quote — fail closed', async () => {
+  resetFake(async () => ({ data: 'claimed', error: null }))
+  const h = harness({ authRead: 'throw' })
+  assert.deepEqual(await h.run(), { ok: false, outcome: 'blocked', reason: 'auth_state_unknown' }); assert.deepEqual(h.st.events, [])
+})
+
+await test('A6e. SEND-stage 401 unchanged: committed claim → one send → failed_final unauthorized → global stop', async () => {
+  resetFake(async () => ({ data: 'claimed', error: null }))
+  const h = harness({ send: async () => ({ ok: false, retryable: false, errorCode: 'unauthorized', status: 401 }) })
+  assert.deepEqual(await h.run(), UNAUTH)
+  assert.deepEqual(h.st.events.slice(-4), ['claim', 'claim:claimed', 'send', 'markFailed:unauthorized']); assert.equal(h.st.sends, 1)
+  assert.deepEqual([h.st.row.status, h.st.row.error_code], ['failed_final', 'unauthorized'])
+  h.st.events.length = 0
+  assert.deepEqual(await h.run(), { ok: false, outcome: 'blocked', reason: 'auth_stop_active' }); assert.deepEqual(h.st.events, [])
+})
+
+await test('A6f. real repo markAuthFailure: ONE UPDATE of error_code + updated_at only, filtered to pending / 0 / no attempt; error → throws', async () => {
+  const repo = D.supabaseDispatchRepo()
+  fake.calls = []; fake.tableAnswer = { data: [{ order_id: ORDER_ID }], error: null }
+  assert.equal(await repo.markAuthFailure(ORDER_ID, '2026-10-23T10:00:00.000Z'), true)
+  assert.deepEqual(fake.calls, [['from', 'delivery_dispatches'], ['update', { error_code: 'unauthorized', updated_at: '2026-10-23T10:00:00.000Z' }],
+    ['eq', 'order_id', ORDER_ID], ['eq', 'status', 'pending'], ['eq', 'attempts', 0], ['is', 'last_attempt_at', null], ['select', 'order_id']])
+  fake.tableAnswer = { data: [], error: null }; assert.equal(await repo.markAuthFailure(ORDER_ID, 'x'), false, 'no matching row → false')
+  fake.tableAnswer = { data: null, error: { code: 'P0001', message: 'SECRET' } }
+  await assert.rejects(repo.markAuthFailure(ORDER_ID, 'x'), e => e.message === 'maale_dispatch: mark auth failure P0001')
+  fake.tableAnswer = null
+  // source: the quote-401 path never claims and never calls markFailed
+  const md = src('lib/maaleDispatch.ts'), fn = md.slice(md.indexOf('async function recordAuthFailure'), md.indexOf('/* ─── Controlled-test readiness'))
+  assert.ok(!/claim|markFailed|markSent|send\(/.test(fn.replace(/^\s*\/\/.*$/gm, '')), 'no claim / mark / send in recordAuthFailure')
 })
 
 await test('A7. kitchen mapping: claim-side manual courier / open review → 409 not_eligible (button not locked); db_error → 500', () => {

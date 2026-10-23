@@ -250,6 +250,7 @@ function svc({ name = 'לקוח', gate } = {}) {
     async getDispatch() { return st.row ? { ...st.row } : null }, async hasRecentAuthFailure() { return false },
     async insertPending(id) { st.writes++; st.row = { order_id: id, external_order_id: id, status: 'pending', attempts: 0, last_attempt_at: null, error_code: null } },
     async claim(id, seen, now) { st.writes++; if (st.row.status !== seen.status) return 'claim_lost'; Object.assign(st.row, { status: 'sending', attempts: 1, last_attempt_at: now }); return 'claimed' },
+    async markAuthFailure(id, now) { st.writes++; const r = st.row; if (!r || r.status !== 'pending' || r.attempts !== 0 || r.last_attempt_at !== null) return false; Object.assign(r, { error_code: 'unauthorized', updated_at: now }); return true },
     async markSent() { st.writes++; st.row.status = 'sent'; return true }, async markFailed() { st.writes++; return true },
   }
   const config = { status: 'ready', apiKey: KEY }

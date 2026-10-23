@@ -37,6 +37,13 @@ test('1. migration: review-only, manual, one transaction with timeouts, prefligh
   assert.ok(c.indexOf('$s4_04e_preflight$') < c.indexOf('CREATE ROLE') && c.lastIndexOf('$s4_04e_postcheck$') > c.lastIndexOf('CREATE FUNCTION'))
   assert.ok(c.includes('S4-04B (quote rate limit) is not installed') && c.includes('S4-04D (reconciliation ledger with request_id) is not installed'))
   assert.ok(c.includes('already exist (no silent re-apply)') && c.includes('cannot create the BYPASSRLS coordinator role'))
+  // 04F2: PostgreSQL >= 16 required — the FIRST preflight check, before any object is created; the PG16-only GRANT
+  // options exist only inside dynamic SQL, so an older server parses the script and stops at this clear message.
+  const guard = "IF pg_catalog.current_setting('server_version_num')::integer < 160000 THEN"
+  assert.ok(c.indexOf(guard) > c.indexOf('$s4_04e_preflight$') && c.indexOf(guard) < c.indexOf('S4-04B (quote rate limit) is not installed') && c.indexOf(guard) < c.indexOf('CREATE ROLE'))
+  assert.ok(c.includes('PostgreSQL 16 or newer is required'))
+  assert.ok(!/WITH\s+(INHERIT|SET)\b/i.test(stmts(MIG)), 'no PG16-only GRANT option outside the dynamic string')
+  assert.ok(PRE.includes("current_setting('server_version_num')::integer >= 160000"), 'preflight row 12 FAILs below 16')
 })
 
 test('2. dedicated role: NOLOGIN NOINHERIT BYPASSRLS, nothing else; least-privilege grants; transient CREATE revoked; no app role member', () => {

@@ -42,6 +42,14 @@ the combined verify checks that state explicitly instead of ignoring it. Residua
 installer role (`postgres`, which holds SET on the coordinator) and superusers can still act as the coordinator; no
 application role can. 04E1's writable transaction-setting marker was removed — it was never an authorization boundary.
 
+**S4-04F2:** 04E requires **PostgreSQL 16 or newer**. The migration checks this first and refuses with a clear message,
+and `s4_04e_production_preflight.sql` row 12 FAILs below 16. A provider 401 on the dry-run **quote** no longer needs a
+dispatch claim. The order's own never-attempted row gets `error_code = 'unauthorized'`, with status `pending` and
+attempts 0 unchanged (the 04E guard allows this), and the existing 30-minute global stop reads that row. After install,
+the PostgREST envelopes can be confirmed without writing anything using
+`scripts/s4-04e-rpc-envelope-probe.mjs --confirm=READ-ONLY-RPC-ENVELOPE-PROBE`. That script is manual and owner-run;
+it was tested offline and against an isolated real PostgREST by `scripts/pgtest-s4-04e-postgrest-envelope.mjs`.
+
 **S4-04B order:** install it BEFORE deploying an application that calls `consume_maale_quote_slot` (the current
 application never calls it). Primary rollback = application rollback; the schema can stay.
 

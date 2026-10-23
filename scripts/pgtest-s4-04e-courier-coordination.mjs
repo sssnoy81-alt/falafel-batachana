@@ -155,6 +155,19 @@ try {
     const r = rows(COMBINED()); assert.equal(r.length, 20); assert.equal(stageOf(r), 'pre_04e'); allPass(r, 'pre-04E combined')
   })
 
+  await test('V0. PostgreSQL >= 16 guard (04F2): this server passes; an unsupported server (simulated threshold) FAILs + aborts, nothing created', () => {
+    // No PG15 image is available offline; the guard's FAIL branch is exercised by raising the threshold in the SQL text.
+    const pre = rows(read('s4_04e_production_preflight.sql'))
+    assert.equal(pre.find(r => r[0] === '12')[2], 'PASS', 'real server version passes')
+    const fake = s => { assert.ok(s.includes('160000')); return s.replaceAll('160000', '990000') }
+    assert.equal(rows(fake(read('s4_04e_production_preflight.sql'))).find(r => r[0] === '12')[2], 'FAIL')
+    assert.match(psql(fake(read('s4_04e_courier_coordination.sql')), { expectError: true }), /PostgreSQL 16 or newer is required \(this server: .+\) — nothing was installed/)
+    assert.equal(psql(`SELECT (SELECT count(*) FROM pg_proc WHERE proname IN ('claim_maale_dispatch','record_maale_reconciliation_event','delivery_dispatches_coordination_guard'))
+      + (SELECT count(*) FROM pg_roles WHERE rolname = 'maale_dispatch_coordinator') + (SELECT count(*) FROM pg_trigger WHERE tgname = 'delivery_dispatches_coordination_guard');`), '0')
+    assert.equal(psql("SELECT has_table_privilege('service_role','public.maale_dispatch_reconciliations','INSERT');"), 't', 'ledger privileges untouched')
+    assert.equal(fingerprint(unrelated), unrelatedBefore, 'no data changed')
+  })
+
   await test('M1. 04E installs in one transaction (preflight, functions, guard trigger, revoke, post-check)', () => { psql(read('s4_04e_courier_coordination.sql')) })
 
   await test('M2. re-running 04E aborts in its preflight (no silent re-apply)', () => {
@@ -392,6 +405,22 @@ try {
     assert.equal(fingerprint(unrelated), unrelatedBefore)
     assert.equal(psql(`SELECT md5(d::text) FROM public.delivery_dispatches d WHERE order_id = '${oid(67)}';`), sentBefore)
     assert.equal(psql('SELECT count(*) FROM public.maale_dispatch_requests;'), '0')
+  })
+
+  await test('T13. S4-04F2 quote-401 marker under the 04E guard: service_role marks a pending/0 row (no claim); the stop query sees it', () => {
+    const o = oid(19)
+    // the exact statement of supabaseDispatchRepo.markAuthFailure (PostgREST: UPDATE … WHERE eq / is filters)
+    const mark = `UPDATE public.delivery_dispatches SET error_code = 'unauthorized', updated_at = now()
+      WHERE order_id = '${o}' AND status = 'pending' AND attempts = 0 AND last_attempt_at IS NULL RETURNING order_id;`
+    assert.equal(psql(mark, { role: 'service_role' }), o, 'allowed by the guard (pending → pending)')
+    assert.equal(psql(`SELECT status || '/' || attempts || '/' || COALESCE(last_attempt_at::text, 'null') || '/' || error_code FROM public.delivery_dispatches WHERE order_id = '${o}';`),
+      'pending/0/null/unauthorized')
+    // the hasRecentAuthFailure query (error_code + updated_at window, any status) now reports the global stop
+    assert.equal(psql(`SELECT count(*) > 0 FROM public.delivery_dispatches WHERE error_code = 'unauthorized' AND updated_at >= now() - interval '30 minutes';`, { role: 'service_role' }), 't')
+    // the same marker can never touch a non-pending row (sent stays immutable; sending / failed unmatched by the filter)
+    assert.equal(psql(mark.replace(o, oid(67)), { role: 'service_role' }), '', 'filter excludes the sent row')
+    assert.equal(psql(`SELECT md5(d::text) FROM public.delivery_dispatches d WHERE order_id = '${oid(67)}';`), sentBefore)
+    assert.equal(ledgerCount(`order_id = '${o}'`), 0, 'no ledger row'); assert.equal(dstate(o), 'pending/0')
   })
 
   await test('X1. combined verify AFTER 04E: stage post_04e, every row PASS; 04B verify PASS; 04D verify: only row 05 (by design)', () => {

@@ -87,6 +87,7 @@ function memRepo({ status = 'confirmed', row = null, orderSnapshot = snapshot(),
       if (!marks || state.row?.status !== 'sending') return false
       Object.assign(state.row, { status: 'sent', dispatched_at: now, provider_order_id: v.providerOrderId ?? null, provider_status: v.providerStatus ?? null, error_code: null, updated_at: now }); return true
     },
+    async markAuthFailure(id, now) { state.writes++; const r = state.row; if (!r || r.status !== 'pending' || r.attempts !== 0 || r.last_attempt_at !== null) return false; Object.assign(r, { error_code: 'unauthorized', updated_at: now }); return true },
     async markFailed(id, st, code, now, v) {
       state.writes++
       if (marks === 'throw') throw new Error('db down')
@@ -210,10 +211,11 @@ await test('D9. HTTP 401 → failed_final + global stop for 30 min (any order); 
   assert.deepEqual(await other.run(), { ok: false, outcome: 'blocked', reason: 'auth_stop_active' }); noEffects(other, 'stop'); assert.equal(other.quotes.length, 0)
   const later = setup({ otherAuthFailureAt: at(-31 * 60) })
   assert.equal((await later.run()).outcome, 'sent', 'stop expires after the window')
-  // 401 on the QUOTE: persisted on this order's row, never a real send
+  // 401 on the QUOTE (S4-04F2): persisted on this order's row WITHOUT a claim — still pending / 0 attempts, never a send
   const q = setup({ quote: { ok: false, retryable: false, errorCode: 'unauthorized', status: 401 } })
   assert.deepEqual(await q.run(), { ok: false, outcome: 'failed', retryable: false, errorCode: 'unauthorized' })
-  assert.equal(q.sends.length, 0); assert.deepEqual([q.mem.state.row.status, q.mem.state.row.error_code], ['failed_final', 'unauthorized'])
+  assert.equal(q.sends.length, 0)
+  assert.deepEqual([q.mem.state.row.status, q.mem.state.row.attempts, q.mem.state.row.last_attempt_at, q.mem.state.row.error_code], ['pending', 0, null, 'unauthorized'])
   assert.equal((await q.run()).outcome, 'blocked', 'global stop now active for this repo too')
   // a repo that cannot answer the stop question fails closed
   const legacy = setup(); delete legacy.mem.repo.hasRecentAuthFailure

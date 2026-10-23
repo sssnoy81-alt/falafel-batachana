@@ -52,6 +52,7 @@ function memRepo({ status = 'confirmed', row = null, orderSnapshot = snapshot() 
         Object.assign(r, { status: 'sending', attempts: seen.attempts + 1, last_attempt_at: now }); return 'claimed'
       },
       async markSent(id, v, now) { state.writes++; if (state.row.status === 'sending') Object.assign(state.row, { status: 'sent', dispatched_at: now }) },
+      async markAuthFailure(id, now) { state.writes++; const r = state.row; if (!r || r.status !== 'pending' || r.attempts !== 0 || r.last_attempt_at !== null) return false; Object.assign(r, { error_code: 'unauthorized', updated_at: now }); return true },
       async markFailed(id, st, code) { state.writes++; if (state.row.status === 'sending') Object.assign(state.row, { status: st, error_code: code }) },
     },
   }
@@ -246,6 +247,7 @@ function fullRepo({ auth = 'clear', status = 'confirmed', row = null, orderSnaps
         Object.assign(r, { status: 'sending', attempts: r.attempts + 1, last_attempt_at: now }); return 'claimed'
       },
       async markSent(id, v) { st.writes++; if (!markSentOk || st.row?.status !== 'sending') return false; Object.assign(st.row, { status: 'sent', provider_order_id: v.providerOrderId ?? null, provider_status: v.providerStatus ?? null }); return true },
+      async markAuthFailure(id, now) { st.writes++; const r = st.row; if (!r || r.status !== 'pending' || r.attempts !== 0 || r.last_attempt_at !== null) return false; Object.assign(r, { error_code: 'unauthorized', updated_at: now }); return true },
       async markFailed(id, s, code) { st.writes++; if (st.row?.status !== 'sending') return false; Object.assign(st.row, { status: s, error_code: code }); return true },
     },
   }

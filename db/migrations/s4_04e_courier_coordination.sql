@@ -46,6 +46,13 @@ DO $s4_04e_preflight$
 DECLARE
   v_me text := current_user;
 BEGIN
+  -- 04F2: PostgreSQL >= 16 is REQUIRED (GRANT … WITH INHERIT / SET options and the PG16 role-membership rules the
+  -- ownership transfer relies on). Checked first, before anything is created. The PG16-only GRANT below is dynamic SQL
+  -- (a string), so an older server parses this whole script and stops HERE with this clear message.
+  IF pg_catalog.current_setting('server_version_num')::integer < 160000 THEN
+    RAISE EXCEPTION 's4_04e_preflight: PostgreSQL 16 or newer is required (this server: %) — nothing was installed',
+      pg_catalog.current_setting('server_version');
+  END IF;
   IF to_regclass('public.maale_dispatch_requests') IS NULL
      OR to_regprocedure('public.consume_maale_quote_slot(uuid, uuid, text)') IS NULL THEN
     RAISE EXCEPTION 's4_04e_preflight: S4-04B (quote rate limit) is not installed';

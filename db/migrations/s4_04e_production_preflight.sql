@@ -1,6 +1,7 @@
 -- FALAFEL BATACHANA — s4_04e_production_preflight.sql (S4-INTEGRATIONS-04E1/04E2) — READ-ONLY, ONE SELECT.
 -- Run BEFORE s4_04e_courier_coordination.sql (and only after 04B + 04D are installed and verified).
--- Catalog + row COUNTs only: no customer data, no writes. Expected: every row PASS (rows 10–12 INFO).
+-- Catalog + row COUNTs only: no customer data, no writes. Expected: every row PASS (rows 10–11 INFO).
+-- Row 12 (04F2): PostgreSQL >= 16 is required — FAIL means DO NOT install (the migration would refuse anyway).
 -- Columns: check_id | check_name | result | detail
 WITH
 me AS (SELECT r.rolname, r.rolsuper, r.rolbypassrls, r.rolcreaterole FROM pg_roles r WHERE r.rolname = current_user),
@@ -53,7 +54,8 @@ checks (check_id, check_name, ok, detail) AS (
          CASE WHEN to_regclass('public.delivery_dispatches') IS NULL THEN 'table missing'
               ELSE (xpath('/row/c/text()', query_to_xml('SELECT COALESCE(string_agg(status || ''='' || n, '', '' ORDER BY status), ''none'') AS c FROM (SELECT status, count(*) AS n FROM public.delivery_dispatches GROUP BY status) s', false, true, '')))[1]::text END
   UNION ALL
-  SELECT '12', 'INFO server version', NULL, current_setting('server_version')
+  SELECT '12', 'PostgreSQL 16 or newer (required by the coordinator role / ownership transfer)',
+         current_setting('server_version_num')::integer >= 160000, current_setting('server_version')
 )
 SELECT check_id, check_name,
        CASE WHEN ok IS NULL THEN 'INFO' WHEN ok THEN 'PASS' ELSE 'FAIL' END AS result,

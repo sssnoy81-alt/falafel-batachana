@@ -108,6 +108,10 @@ export interface DispatchRepo extends ReadOnlyDispatchRepo {
   claim(orderId: string, seen: Pick<DispatchRow, 'status' | 'attempts' | 'last_attempt_at'>, nowIso: string): Promise<string>
   /** Only from 'sending'. Returns true only when exactly one row was updated. */
   markSent(orderId: string, v: { providerOrderId?: string; providerStatus?: string }, nowIso: string): Promise<boolean>
+  /** S4-04F2: a provider 401 on the dry_run QUOTE — sets error_code 'unauthorized' (+ updated_at) on this order's
+   *  never-attempted row ONLY (status 'pending', attempts 0, no last_attempt_at), so hasRecentAuthFailure starts the
+   *  global stop. No claim: the row stays pending / 0 (nothing was submitted). true only when exactly one row changed. */
+  markAuthFailure(orderId: string, nowIso: string): Promise<boolean>
   /** Only from 'sending'. Returns true only when exactly one row was updated. */
   markFailed(orderId: string, status: 'failed_retryable' | 'failed_final', errorCode: string, nowIso: string,
     v?: { providerOrderId?: string }): Promise<boolean>
@@ -454,16 +458,21 @@ async function safeMark(fn: () => Promise<boolean>): Promise<boolean> {
   try { return (await fn()) === true } catch { return false }
 }
 
-/** A 401 on the quote: record it on this order's row (claim + failed_final 'unauthorized', no real send) so the
- *  global stop sees it. */
+/**
+ * A 401 / 403 on the dry_run QUOTE (S4-04F2). No courier can exist: the quote never creates an order and it was refused.
+ * The failure is recorded WITHOUT a dispatch claim (a refused claim — manual courier, open review, concurrent caller —
+ * used to leave it unrecorded): this order's own pending row (created idempotently, exactly as step 6 would) gets
+ * error_code 'unauthorized', which the existing global stop (hasRecentAuthFailure, 30 min, any order) already reads.
+ * status / attempts are untouched, nothing is sent, nothing is retried. Always answers 'unauthorized'; a failed write is
+ * logged (short code) and still sends nothing.
+ */
 async function recordAuthFailure(orderId: string, row: DispatchRow | null, deps: DispatchDeps, now: () => string, log: (c: string) => void): Promise<DispatchResult> {
-  if (!row) { await deps.repo.insertPending(orderId); row = await deps.repo.getDispatch(orderId) }
-  if (!row || row.external_order_id !== orderId) return { ok: false, outcome: 'failed', retryable: true, errorCode: 'db_error' }
-  const seen = { status: row.status, attempts: row.attempts, last_attempt_at: row.last_attempt_at }
-  const claim = await claimDecision(() => deps.repo.claim(orderId, seen, now()))
-  if (claim !== 'claimed') { log(`maale_dispatch_auth_failure_unrecorded_${claim.code}`); return claim.result }
-  const saved = await safeMark(() => deps.repo.markFailed(orderId, 'failed_final', 'unauthorized', now()))
-  if (!saved) { log('maale_dispatch_state_lost'); return { ok: false, outcome: 'persistence_failed', providerOutcome: 'failed' } }
+  try {
+    if (!row) await deps.repo.insertPending(orderId)
+    if (!(await deps.repo.markAuthFailure(orderId, now()))) log('maale_dispatch_auth_failure_unrecorded')
+  } catch {
+    log('maale_dispatch_auth_failure_unrecorded')
+  }
   return { ok: false, outcome: 'failed', retryable: false, errorCode: 'unauthorized' }
 }
 
@@ -632,6 +641,14 @@ export function supabaseDispatchRepo(): DispatchRepo {
         .update({ status: 'sent', dispatched_at: nowIso, provider_order_id: v.providerOrderId ?? null, provider_status: v.providerStatus ?? null, error_code: null, updated_at: nowIso })
         .eq('order_id', orderId).eq('status', 'sending').select('order_id')
       if (error) throw new Error(`maale_dispatch: mark sent ${error.code}`)
+      return one(data)
+    },
+    async markAuthFailure(orderId, nowIso) {
+      // pending → pending (error_code only): allowed by the 04E guard, which refuses only leaving 'pending' / entering 'sending'.
+      const { data, error } = await table()
+        .update({ error_code: 'unauthorized', updated_at: nowIso })
+        .eq('order_id', orderId).eq('status', 'pending').eq('attempts', 0).is('last_attempt_at', null).select('order_id')
+      if (error) throw new Error(`maale_dispatch: mark auth failure ${error.code}`)
       return one(data)
     },
     async markFailed(orderId, status, errorCode, nowIso, v) {

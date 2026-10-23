@@ -131,6 +131,7 @@ function harness({ status = 'confirmed', snap = snapshot(), parcelStatus = null,
       if (!r || r.status !== seen.status || r.attempts !== seen.attempts || r.last_attempt_at !== seen.last_attempt_at) return 'claim_lost'
       Object.assign(r, { status: 'sending', attempts: r.attempts + 1, last_attempt_at: now }); return 'claimed' },
     async markSent(id, v) { st.writes++; if (st.row?.status !== 'sending') return false; Object.assign(st.row, { status: 'sent', provider_order_id: v.providerOrderId ?? null, provider_status: v.providerStatus ?? null }); return true },
+    async markAuthFailure(id, now) { st.writes++; const r = st.row; if (!r || r.status !== 'pending' || r.attempts !== 0 || r.last_attempt_at !== null) return false; Object.assign(r, { error_code: 'unauthorized', updated_at: now }); return true },
     async markFailed(id, s, code) { st.writes++; if (st.row?.status !== 'sending') return false; Object.assign(st.row, { status: s, error_code: code }); return true },
   }
   const fakeDb = { async rpc(fn, args) { st.events.push('rpc'); st.rpcArgs.push({ fn, ...args }); await tick(); return rpc(args) } }
