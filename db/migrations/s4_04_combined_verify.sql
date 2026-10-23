@@ -89,7 +89,7 @@ checks (check_id, check_name, ok, detail) AS (
                 ELSE 'service_role:INSERT,service_role:SELECT' END,
          COALESCE((SELECT s FROM acls WHERE relname = 'maale_dispatch_reconciliations'), 'none')
   UNION ALL
-  SELECT '08', 'post-04E: NO application role can INSERT into the ledger directly (only via record_maale_reconciliation_event)',
+  SELECT '08', 'post-04E: NO application role has direct ledger write permission (only via record_maale_reconciliation_event)',
          CASE WHEN NOT (SELECT is_post FROM post) THEN true
               ELSE NOT COALESCE(has_any_column_privilege('service_role', to_regclass('public.maale_dispatch_reconciliations'), 'INSERT')
                        OR has_any_column_privilege('anon', to_regclass('public.maale_dispatch_reconciliations'), 'INSERT')

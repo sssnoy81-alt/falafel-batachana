@@ -7,7 +7,7 @@
 -- Emergency rollback (separate approval): s4_04e_rollback.sql.
 --
 -- ORDER: install together with the application change that calls these functions (S4-04E2). After this migration a
--- direct INSERT into the ledger and a direct UPDATE of a pending dispatch row by service_role are REFUSED (fail closed).
+-- direct ledger write and a direct UPDATE of a pending dispatch row by service_role are REFUSED (fail closed).
 --
 -- AUTHORIZATION BOUNDARY (04E2): a dedicated NOLOGIN role public.maale_dispatch_coordinator owns both functions
 -- (SECURITY DEFINER) and alone holds the writes the protocol needs. The guard trigger accepts a transition OUT OF
@@ -349,7 +349,7 @@ BEGIN
      OR has_any_column_privilege('anon', 'public.maale_dispatch_reconciliations', 'INSERT')
      OR has_any_column_privilege('authenticated', 'public.maale_dispatch_reconciliations', 'INSERT')
      OR NOT has_table_privilege('service_role', 'public.maale_dispatch_reconciliations', 'SELECT') THEN
-    RAISE EXCEPTION 's4_04e_postcheck: service_role must keep SELECT and no application role may INSERT into the ledger';
+    RAISE EXCEPTION 's4_04e_postcheck: service_role must keep SELECT and no application role may write the ledger directly';
   END IF;
   IF has_table_privilege('maale_dispatch_coordinator', 'public.orders', 'SELECT')
      OR has_table_privilege('maale_dispatch_coordinator', 'public.delivery_dispatches', 'SELECT')
