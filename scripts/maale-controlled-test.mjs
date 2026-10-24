@@ -6,9 +6,11 @@
 // NOT part of the app: nothing under app/ or lib/ imports this file, it is not a route, and it is never deployed.
 // readiness → read-only report (no writes, no HTTP).
 // dispatch  → refuses without --confirm-test; re-runs readiness; refuses on ANY blocker; then calls
-//             dispatchOrderToMaale(orderId, defaultDispatchDeps(), { testMode: { orderId, bypassPaymentGate: true,
-//             bypassAreaGate: true } }). Only the HYP-payment and approved-area gates can be bypassed, and only
-//             because this is an explicit, marker-checked ("🧪 בדיקה") test of ONE named order.
+//             dispatchOrderToMaale(orderId, defaultDispatchDeps(), { testMode: { orderId } }) ONCE. Test mode bypasses
+//             nothing (03F): it only adds the "🧪 בדיקה" marker and order-id match on top of every normal gate.
+//             Readiness includes the global 401 stop (S4-03T); an unknown auth state still refuses (fail closed).
+// After an attempt it prints a sanitized summary (result, external / provider order id, provider status, dispatch state,
+// manual reconciliation YES/NO); anything it cannot verify is printed as UNKNOWN.
 // Output is operational only: no keys, no customer name / phone / address / notes, no raw provider response.
 // Env (read, never printed): .env.local → SUPABASE_URL or NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_KEY,
 // MAALE_EXPRESS_ENABLED=true, MAALE_EXPRESS_API_KEY.
@@ -80,7 +82,52 @@ export function loadEnvLocal(file = join(ROOT, '.env.local'), env = process.env)
 /** Production wiring for the runner — created lazily, only after the arguments are valid. */
 export function realDeps() {
   const D = loadLib('maaleDispatch')
-  return D.defaultDispatchDeps() // reads MAALE_EXPRESS_* + server Supabase env; HYP gate is hard-false
+  const deps = D.defaultDispatchDeps() // reads MAALE_EXPRESS_* + server Supabase env; HYP gate is hard-false
+  return { ...deps, readDispatchSummary: readDispatchSummaryFromDb }
+}
+
+/** READ-ONLY: the persisted dispatch row incl. the provider's order id / status (not part of the dispatch repo). */
+async function readDispatchSummaryFromDb(orderId) {
+  const { data, error } = await loadLib('supabaseServer').getServerSupabase().from('delivery_dispatches')
+    .select('external_order_id, status, attempts, error_code, provider_order_id, provider_status').eq('order_id', orderId).maybeSingle()
+  if (error) throw new Error('dispatch summary read failed')
+  return data ?? null
+}
+
+/* ─── Sanitized post-attempt summary ─── */
+
+const SAFE_PROVIDER_ID = /^[A-Za-z0-9_-]{1,100}$/
+const SAFE_STATUS = /^[a-z_]{1,40}$/
+const SAFE_CODE = /^[a-z0-9_]{1,64}$/
+const DISPATCH_STATUSES = ['pending', 'sending', 'sent', 'failed_retryable', 'failed_final']
+
+/**
+ * Lines printed after a dispatch attempt. Only validated short values are shown; everything else is UNKNOWN.
+ * "Manual reconciliation required: NO" only when the provider reported a NEW order AND the database row confirms it
+ * (status sent, same external order id). Anything else — duplicate, failure, persistence failure, unreadable row — is YES.
+ */
+export function formatDispatchSummary(orderId, res, row) {
+  const ok = v => (typeof v === 'string' && v ? v : null)
+  const result = res.outcome === 'sent' ? res.kind
+    : res.outcome === 'failed' ? `${res.errorCode}${res.retryable ? ' (retryable)' : ' (final)'}`
+      : res.outcome === 'blocked' ? `blocked: ${res.reason}`
+        : res.outcome === 'persistence_failed' ? `persistence_failed (provider outcome: ${res.providerOutcome}) — NOT CONFIRMED`
+          : res.outcome
+  const ext = ok(row?.external_order_id)
+  const status = DISPATCH_STATUSES.includes(row?.status) ? row.status : null
+  const attempts = Number.isInteger(row?.attempts) ? row.attempts : null
+  const providerId = ok(row?.provider_order_id)
+  const providerStatus = ok(row?.provider_status)
+  const errorCode = ok(row?.error_code)
+  const confirmed = res.ok === true && res.outcome === 'sent' && res.kind === 'created' && status === 'sent' && ext === orderId
+  return [
+    `Result: ${SAFE_CODE.test(String(result).split(/[ :]/)[0]) ? result : 'UNKNOWN'}`,
+    `External order ID: ${ext && ext === orderId ? ext : ext ? 'UNKNOWN (mismatch)' : 'UNKNOWN'}`,
+    `Provider order ID: ${providerId && SAFE_PROVIDER_ID.test(providerId) ? providerId : 'UNKNOWN'}`,
+    `Provider status: ${providerStatus && SAFE_STATUS.test(providerStatus) ? providerStatus : 'UNKNOWN'}`,
+    `Dispatch state: ${status ? `${status}${attempts !== null ? ` (attempts ${attempts})` : ''}${errorCode && SAFE_CODE.test(errorCode) ? ` [${errorCode}]` : ''}` : 'UNKNOWN'}`,
+    `Manual reconciliation required: ${confirmed ? 'NO' : 'YES — do NOT re-run; contact Maale Express with the external order ID'}`,
+  ]
 }
 
 /**
@@ -110,8 +157,18 @@ export async function runMaaleControlledTest(argv, { createDeps = realDeps, prin
     return 1
   }
 
-  const readinessDeps = { config: deps.config, repo: { loadOrder: deps.repo.loadOrder, getDispatch: deps.repo.getDispatch },
-    isPaymentVerified: deps.isPaymentVerified, areaGeoConfig: deps.areaGeoConfig, now: deps.now }
+  // Read-only repo for readiness. hasRecentAuthFailure is passed through (S4-03T) so the global 401 stop is evaluated;
+  // when the repo lacks it or the lookup fails, readiness reports auth_state_unknown and the runner refuses.
+  const repo = deps.repo
+  const readinessDeps = {
+    config: deps.config,
+    repo: {
+      loadOrder: id => repo.loadOrder(id),
+      getDispatch: id => repo.getDispatch(id),
+      ...(typeof repo.hasRecentAuthFailure === 'function' ? { hasRecentAuthFailure: since => repo.hasRecentAuthFailure(since) } : {}),
+    },
+    isPaymentVerified: deps.isPaymentVerified, areaGeoConfig: deps.areaGeoConfig, now: deps.now,
+  }
 
   print(mode === 'dispatch' ? '── Pre-flight readiness ──' : '── Readiness (read only) ──')
   const r = await D.assessMaaleTestReadiness(orderId, readinessDeps)
@@ -122,18 +179,19 @@ export async function runMaaleControlledTest(argv, { createDeps = realDeps, prin
   // two gates the controlled test may bypass (reported as overrides).
   if (!r.safeForControlledTest) { print('REFUSED: readiness has blockers — nothing was sent.'); return 1 }
 
+  // Exactly one call; no retry, no reset of an existing row (the service refuses any non-pending row itself).
   print('── Controlled test dispatch (testMode) ──')
-  const res = await D.dispatchOrderToMaale(orderId, deps, {
-    testMode: { orderId, bypassPaymentGate: true, bypassAreaGate: true },
-  })
-  const label = res.outcome === 'sent' ? res.kind
-    : res.outcome === 'failed' ? res.errorCode
-      : res.outcome === 'blocked' ? `blocked: ${res.reason}`
-        : res.outcome
-  print(`Result: ${label}${res.outcome === 'failed' ? (res.retryable ? ' (retryable)' : ' (final)') : ''}`)
-  const row = await deps.repo.getDispatch(orderId)
-  print(`delivery_dispatches state: ${row ? `${row.status} (attempts ${row.attempts})` : 'none'}`)
-  return res.ok ? 0 : 1
+  const res = await D.dispatchOrderToMaale(orderId, deps, { testMode: { orderId } })
+
+  // Sanitized summary from the persisted row (read-only). Unreadable → UNKNOWN, never assumed.
+  let row = null
+  try {
+    row = typeof deps.readDispatchSummary === 'function' ? await deps.readDispatchSummary(orderId) : await repo.getDispatch(orderId)
+  } catch { row = null }
+  print('── Dispatch summary ──')
+  const lines = formatDispatchSummary(orderId, res, row)
+  for (const l of lines) print(l)
+  return lines.at(-1) === 'Manual reconciliation required: NO' ? 0 : 1
 }
 
 // Run only when executed directly (tests import the core without running it).

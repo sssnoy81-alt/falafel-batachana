@@ -2,7 +2,11 @@
 // Pure (no Supabase / network). Server-side use only — imports lib/kitchenAuth (node:crypto).
 
 import { KITCHEN_BRANCH_IDS, type KitchenSession } from './kitchenAuth'
-import type { KitchenOrder } from './kitchenTypes'
+import type { KitchenDispatch, KitchenOrder, KitchenReconciliation, KitchenReconciliationEvent } from './kitchenTypes'
+import { kitchenDispatchView } from './kitchenDispatchUi'
+import {
+  isReconciliationEventType, PROVIDER_ORDER_ID_RULE, PROVIDER_STATUS_RULE, RECONCILIATION_REASON_CODES, sortEventsNewestFirst, summarizeReconciliation,
+} from './kitchenReconciliationUi'
 
 /* ─── Branch scope ─── */
 
@@ -48,9 +52,19 @@ export const KITCHEN_ORDER_SELECT = [
   'parcel_requests(status, tracking_ref, carrier, recipient_name)',
 ].join(', ')
 
+// S4-03M — courier request state, embedded ONLY while kitchen dispatch is enabled (the disabled read is unchanged).
+// delivery_dispatches.order_id is UNIQUE + FK → orders(id): a one-to-one embed like deliveries / parcel_requests.
+export const KITCHEN_DISPATCH_EMBED = 'delivery_dispatches(status, error_code, provider_order_id, provider_status, last_attempt_at)'
+// S4-04D — human-reported reconciliation records (FK order_id → orders; many per order). Only when explicitly requested
+// (reconciliation flag on = migration s4_04d installed); without it the select is exactly as before.
+export const KITCHEN_RECONCILIATION_EMBED =
+  'maale_dispatch_reconciliations(id, event_type, actor_username, provider_order_id, provider_status, reason_code, created_at)'
+export const kitchenOrderSelect = (dispatchEnabled: boolean, reconciliationEnabled = false): string =>
+  [KITCHEN_ORDER_SELECT, ...(dispatchEnabled ? [KITCHEN_DISPATCH_EMBED] : []), ...(reconciliationEnabled ? [KITCHEN_RECONCILIATION_EMBED] : [])].join(', ')
+
 /* ─── Response contract (types live in lib/kitchenTypes.ts, shared with the kitchen UI) ─── */
 
-export type { KitchenDelivery, KitchenOrder, KitchenOrderItem, KitchenParcel } from './kitchenTypes'
+export type { KitchenDelivery, KitchenDispatch, KitchenOrder, KitchenOrderItem, KitchenParcel } from './kitchenTypes'
 
 /* ─── Normalization (explicit field-by-field; raw rows are never passed through) ─── */
 
@@ -65,7 +79,45 @@ const num = (v: unknown, fallback = 0): number => {
   return Number.isFinite(n) ? n : fallback
 }
 
-export function normalizeKitchenOrder(raw: unknown): KitchenOrder | null {
+export interface NormalizeOptions {
+  /** Include `dispatch` (kitchen dispatch enabled). Off → the key is absent, exactly as before 03M. */
+  dispatch?: boolean
+  /** Include `reconciliation` (S4-04D). Off → the key is absent. */
+  reconciliation?: boolean
+  nowMs?: number
+}
+
+const USERNAME_RULE = /^[a-z0-9_-]{2,32}$/
+export const RECONCILIATION_HISTORY_LIMIT = 10
+
+/** Explicit, validated mapping; malformed rows are dropped. Summary over ALL events; history = newest 10. */
+function normalizeReconciliation(v: unknown): KitchenReconciliation {
+  const events: KitchenReconciliationEvent[] = many(v).flatMap(r => {
+    const id = str(r.id), createdAt = str(r.created_at), actor = str(r.actor_username), eventType = r.event_type
+    if (!id || !createdAt || !actor || !USERNAME_RULE.test(actor) || !isReconciliationEventType(eventType)) return []
+    const pid = str(r.provider_order_id), pst = str(r.provider_status), reason = str(r.reason_code)
+    return [{
+      id, eventType, actor, createdAt,
+      providerOrderId: pid && PROVIDER_ORDER_ID_RULE.test(pid) ? pid : null,
+      providerStatus: pst && PROVIDER_STATUS_RULE.test(pst) ? pst : null,
+      reasonCode: reason && RECONCILIATION_REASON_CODES.includes(reason) ? reason : null,
+    }]
+  })
+  return { events: sortEventsNewestFirst(events).slice(0, RECONCILIATION_HISTORY_LIMIT), summary: summarizeReconciliation(events) }
+}
+
+function normalizeDispatch(v: unknown, nowMs: number): KitchenDispatch | null {
+  const r = one(v)
+  if (!r) return null
+  return {
+    view: kitchenDispatchView({ status: str(r.status), error_code: str(r.error_code), last_attempt_at: str(r.last_attempt_at) }, nowMs),
+    errorCode: str(r.error_code),
+    providerOrderId: str(r.provider_order_id),
+    providerStatus: str(r.provider_status),
+  }
+}
+
+export function normalizeKitchenOrder(raw: unknown, opts: NormalizeOptions = {}): KitchenOrder | null {
   if (!isRow(raw)) return null
   const id = str(raw.id), status = str(raw.status), createdAt = str(raw.created_at), branchId = str(raw.branch_id)
   if (!id || !status || !createdAt || !branchId) return null
@@ -114,9 +166,11 @@ export function normalizeKitchenOrder(raw: unknown): KitchenOrder | null {
           recipientName: str(p.recipient_name) || null, // NULL before Migration 05 / without a recipient ('' never shown)
         }
       : null,
+    ...(opts.dispatch ? { dispatch: type === 'delivery' ? normalizeDispatch(raw.delivery_dispatches, opts.nowMs ?? Date.now()) : null } : {}),
+    ...(opts.reconciliation ? { reconciliation: type === 'delivery' ? normalizeReconciliation(raw.maale_dispatch_reconciliations) : null } : {}),
   }
 }
 
-export function normalizeKitchenOrders(rows: unknown): KitchenOrder[] {
-  return (Array.isArray(rows) ? rows : []).map(normalizeKitchenOrder).filter((o): o is KitchenOrder => o !== null)
+export function normalizeKitchenOrders(rows: unknown, opts: NormalizeOptions = {}): KitchenOrder[] {
+  return (Array.isArray(rows) ? rows : []).map(r => normalizeKitchenOrder(r, opts)).filter((o): o is KitchenOrder => o !== null)
 }
