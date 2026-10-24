@@ -30,6 +30,10 @@ import {
   buildParcelWire, EMPTY_PARCEL_FORM, isParcelSectionVisible, PARCEL_INPUT_MAX_LENGTH, parcelFormError,
   PARCEL_ORDER_ERROR_MESSAGES, type ParcelFormState,
 } from '@/lib/parcelCheckoutForm'
+import {
+  HYP_CHECKOUT_KEY, HYP_PENDING_PAYMENT_KEY, HYP_START_MESSAGES, ONLINE_PAYMENT_LABEL, buildHypStartBody, checkoutKeyFor,
+  interpretStartResponse, isOnlinePaymentAvailable, parsePaymentsConfig, type HypCheckoutConfig, type HypStartOutcome,
+} from '@/lib/hyp/hypCheckoutUi'
 
 
 type Branch = { id: string; name: string; address: string }
@@ -216,6 +220,18 @@ export default function Home() {
       .then(r => (r.ok ? r.json() : null))
       .then(j => { if (!cancelled) setParcelCheckoutEnabled(j?.parcelCheckout === true) }) // anything else → off
       .catch(() => { if (!cancelled) setParcelCheckoutEnabled(false) })
+    return () => { cancelled = true }
+  }, [])
+  // Online payment (HYP-08) — shown only when the server says so (default: off). Presentation only: the start route
+  // re-checks the flag, branch, order type and prices. With the flag off nothing below changes the checkout.
+  const [hypConfig, setHypConfig] = useState<HypCheckoutConfig | null>(null)
+  const [onlineSelected, setOnlineSelected] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/payments/config', { cache: 'no-store' })
+      .then(r => (r.ok ? r.json() : null))
+      .then(j => { if (!cancelled) setHypConfig(parsePaymentsConfig(j)) }) // anything else → off
+      .catch(() => { if (!cancelled) setHypConfig(null) })
     return () => { cancelled = true }
   }, [])
 
@@ -408,6 +424,9 @@ export default function Home() {
   const orderTypeLabel = effectiveOrderType === 'delivery' ? (isParcelOrder ? '📦 משלוח אוכל + חבילה' : '🛵 משלוח אוכל')
     : effectiveOrderType === 'pickup' ? '🏃 איסוף עצמי' : 'לא נבחר סוג הזמנה'
   const menuOrderTypeLabel = isParcelOrder ? '📦 משלוח + חבילה' : orderTypeLabel   // shorter for the narrow menu header
+  // Online payment: pilot branch + pickup only, never delivery / parcel (derived, so a mode switch never keeps it).
+  const onlineAvailable = isOnlinePaymentAvailable(hypConfig, selectedBranch?.id, effectiveOrderType, isParcelOrder)
+  const payOnline = onlineAvailable && onlineSelected
   const parcelError = parcelFormError(parcelForm)
   const canPlaceOrder = isOpen && isValidPhone(orderPhone) && cart.length > 0 && customerName.trim().length >= 2
     && orderTypeReady && parcelError === null && !placingOrder
@@ -622,6 +641,37 @@ export default function Home() {
     setOrderId(result.id); setOrderStatus('received'); setOrderDailyNumber(result.dailyNumber)
     setCart([]); clearParcelForm(); setPlacingOrder(false); setScreen('tracking')
     subscribeToPush(normalizePhone(orderPhone), result.id)
+  }
+
+  // Online payment (HYP-08): the server builds and prices the order; no order exists until the payment is verified.
+  // The same cart reuses the same checkout key, so a retry or double click never opens a second payment.
+  async function startOnlinePayment() {
+    if (!selectedBranch || effectiveOrderType !== 'pickup' || !canPlaceOrder || !payOnline) return
+    setOrderError('')
+    const request = buildOrderRequest(selectedBranch.id, 'pickup')
+    if (!request) { setOrderError(ORDER_ERROR_MESSAGES.invalid_option!); return }
+    setPlacingOrder(true)
+    let storage: Storage | null = null
+    try { storage = window.sessionStorage } catch { /* unavailable */ }
+    const key = checkoutKeyFor(storage, JSON.stringify(buildHypStartBody(request, '')), () => crypto.randomUUID())
+    let outcome: HypStartOutcome
+    try {
+      const res = await fetch('/api/payments/hyp/start', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store', credentials: 'same-origin',
+        body: JSON.stringify(buildHypStartBody(request, key)),
+      })
+      outcome = interpretStartResponse(res.status, await res.json().catch(() => null))
+    } catch {
+      outcome = { kind: 'error', message: HYP_START_MESSAGES.unavailable }
+    }
+    if (outcome.kind === 'error') {
+      if (outcome.disableOnline) { setHypConfig(null); setOnlineSelected(false) }
+      if (outcome.resetKey) { try { storage?.removeItem(HYP_CHECKOUT_KEY) } catch { /* ignore */ } }
+      setOrderError(outcome.message); setPlacingOrder(false); return
+    }
+    try { localStorage.setItem(HYP_PENDING_PAYMENT_KEY, JSON.stringify({ token: outcome.token, expires: Date.now() + 6 * 3600 * 1000 })) } catch { /* ignore */ }
+    // placingOrder stays true while the browser navigates (no second click)
+    window.location.assign(outcome.kind === 'redirect' ? outcome.url : `/order/payment/${outcome.token}`)
   }
 
   useEffect(() => {
@@ -1079,14 +1129,26 @@ export default function Home() {
           <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>💳 אמצעי תשלום</div>
           <div style={{ display: 'grid', gridTemplateColumns: paymentOptions.length > 1 ? '1fr 1fr' : '1fr', gap: 10 }}>
             {paymentOptions.map(v => (
-              <button key={v} onClick={() => setPaymentMethod(v)}
-                style={{ padding: 14, border: `1px solid ${effectivePaymentMethod === v ? C.gold : C.border}`, borderRadius: 12, background: effectivePaymentMethod === v ? 'rgba(255,215,0,0.1)' : C.bg, fontWeight: 700, fontSize: 14, color: effectivePaymentMethod === v ? C.gold : C.gray, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
+              <button key={v} onClick={() => { setPaymentMethod(v); setOnlineSelected(false) }}
+                style={{ padding: 14, border: `1px solid ${!payOnline && effectivePaymentMethod === v ? C.gold : C.border}`, borderRadius: 12, background: !payOnline && effectivePaymentMethod === v ? 'rgba(255,215,0,0.1)' : C.bg, fontWeight: 700, fontSize: 14, color: !payOnline && effectivePaymentMethod === v ? C.gold : C.gray, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
                 {PAYMENT_METHOD_LABELS[v]}
               </button>
             ))}
           </div>
+          {/* HYP-08: online card payment — rendered only when the server permits it for this branch + pickup */}
+          {onlineAvailable && (
+            <button type="button" onClick={() => setOnlineSelected(true)} aria-pressed={payOnline}
+              style={{ width: '100%', marginTop: 10, padding: 14, border: `1px solid ${payOnline ? C.gold : C.border}`, borderRadius: 12, background: payOnline ? 'rgba(255,215,0,0.1)' : C.bg, fontWeight: 700, fontSize: 14, color: payOnline ? C.gold : C.gray, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>
+              🔒 {ONLINE_PAYMENT_LABEL}
+            </button>
+          )}
+          {payOnline && (
+            <div style={{ fontSize: 13, color: C.gray, marginTop: 10, lineHeight: 1.5 }}>
+              תועברו לדף תשלום מאובטח של חברת הסליקה. ההזמנה תישלח למטבח רק אחרי שהתשלום יאושר.
+            </div>
+          )}
           {/* HYP not integrated: credit is collected by phone by the branch (S4-PARCEL-21A) — never on this site */}
-          {effectivePaymentMethod === 'credit' && (
+          {!payOnline && effectivePaymentMethod === 'credit' && (
             <div style={{ fontSize: 13, color: C.gray, marginTop: 10, lineHeight: 1.5 }}>{CREDIT_PHONE_NOTE}</div>
           )}
         </div>
@@ -1115,14 +1177,15 @@ export default function Home() {
             {orderError}
           </div>
         )}
-        <button onClick={placeOrder} disabled={!canPlaceOrder}
+        <button onClick={payOnline ? startOnlinePayment : placeOrder} disabled={!canPlaceOrder}
           style={{ width: '100%', padding: 17, background: canPlaceOrder ? C.gold : C.grayDim, color: '#000', border: 'none', borderRadius: 16, fontSize: 18, fontWeight: 900, cursor: canPlaceOrder ? 'pointer' : 'not-allowed', fontFamily: 'Heebo, sans-serif', boxShadow: canPlaceOrder ? '0 6px 32px rgba(255,215,0,0.3)' : 'none' }}>
           {!isOpen ? '🔒 המקום סגור כרגע'
-            : placingOrder ? '⏳ שולח הזמנה...'
+            : placingOrder ? (payOnline ? '⏳ מעביר לתשלום מאובטח...' : '⏳ שולח הזמנה...')
             : !effectiveOrderType ? '👆 בחרו איסוף עצמי או משלוח'
             : effectiveOrderType === 'delivery' && routeOnlyNeedsLocation ? '📍 נא לשלוח מיקום מדויק למשלוח'
             : effectiveOrderType === 'delivery' && !deliveryFormValid ? '📍 נא להשלים כתובת למשלוח'
             : parcelError !== null ? '📦 נא להשלים את פרטי החבילה'
+            : payOnline ? (cartDisplay.total === null ? '🔒 המשך לתשלום מאובטח' : `🔒 המשך לתשלום מאובטח • ${fmt(cartDisplay.total)}`)
             : cartDisplay.total === null ? '✅ שלח הזמנה' : `✅ שלח הזמנה • ${fmt(cartDisplay.total)}`}
         </button>
         {/* Informational only (FALAFEL-SN-08D16): no checkbox, does not affect canPlaceOrder */}

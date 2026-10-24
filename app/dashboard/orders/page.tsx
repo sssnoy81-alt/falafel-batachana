@@ -23,6 +23,12 @@ import {
   RECONCILIATION_REASON_LABELS, reconciliationMessage, REPORTED_NOT_VERIFIED_NOTE, validateReconciliationInput,
   type ReconciliationInput,
 } from '@/lib/kitchenReconciliationUi'
+import PaymentsTab from './PaymentsTab'
+
+// HYP-08: 'online' exists only on orders created by finalize_paid_intent after a verified, captured payment (database
+// guard orders_online_payment_guard), so the label can say it was paid.
+const ONLINE_PAID_LABEL = 'שולם אונליין ✓'
+const kitchenPaymentText = (v: string | null | undefined) => (v === 'online' ? ONLINE_PAID_LABEL : paymentMethodText(v))
 
 /* ─── API helpers (same-origin; the session cookie is sent automatically) ─── */
 class UnauthorizedError extends Error {}
@@ -167,7 +173,7 @@ type OrderItem = KitchenOrderItem
 type Order = Omit<KitchenOrder, 'status'> & { status: OrderStatus }
 
 const isDeliveryOrder = (order: Order) => order.type === 'delivery'
-const paymentLabel = (v: string) => isPaymentMethod(v) ? PAYMENT_METHOD_LABELS[v] : (v || '—')
+const paymentLabel = (v: string) => isPaymentMethod(v) ? PAYMENT_METHOD_LABELS[v] : v === 'online' ? ONLINE_PAID_LABEL : (v || '—')
 
 function DeliveryDetails({ order, large }: { order: Order; large?: boolean }) {
   const d = order.delivery
@@ -877,7 +883,7 @@ function Dashboard({ user, branches, dispatchEnabled, reconciliationEnabled, onL
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(false)
   const [actionError, setActionError] = useState('')
-  const [activeTab, setActiveTab] = useState<'kanban' | 'customers'>('kanban')
+  const [activeTab, setActiveTab] = useState<'kanban' | 'customers' | 'payments'>('kanban')
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date())
   // Admin only: 'all' or a branch id. The API enforces the real scope for every role.
   const [filterBranch, setFilterBranch] = useState<string>('all')
@@ -1222,7 +1228,7 @@ function Dashboard({ user, branches, dispatchEnabled, reconciliationEnabled, onL
                     'פריטים': o.items.map(i => (i.name) + ' x' + i.quantity).join(', '),
                     ...csvDeliveryFields(o),
                     'סכום סופי': o.totalPrice,
-                    'תשלום': paymentMethodText(o.paymentMethod),
+                    'תשלום': kitchenPaymentText(o.paymentMethod),
                     'שעה': formatTime(o.createdAt), 'סניף': o.branchName || '',
                   }))
                   const byPhone: Record<string,any[]> = {}
@@ -1303,12 +1309,14 @@ function Dashboard({ user, branches, dispatchEnabled, reconciliationEnabled, onL
         </div>
 
         <div style={{ display: 'flex', borderBottom: '1px solid #222', background: '#111' }}>
-          {([['kanban', '📋 הזמנות היום'], ['customers', '👥 לקוחות']] as const).map(([tab, label]) => (
+          {([['kanban', '📋 הזמנות היום'], ['customers', '👥 לקוחות'], ['payments', '💳 תשלומים']] as const).map(([tab, label]) => (
             <button key={tab} onClick={() => setActiveTab(tab)} style={{ flex: 1, padding: '10px 0', background: 'none', border: 'none', color: activeTab === tab ? '#FFD700' : '#6B7280', fontWeight: activeTab === tab ? 700 : 400, fontSize: 14, fontFamily: 'Heebo, sans-serif', cursor: 'pointer', borderBottom: activeTab === tab ? '2px solid #FFD700' : '2px solid transparent' }}>{label}</button>
           ))}
         </div>
 
-        {loading ? (
+        {activeTab === 'payments' ? (
+          <div style={{ padding: 12 }}><PaymentsTab branch={user.role === 'admin' ? filterBranch : null} onUnauthorized={onUnauthorized} /></div>
+        ) : loading ? (
           <div style={{ textAlign: 'center', padding: 60, color: '#6B7280' }}>טוען הזמנות...</div>
         ) : activeTab === 'customers' ? (
           <div style={{ padding: 12 }}><CustomerTab orders={filteredOrders} /></div>

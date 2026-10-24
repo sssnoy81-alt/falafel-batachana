@@ -254,7 +254,8 @@ await test('switching to pickup clears the parcel; back to delivery does not res
 })
 await test('tracking + carrier inputs stay near final checkout (order screen, after the address, before name / submit)', () => {
   const tracking = PAGE.indexOf('value={parcelTrackingRef}'), carrier = PAGE.indexOf('value={parcelCarrier}')
-  const orderStart = PAGE.indexOf("if (screen === 'order') return ("), submit = PAGE.indexOf('<button onClick={placeOrder}')
+  // HYP-08: the submit button routes to the online-payment start only when that option is selected (flag on)
+  const orderStart = PAGE.indexOf("if (screen === 'order') return ("), submit = PAGE.indexOf('<button onClick={payOnline ? startOnlinePayment : placeOrder}')
   assert.ok(orderStart > 0 && tracking > orderStart && carrier > tracking && submit > carrier)
   assert.ok(tracking > PAGE.indexOf('📍 כתובת למשלוח') && tracking < PAGE.indexOf('👤 שם מלא'))
   assert.ok(!BRANCH_SCREEN.includes('parcelTrackingRef') && !BRANCH_SCREEN.includes('parcelCarrier'))
