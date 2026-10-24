@@ -29,7 +29,8 @@ installed and verified with a read-only query.
 
 | # | File | What it does | Checks |
 |---|---|---|---|
-| 05 | `parcel_05_recipient_name.sql` | Optional `parcel_requests.recipient_name` (NULL / 2–60 chars, trimmed, no control chars) + `create_order_with_parcel` accepts one more key, `recipient_name` (same signature, INVOKER, service_role-only). Additive only. | before: `parcel_05_production_preflight.sql` · after: `parcel_05_verify.sql` · `parcel_05_rollback.sql` = function-only, non-destructive, separate approval |
+| 05 ⚠ | `parcel_05_recipient_name.sql` | Optional `parcel_requests.recipient_name` (NULL / 2–60 chars, trimmed, no control chars) + `create_order_with_parcel` accepts one more key, `recipient_name` (same signature, INVOKER, service_role-only). Additive only. | before: `parcel_05_production_preflight.sql` · after: `parcel_05_verify.sql` · `parcel_05_rollback.sql` = function-only, non-destructive, separate approval |
+| HYP-05 | `hyp05_payment_intents.sql` | **Online payments (Hyp Pay)**: payment-intent ledger (`payment_intents`, `payment_returns`, `payment_transactions`, `payment_reversals`, `payment_intent_events`; RLS on, no policies, service_role SELECT only, append-only evidence), NOLOGIN coordinator role `hyp_payment_coordinator` (column grants derived from the Production bodies of `create_order` / wrapper), 7 SECURITY DEFINER functions, `orders_payment_method_check` + `online`, AFTER guard triggers on `orders` (an `online` order only via `finalize_paid_intent`). Bodies of `create_order` / wrapper unchanged. Includes HYP-06A (non-capture 600/700/800) and HYP-09 (staff flags, one reversal per HYP reference, notes in the trail). Isolated test: `node scripts/pgtest-hyp05-payment-intents.mjs`. | `hyp05_production_preflight.sql` (before), `hyp05_verify.sql` (after), `hyp05_privilege_audit.sql` (before + after) |
 
 
 
@@ -77,6 +78,8 @@ constraint as "unexpected").
 
 The security key migration (G2–G5: new `sb_secret_` / `sb_publishable_` keys, legacy JWT keys disabled, legacy HS256
 signing key revoked) was done in the Supabase and Vercel dashboards. It has no SQL file.
+> ⚠ **Migration 05 is installed in Production** — verified read-only on 2026-10-24 (HYP-02 Q1: `parcel_requests.recipient_name` EXISTS; `create_order_with_parcel` = POST-05 CRLF body `6ceb72f6…` / 2771). The row stays here until its own install record is written.
+
 
 ## Read-only checks (safe to run at any time)
 
@@ -89,6 +92,9 @@ signing key revoked) was done in the Supabase and Vercel dashboards. It has no S
 | `sec2_01_verify.sql` | Post-install check for SEC-2 |
 | `parcel_99_verify.sql` | Original verification for 01/02. **Superseded for the 03 rows** (it expects the old received→confirmed-only gate). |
 | `s4_03_dispatch_readiness_verify.sql` | `public.delivery_dispatches` shape vs `lib/maaleDispatch.ts` (columns, uniques, FK, CHECKs, RLS, grants, row counts per status) + orders payment columns / deliveries geo constraint (S4-INTEGRATIONS-03B). Safe when the table is missing. |
+| `hyp05_production_preflight.sql` | Pre-install check for HYP-05 (create_order / wrapper fingerprints, four-value payment CHECK, no online orders, installer rights, public-role privileges) |
+| `hyp05_verify.sql` | Post-install check for HYP-05 (role, DEFINER functions, EXECUTE matrix, RLS / grants, guards, fingerprints unchanged) |
+| `hyp05_privilege_audit.sql` | Effective anon / authenticated / PUBLIC privileges on customer + payment tables (HYP-03R Q4) — before and after HYP-05 |
 
 ## Schema documented outside migrations
 
@@ -106,6 +112,7 @@ They return one table of PASS / FAIL / INFO rows and print no function bodies, t
 | `parcel_03_rollback.sql` | the pre-03 state | Refuses while 04 is installed (requires exactly two triggers on `orders`). |
 | `parcel_01b_rollback.sql` | the exact pre-01b `parcel_requests_before_write()` | Embeds the verified Production source as hex. |
 | `sec2_01_rollback.sql` | the exact pre-SEC-2 table privileges | **Re-opens public read / insert of customer order data.** |
+| `hyp05_rollback.sql` | the exact pre-HYP-05 state | Refuses while any online order, HYP return, transaction or redirected intent exists (financial evidence is never dropped). Primary rollback = `HYP_PAYMENTS_ENABLED` off. |
 
 Each refuses to run unless exactly the reviewed objects are installed, then checks its result in the same transaction.
 
