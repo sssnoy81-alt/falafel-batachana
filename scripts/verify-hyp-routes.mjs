@@ -383,7 +383,11 @@ await test('HYP-05 contract: RPC names and argument names used by lib/hyp/hypDb 
 })
 await test('legacy checkout untouched: POST /api/orders unchanged in git, the parser still refuses online, four methods unchanged', () => {
   // app/order/page.tsx is changed by HYP-08 (gated on the online option; verified by scripts/verify-hyp-ui.mjs).
-  const diff = execFileSync('git', ['diff', '--name-only', 'HEAD', '--', 'app/api/orders', 'lib/orderRequest.ts', 'lib/orderConfig.ts', 'lib/createOrder.ts', 'lib/maaleDispatch.ts', 'lib/maalePayload.ts', 'app/api/kitchen', 'app/order/DeliveryAddressPicker.tsx'], { cwd: ROOT, encoding: 'utf8' })
+  // Fixed pre-HYP baseline (HYP-RELEASE-02A): HEAD would be vacuous once HYP is committed. Compared with the working tree
+  // (committed + uncommitted); existing files only (M/D/R/T) — the newly added HYP kitchen routes are not legacy changes.
+  const PRE_HYP_BASE = '3bfa329c2294e77204aecfac528513b792eb0c1c'
+  execFileSync('git', ['merge-base', '--is-ancestor', PRE_HYP_BASE, 'HEAD'], { cwd: ROOT })
+  const diff = execFileSync('git', ['diff', '--name-only', '--diff-filter=MDRT', PRE_HYP_BASE, '--', 'app/api/orders', 'lib/orderRequest.ts', 'lib/orderConfig.ts', 'lib/createOrder.ts', 'lib/maaleDispatch.ts', 'lib/maalePayload.ts', 'app/api/kitchen', 'app/order/DeliveryAddressPicker.tsx'], { cwd: ROOT, encoding: 'utf8' })
   assert.equal(diff.trim(), '')
   assert.deepEqual([...OC.PAYMENT_METHODS], ['cash', 'credit', 'cibus', 'bit'])
   const p = OR.parseCreateOrderRequest({ branchId: B1, type: 'pickup', customerName: NAME, phone: PHONE, paymentMethod: 'online', items: [{ itemId: M1, quantity: 1 }] })

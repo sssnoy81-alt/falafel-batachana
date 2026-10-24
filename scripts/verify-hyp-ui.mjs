@@ -43,8 +43,14 @@ const TAB = load(join(ROOT, 'app', 'dashboard', 'orders', 'PaymentsTab.tsx'))
 // Working copies are CRLF (core.autocrlf=true), blobs are LF: compare normalized text.
 const lf = s => s.replace(/\r\n/g, '\n')
 const src = f => lf(readFileSync(join(ROOT, f), 'utf8'))
-const head = f => lf(execFileSync('git', ['show', `HEAD:${f}`], { cwd: ROOT, encoding: 'utf8', maxBuffer: 16 << 20 }))
-const gitDiff = f => lf(execFileSync('git', ['diff', '-U0', 'HEAD', '--', f], { cwd: ROOT, encoding: 'utf8' }))
+// Fixed pre-HYP baseline (main before the HYP release, HYP-RELEASE-02A). Comparing against HEAD would be vacuous once the
+// HYP work is committed. `git diff <base>` compares the base with the WORKING TREE: committed and uncommitted changes.
+const PRE_HYP_BASE = '3bfa329c2294e77204aecfac528513b792eb0c1c'
+const head = f => lf(execFileSync('git', ['show', `${PRE_HYP_BASE}:${f}`], { cwd: ROOT, encoding: 'utf8', maxBuffer: 16 << 20 }))
+const gitDiff = f => lf(execFileSync('git', ['diff', '-U0', PRE_HYP_BASE, '--', f], { cwd: ROOT, encoding: 'utf8' }))
+// Existing files only: modified / deleted / renamed / type-changed — newly ADDED HYP files are not "changes to legacy".
+const changedLegacy = paths => execFileSync('git', ['diff', '--name-only', '--diff-filter=MDRT', PRE_HYP_BASE, '--', ...paths], { cwd: ROOT, encoding: 'utf8' }).trim()
+execFileSync('git', ['merge-base', '--is-ancestor', PRE_HYP_BASE, 'HEAD'], { cwd: ROOT })   // throws if the baseline is not an ancestor
 const html = (C, p) => renderToStaticMarkup(React.createElement(C, p))
 
 let passed = 0, failed = 0
@@ -182,7 +188,7 @@ console.log('Checkout page integration (app/order/page.tsx)')
 const page = src('app/order/page.tsx'), pageHead = head('app/order/page.tsx')
 const fn = (s, name) => { const i = s.indexOf(`  async function ${name}(`); const j = s.indexOf('\n  }\n', i); return i >= 0 && j > i ? s.slice(i, j) : null }
 const fnSync = (s, name) => { const i = s.indexOf(`  function ${name}(`); const j = s.indexOf('\n  }\n', i); return i >= 0 && j > i ? s.slice(i, j) : null }
-await test('legacy order path byte-identical to HEAD: placeOrder, buildOrderRequest, POST /api/orders, tracking poll', () => {
+await test('legacy order path byte-identical to the pre-HYP baseline: placeOrder, buildOrderRequest, POST /api/orders, tracking poll', () => {
   assert.ok(fn(pageHead, 'placeOrder')); assert.equal(fn(page, 'placeOrder'), fn(pageHead, 'placeOrder'))
   assert.equal(fnSync(page, 'buildOrderRequest'), fnSync(pageHead, 'buildOrderRequest'))
   const poll = s => s.slice(s.indexOf("    if (screen !== 'tracking' || !orderId) return"), s.indexOf('    const id = setInterval(poll, 10000)'))
@@ -294,10 +300,12 @@ await test('dashboard integration: payments tab, admin-only branch filter, onlin
 
 console.log('Isolation')
 await test('no live request: the global fetch was never called', () => assert.equal(fetchCalls.length, 0))
-await test('legacy modules untouched in git (orders API, parser, config, Maale, parcels, kitchen APIs)', () => {
-  const diff = execFileSync('git', ['diff', '--name-only', 'HEAD', '--', 'app/api/orders', 'app/api/checkout', 'app/api/kitchen', 'lib/orderRequest.ts',
-    'lib/orderConfig.ts', 'lib/createOrder.ts', 'lib/maaleDispatch.ts', 'lib/maalePayload.ts', 'lib/maaleClient.ts', 'lib/parcelCheckout.ts', 'lib/kitchenAuth.ts', 'lib/kitchenOrders.ts'], { cwd: ROOT, encoding: 'utf8' })
-  assert.equal(diff.trim(), '')
+await test('legacy modules untouched vs the pre-HYP baseline (orders API, parser, config, Maale, parcels, kitchen APIs)', () => {
+  assert.equal(changedLegacy(['app/api/orders', 'app/api/checkout', 'app/api/kitchen', 'lib/orderRequest.ts',
+    'lib/orderConfig.ts', 'lib/createOrder.ts', 'lib/maaleDispatch.ts', 'lib/maalePayload.ts', 'lib/maaleClient.ts', 'lib/parcelCheckout.ts', 'lib/kitchenAuth.ts', 'lib/kitchenOrders.ts']), '')
+  // the only new files under those paths are the two HYP staff routes (an added file elsewhere would be a scope change)
+  const added = execFileSync('git', ['diff', '--name-only', '--diff-filter=A', PRE_HYP_BASE, '--', 'app/api/orders', 'app/api/checkout', 'app/api/kitchen', 'lib/order*', 'lib/maale*', 'lib/kitchen*', 'lib/parcel*'], { cwd: ROOT, encoding: 'utf8' }).trim().split('\n').filter(Boolean)
+  assert.deepEqual(added, ['app/api/kitchen/payments/[ref]/route.ts', 'app/api/kitchen/payments/route.ts'])
 })
 
 console.log(`\n${passed}/${passed + failed} PASS${failed ? ` — ${failed} FAILED` : ''}`)
