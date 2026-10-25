@@ -2,7 +2,8 @@
 
 // Staff payment reconciliation tab (HYP-08 view, HYP-09 recovery). Data: GET /api/kitchen/payments (kitchen session +
 // branch scope enforced by the server). Recovery controls appear ONLY for items the server marked with actions, i.e.
-// only for an account the server authorized (HYP_STAFF_RECOVERY_ENABLED + admin + HYP_STAFF_RECOVERY_USERS). Each action
+// only for an account the server authorized (HYP_STAFF_RECOVERY_ENABLED + HYP_STAFF_RECOVERY_USERS + admin or pilot-branch
+// user, the latter with a restricted action set — lib/hyp/hypStaffRecovery BRANCH_RECOVERY_ACTIONS). Each action
 // posts to /api/kitchen/payments/[ref]; the server re-checks everything. Nothing here refunds, voids or contacts HYP.
 
 import { useCallback, useEffect, useState } from 'react'
@@ -145,7 +146,7 @@ export function PaymentsReconciliationList({ items, available, error, canRecover
       <div role="note" style={{ background: '#111', border: '1px solid #333', borderRadius: 10, padding: '8px 12px', color: '#9CA3AF', fontSize: 12, lineHeight: 1.6 }}>
         {canRecover
           ? 'פעולות צוות מתועדות ביומן עם שם המשתמש. המערכת לא מבצעת זיכויים או ביטולים — אלה נעשים בפורטל HYP ורק נרשמים כאן עם האסמכתא.'
-          : 'תצוגה לקריאה בלבד. פעולות צוות זמינות רק למנהלים מורשים; הטיפול דרך פורטל HYP ופנייה ללקוח, לפי מספר ההפניה.'}
+          : 'תצוגה לקריאה בלבד. פעולות צוות זמינות רק למשתמשים מורשים; הטיפול דרך פורטל HYP ופנייה ללקוח, לפי מספר ההפניה.'}
       </div>
       {error && <div role="alert" style={{ color: '#FF6B6B', fontSize: 13 }}>❌ {error}</div>}
       {items.length === 0 && !error && <div role="status" style={{ color: '#4ADE80', padding: 24, textAlign: 'center' }}>✅ אין תשלומים שדורשים טיפול</div>}

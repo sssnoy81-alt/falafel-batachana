@@ -278,9 +278,9 @@ try {
   /* ─── HYP-09 staff recovery through lib/hyp/hypStaffRecovery against the real functions ─── */
   const recoveryDb = {
     async findIntent(ref) {
-      const rows = await q('rintent', `SELECT id, branch_id, status, COALESCE(hold_reason, ''), COALESCE(staff_flag, ''), COALESCE(duplicate_charge_at::text, ''), expires_at FROM public.payment_intents WHERE hyp_order_ref = ${lit(ref)};`)
+      const rows = await q('rintent', `SELECT id, branch_id, status, COALESCE(hold_reason, ''), COALESCE(staff_flag, ''), COALESCE(duplicate_charge_at::text, ''), expires_at, COALESCE(paid_source, '') FROM public.payment_intents WHERE hyp_order_ref = ${lit(ref)};`)
       if (!rows.length) return null
-      const [r] = rows; return { id: r[0], branchId: r[1], status: r[2], holdReason: nul(r[3]), staffFlag: nul(r[4]), duplicateChargeAt: nul(r[5]), expiresAt: r[6] }
+      const [r] = rows; return { id: r[0], branchId: r[1], status: r[2], holdReason: nul(r[3]), staffFlag: nul(r[4]), duplicateChargeAt: nul(r[5]), expiresAt: r[6], paidSource: nul(r[7]) }
     },
     async findApprovedTransaction(intentId, hyp) {
       const rows = await q('rtx', `SELECT id FROM public.payment_transactions WHERE intent_id = ${lit(intentId)}::uuid AND hyp_trans_id = ${lit(hyp)} AND outcome = 'approved';`)
@@ -293,7 +293,7 @@ try {
     },
     async finalize(id, staff) { const [r] = await q('rfinalize', `SELECT result FROM public.finalize_paid_intent(${lit(id)}::uuid, ${lit(staff)});`); return { result: r[0] } },
   }
-  const STAFF_ENV = { HYP_STAFF_RECOVERY_ENABLED: 'true', HYP_STAFF_RECOVERY_USERS: 'owner' }
+  const STAFF_ENV = { HYP_STAFF_RECOVERY_ENABLED: 'true', HYP_STAFF_RECOVERY_USERS: 'owner,adumim' }
   const admin = { ok: true, session: { username: 'owner', role: 'admin', branchId: null, label: 'x', exp: 0, iat: 0 } }
   async function staff(token, body, auth = admin) {
     const res = await RCV.handleStaffRecovery(new Request(`${ORIGIN}/api/kitchen/payments/x`, { method: 'POST', body: JSON.stringify({ confirm: true, ...body }),
@@ -366,16 +366,47 @@ try {
     assert.equal(intentOf(s.json.statusToken), 'finalized/duplicate_charge')
     assert.equal((await staff(s.json.statusToken, { action: 'clear_flag', note: 'extra charge refunded' })).code, 'recorded')
   })
-  await test('F6', 'external reversal of the paid charge → refunded; evidence kept; nothing reachable for a branch tablet', async () => {
+  await test('F6', 'external reversal of the paid charge → refunded; evidence kept; never recordable by a branch tablet', async () => {
     const s = await start(); await hypReturn(rawFor(refOf(s.json.statusToken), { id: '990001' }))
-    const tablet = { ok: true, session: { username: 'owner', role: 'branch', branchId: B1, label: 'x', exp: 0, iat: 0 } }
-    assert.equal((await staff(s.json.statusToken, { action: 'record_void', note: 'x x x', hypTransId: '990001', amount: '40.00', reference: 'CN990001' }, tablet)).status, 404)
+    const tablet = { ok: true, session: { username: 'adumim', role: 'branch', branchId: B1, label: 'x', exp: 0, iat: 0 } }
+    const unlisted = { ok: true, session: { username: 'tablet2', role: 'branch', branchId: B1, label: 'x', exp: 0, iat: 0 } }
+    assert.deepEqual(await staff(s.json.statusToken, { action: 'record_void', note: 'x x x', hypTransId: '990001', amount: '40.00', reference: 'CN990001' }, tablet), { status: 403, code: 'action_not_permitted' })
+    assert.equal((await staff(s.json.statusToken, { action: 'record_void', note: 'x x x', hypTransId: '990001', amount: '40.00', reference: 'CN990001' }, unlisted)).status, 404)
+    assert.equal(Number(val("SELECT count(*) FROM public.payment_reversals WHERE hyp_reference = 'CN990001';")), 0)
     assert.equal((await staff(s.json.statusToken, { action: 'record_void', note: 'cancelled same day in portal', hypTransId: '990001', amount: '40.00', reference: 'CN990001' })).code, 'reversed')
     assert.equal(val(`SELECT status FROM public.payment_intents WHERE public_token = '${s.json.statusToken}';`), 'voided')
     assert.equal(ordersOf(s.json.statusToken), 1); assert.equal(Number(val("SELECT count(*) FROM public.payment_transactions WHERE hyp_trans_id = '990001';")), 1)
     assert.deepEqual(await publicStatus(s.json.statusToken), { state: 'refunded' })
   })
 
+  await test('F7', 'branch account adumim (HYP-12C): finalizes a VERIFY-confirmed payment; never asserts a portal payment or finalizes one', async () => {
+    const adumim = { ok: true, session: { username: 'adumim', role: 'branch', branchId: B1, label: 'x', exp: 0, iat: 0 } }
+    const elsewhere = { ok: true, session: { username: 'adumim', role: 'branch', branchId: 'f1e2d3c4-b5a6-4978-8a9b-0c1d2e3f4a5b', label: 'x', exp: 0, iat: 0 } }
+    // a. verified while the flag was off → adumim releases it to the kitchen; the trail names adumim
+    const v = await start(); deps.env = { ...ENV, HYP_PAYMENTS_ENABLED: 'false' }
+    try { await hypReturn(rawFor(refOf(v.json.statusToken))) } finally { deps.env = ENV }
+    assert.equal(intentOf(v.json.statusToken), 'paid/-')
+    assert.equal((await staff(v.json.statusToken, { action: 'finalize', note: 'customer at the counter' }, elsewhere)).status, 404)
+    assert.deepEqual(await staff(v.json.statusToken, { action: 'finalize', note: 'customer at the counter' }, adumim), { status: 200, code: 'finalized' })
+    assert.equal(ordersOf(v.json.statusToken), 1)
+    assert.match(eventsOf(v.json.statusToken), /staff:adumim>paid \[note: finalize: customer at the counter\] \| staff:adumim>finalized/)
+    // b. unknown outcome: adumim cannot assert a portal payment (403, nothing written); admin can; adumim still cannot finalize it
+    const u = await start(); expire(u.json.statusToken)
+    const portal = { action: 'portal_paid', note: 'found charge in HYP portal', hypTransId: 'PT710001', amount: '40.00' }
+    assert.deepEqual(await staff(u.json.statusToken, portal, adumim), { status: 403, code: 'action_not_permitted' })
+    assert.equal(Number(val("SELECT count(*) FROM public.payment_transactions WHERE hyp_trans_id = 'PT710001';")), 0)
+    assert.deepEqual(await staff(u.json.statusToken, portal), { status: 200, code: 'recorded' })
+    assert.equal(intentOf(u.json.statusToken), 'paid_hold/manual_confirmation')
+    assert.deepEqual(await staff(u.json.statusToken, { action: 'finalize', note: 'portal-confirmed payment' }, adumim), { status: 409, code: 'action_not_allowed' })
+    assert.equal(ordersOf(u.json.statusToken), 0)
+    assert.equal((await staff(u.json.statusToken, { action: 'finalize', note: 'portal-confirmed payment' })).code, 'finalized')
+    // c. not captured (700) → adumim closes it as no charge; the customer may pay again
+    const phone = nextPhone(); const n = await start({ phone })
+    await hypReturn(rawFor(refOf(n.json.statusToken), { ccode: '700' }))
+    assert.deepEqual(await staff(n.json.statusToken, { action: 'no_charge_found', note: 'HYP portal: J5 released' }, adumim), { status: 200, code: 'recorded' })
+    assert.equal(intentOf(n.json.statusToken), 'no_charge_found/-'); assert.equal((await start({ phone })).status, 200)
+    assert.deepEqual(await staff(n.json.statusToken, { action: 'clear_flag', note: 'x x x' }, adumim), { status: 403, code: 'action_not_permitted' })
+  })
   await test('E13', 'pilot allowlist is mandatory: missing / empty / malformed / other phone → 404 and no intent row', async () => {
     const before = Number(val('SELECT count(*) FROM public.payment_intents;'))
     for (const pilot of [undefined, '', '   ', '050-1234567', '0509999999', '0509999999,']) {

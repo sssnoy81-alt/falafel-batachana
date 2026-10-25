@@ -1,7 +1,7 @@
 import { getKitchenSession } from '@/lib/kitchenUsers'
 import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
 import { handleKitchenPayments, RECONCILIATION_SELECT, RECONCILIATION_STATUSES } from '@/lib/hyp/hypReconciliation'
-import { isStaffRecoveryAllowedFor } from '@/lib/hyp/hypStaffRecovery'
+import { staffRecoveryTierFor } from '@/lib/hyp/hypStaffRecovery'
 
 // GET /api/kitchen/payments[?branch=all|<branch uuid>] — READ ONLY (HYP-08).
 // Staff payment reconciliation list: kitchen session required, branch scope as GET /api/kitchen/orders.
@@ -24,7 +24,7 @@ export async function GET(req: Request) {
         return { data: null, error: { code: e instanceof ServerConfigError ? 'server_config' : 'unexpected' } }
       }
     },
-    canRecover: session => isStaffRecoveryAllowedFor(process.env, session),
+    recoveryTier: session => staffRecoveryTierFor(process.env, session),
     now: () => new Date(),
     log: (event, code) => console.error(`kitchen payments: ${event}${code ? ` ${code}` : ''}`),
   })

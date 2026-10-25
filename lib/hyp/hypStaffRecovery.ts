@@ -2,10 +2,15 @@
 // through the HYP-05 SECURITY DEFINER functions (resolve_payment_intent / finalize_paid_intent). All I/O injected.
 //
 // AUTHORIZATION (same pattern as S4-04D reconciliation, stricter): DISABLED unless HYP_STAFF_RECOVERY_ENABLED === 'true'
-// (404 otherwise, before any session or body access); then same-origin JSON, the DB-backed kitchen session, role 'admin'
-// AND the account listed exactly in HYP_STAFF_RECOVERY_USERS (default: nobody; same 404 otherwise); the intent must be
-// in the session's branch scope (404 otherwise). The staff identity written to the ledger is the session username —
-// never a browser value. Independent of HYP_PAYMENTS_ENABLED: already-paid customers must be recoverable with it off.
+// (404 otherwise, before any session or body access); then same-origin JSON, the DB-backed kitchen session, the account
+// listed exactly in HYP_STAFF_RECOVERY_USERS (default: nobody; same 404 otherwise) AND a recovery tier (HYP-12C):
+//   'full'   — role 'admin' (no branch): every action the state machine accepts.
+//   'branch' — role 'branch' whose own branch is an online-payment pilot branch (HYP_ALLOWED_BRANCH_IDS): a shared
+//              branch tablet, so ONLY BRANCH_RECOVERY_ACTIONS, and finalize only for a payment captured and confirmed by
+//              the server's own VERIFY (paid_source 'verify') — never a manual portal assertion, void, refund or flag clear.
+// The intent must be in the session's branch scope (404 otherwise). The staff identity written to the ledger is the
+// session username — never a browser value. Independent of HYP_PAYMENTS_ENABLED: already-paid customers must be
+// recoverable with it off.
 //
 // EVIDENCE: a portal confirmation needs the HYP transaction Id + amount + note; a recorded void / refund needs the HYP
 // reference of a reversal ALREADY performed in the HYP portal + amount + note; every action needs confirm === true.
@@ -16,6 +21,7 @@ import { checkSameOriginJson, type KitchenSession } from '../kitchenAuth'
 import { isBranchInScope } from '../kitchenMutations'
 import { parseDispatchAllowlist } from '../kitchenDispatch'
 import { HYP_ORDER_REF_RE, HYP_TRANS_ID_RE, amountToAgorot } from './hypProtocol'
+import { HYP_ALLOWED_BRANCH_IDS } from './hypFlags'
 
 if (typeof window !== 'undefined') {
   throw new Error('lib/hyp/hypStaffRecovery is server-only')
@@ -27,24 +33,43 @@ const REFERENCE_RULE = /^[0-9A-Za-z_-]{1,40}$/
 
 export const isStaffRecoveryEnabled = (env: EnvLike): boolean => env.HYP_STAFF_RECOVERY_ENABLED === 'true'
 
-/** Financial actions: flag on AND role admin AND the account listed exactly (shared branch tablets never qualify). */
-export function isStaffRecoveryAllowedFor(env: EnvLike, session: Pick<KitchenSession, 'role' | 'username'>): boolean {
-  if (!isStaffRecoveryEnabled(env) || session.role !== 'admin') return false
-  if (typeof session.username !== 'string' || !USERNAME_RULE.test(session.username)) return false
+export type RecoveryTier = 'full' | 'branch'
+
+/** Flag on AND the account listed exactly AND (admin → 'full' | branch user of a pilot branch → 'branch'); else null. */
+export function staffRecoveryTierFor(env: EnvLike, session: Pick<KitchenSession, 'role' | 'username' | 'branchId'>): RecoveryTier | null {
+  if (!isStaffRecoveryEnabled(env)) return null
+  if (typeof session.username !== 'string' || !USERNAME_RULE.test(session.username)) return null
   const list = parseDispatchAllowlist(env.HYP_STAFF_RECOVERY_USERS)   // strict, fail-closed list format
-  return list.ok && list.users.has(session.username)
+  if (!list.ok || !list.users.has(session.username)) return null
+  if (session.role === 'admin') return session.branchId === null ? 'full' : null
+  if (session.role === 'branch' && typeof session.branchId === 'string' && HYP_ALLOWED_BRANCH_IDS.includes(session.branchId)) return 'branch'
+  return null
 }
+
+export const isStaffRecoveryAllowedFor = (env: EnvLike, session: Pick<KitchenSession, 'role' | 'username' | 'branchId'>): boolean =>
+  staffRecoveryTierFor(env, session) !== null
 
 export const RECOVERY_ACTIONS = ['portal_paid', 'finalize', 'no_charge_found', 'flag_refund_required', 'flag_investigation',
   'clear_flag', 'record_void', 'record_refund'] as const
 export type RecoveryAction = (typeof RECOVERY_ACTIONS)[number]
 
+/** A shared branch account may only escalate, close a no-charge case or release a VERIFY-confirmed payment. */
+export const BRANCH_RECOVERY_ACTIONS: readonly RecoveryAction[] = ['finalize', 'no_charge_found', 'flag_refund_required', 'flag_investigation']
+
 export interface RecoveryIntentState {
   status: string; holdReason: string | null; staffFlag: string | null; duplicateChargeAt: string | null; expiresAt: string
+  paidSource?: string | null      // payment_intents.paid_source: 'verify' (server VERIFY) | 'portal' (staff assertion)
 }
 
-/** The actions the HYP-05 state machine accepts for this intent (the database re-checks every one). */
-export function allowedRecoveryActions(s: RecoveryIntentState, now: Date): RecoveryAction[] {
+/** The actions the HYP-05 state machine accepts for this intent (the database re-checks every one), narrowed for the
+ *  'branch' tier. The server enforces this list for every POST; the UI only mirrors it. */
+export function allowedRecoveryActions(s: RecoveryIntentState, now: Date, tier: RecoveryTier = 'full'): RecoveryAction[] {
+  const all = stateMachineActions(s, now)
+  if (tier === 'full') return all
+  return all.filter(a => BRANCH_RECOVERY_ACTIONS.includes(a) && (a !== 'finalize' || s.paidSource === 'verify'))
+}
+
+function stateMachineActions(s: RecoveryIntentState, now: Date): RecoveryAction[] {
   const expired = new Date(s.expiresAt) <= now
   const out: RecoveryAction[] = []
   if (['returned', 'verify_rejected', 'outcome_unknown', 'declined', 'no_charge_found'].includes(s.status) || (s.status === 'redirected' && expired)) out.push('portal_paid')
@@ -116,7 +141,8 @@ export async function handleStaffRecovery(req: Request, ref: string, deps: Recov
   if (!checkSameOriginJson(req)) return out({ error: 'invalid_request' }, 400)
   const auth = await deps.getSession(req)
   if (!auth.ok) return out({ error: auth.error }, auth.status)
-  if (!isStaffRecoveryAllowedFor(deps.env, auth.session)) return out({ error: 'not_found' }, 404)
+  const tier = staffRecoveryTierFor(deps.env, auth.session)
+  if (!tier) return out({ error: 'not_found' }, 404)
   if (!HYP_ORDER_REF_RE.test(ref)) return out({ error: 'invalid_request' }, 400)
   const text = await req.text()
   if (text.length > 4096) return out({ error: 'invalid_request' }, 400)
@@ -125,12 +151,14 @@ export async function handleStaffRecovery(req: Request, ref: string, deps: Recov
   const parsed = parseRecoveryBody(body)
   if (!parsed.ok) return out({ error: parsed.error }, 400)
   const a = parsed.value
+  // Shared branch account: manual payment / reversal assertions and flag clearing are refused before any database access.
+  if (tier === 'branch' && !BRANCH_RECOVERY_ACTIONS.includes(a.action)) return out({ error: 'action_not_permitted' }, 403)
   const staffUser = auth.session.username
 
   try {
     const intent = await deps.db.findIntent(ref)
     if (!intent || !isBranchInScope(auth.session, intent.branchId)) return out({ error: 'not_found' }, 404)   // no leak across branches
-    if (!allowedRecoveryActions(intent, deps.now()).includes(a.action)) return out({ error: 'action_not_allowed', status: intent.status }, 409)
+    if (!allowedRecoveryActions(intent, deps.now(), tier).includes(a.action)) return out({ error: 'action_not_allowed', status: intent.status }, 409)
 
     if (a.action === 'finalize') {
       if ((intent.holdReason === 'duplicate_charge' || intent.duplicateChargeAt) && !a.ackDuplicate) return out({ error: 'duplicate_ack_required' }, 400)

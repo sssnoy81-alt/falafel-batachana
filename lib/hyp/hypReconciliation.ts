@@ -6,7 +6,7 @@
 
 import type { KitchenSession } from '../kitchenAuth'
 import { resolveBranchScope } from '../kitchenOrders'
-import { allowedRecoveryActions, type RecoveryAction } from './hypStaffRecovery'
+import { allowedRecoveryActions, type RecoveryAction, type RecoveryTier } from './hypStaffRecovery'
 
 if (typeof window !== 'undefined') {
   throw new Error('lib/hyp/hypReconciliation is server-only')
@@ -19,7 +19,7 @@ export const RECONCILIATION_STATUSES = ['redirected', 'returned', 'verify_reject
 // the VERIFY answer, the snapshot items or the public token.
 export const RECONCILIATION_SELECT = [
   'hyp_order_ref', 'status', 'hold_reason', 'amount_agorot', 'branch_id', 'created_at', 'expires_at', 'redirected_at',
-  'returned_at', 'paid_at', 'finalized_at', 'updated_at', 'last_error', 'duplicate_charge_at', 'finalize_attempts',
+  'returned_at', 'paid_at', 'finalized_at', 'updated_at', 'last_error', 'duplicate_charge_at', 'finalize_attempts', 'paid_source',
   'staff_flag', 'staff_flag_note', 'staff_flag_by', 'staff_flag_at',
   'customer_name:snapshot->p_order->>customer_name', 'phone:snapshot->p_order->>phone',
   'orders!payment_intents_order_fk(daily_number)',
@@ -98,7 +98,7 @@ export function categorize(row: { status: string; hold_reason: string | null; la
   }
 }
 
-export function normalizeReconciliation(data: unknown, now: Date, canRecover = false): ReconciliationItem[] {
+export function normalizeReconciliation(data: unknown, now: Date, tier: RecoveryTier | null = null): ReconciliationItem[] {
   if (!Array.isArray(data)) return []
   const items: ReconciliationItem[] = []
   for (const raw of data as Row[]) {
@@ -112,8 +112,8 @@ export function normalizeReconciliation(data: unknown, now: Date, canRecover = f
     const rets = Array.isArray(raw.payment_returns) ? (raw.payment_returns as Row[]) : []
     const revs = Array.isArray(raw.payment_reversals) ? (raw.payment_reversals as Row[]) : []
     const staffFlag = s(raw.staff_flag)
-    const actions = canRecover ? allowedRecoveryActions({ status, holdReason: s(raw.hold_reason), staffFlag,
-                                                          duplicateChargeAt: s(raw.duplicate_charge_at), expiresAt: s(raw.expires_at) ?? '' }, now) : []
+    const actions = tier ? allowedRecoveryActions({ status, holdReason: s(raw.hold_reason), staffFlag, paidSource: s(raw.paid_source),
+                                                    duplicateChargeAt: s(raw.duplicate_charge_at), expiresAt: s(raw.expires_at) ?? '' }, now, tier) : []
     items.push({
       ref, category, status, holdReason: s(raw.hold_reason), amount: n(raw.amount_agorot) / 100, branchId: s(raw.branch_id) ?? '',
       createdAt: s(raw.created_at) ?? '', expiresAt: s(raw.expires_at) ?? '', returnedAt: s(raw.returned_at), paidAt: s(raw.paid_at),
@@ -139,8 +139,8 @@ export type ReconciliationFetch = (branchIds: string[]) => Promise<{ data: unkno
 export interface ReconciliationDeps {
   getSession: (req: Request) => Promise<{ ok: true; session: KitchenSession } | { ok: false; status: number; error: string }>
   fetchIntents: ReconciliationFetch
-  /** HYP-09: whether this account may perform staff recovery (lib/hyp/hypStaffRecovery isStaffRecoveryAllowedFor). */
-  canRecover: (session: KitchenSession) => boolean
+  /** HYP-09 / HYP-12C: this account's staff recovery tier, null = read only (lib/hyp/hypStaffRecovery staffRecoveryTierFor). */
+  recoveryTier: (session: KitchenSession) => RecoveryTier | null
   now: () => Date
   log: (event: string, code?: string) => void
 }
@@ -165,8 +165,8 @@ export async function handleKitchenPayments(req: Request, deps: ReconciliationDe
       return out({ error: 'server_error' }, 500)
     }
     const now = deps.now()
-    const canRecover = deps.canRecover(auth.session)
-    return out({ available: true, canRecover, generatedAt: now.toISOString(), items: normalizeReconciliation(data, now, canRecover) })
+    const tier = deps.recoveryTier(auth.session)
+    return out({ available: true, canRecover: tier !== null, recoveryTier: tier, generatedAt: now.toISOString(), items: normalizeReconciliation(data, now, tier) })
   } catch {
     deps.log('kitchen_payments_unexpected')
     return out({ error: 'server_error' }, 500)

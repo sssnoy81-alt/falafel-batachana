@@ -230,7 +230,7 @@ console.log('Staff reconciliation (GET /api/kitchen/payments)')
 const session = (role, branchId) => ({ ok: true, session: { username: 'boss', role, branchId, label: 'x', exp: 0, iat: 0 } })
 function recDeps(auth, rows = [], err = null) {
   const calls = []; const logs = []
-  return { calls, logs, deps: { getSession: async () => auth, fetchIntents: async ids => { calls.push(ids); return { data: rows, error: err } }, canRecover: () => false, now: () => new Date('2026-10-24T12:00:00Z'), log: (e, c) => logs.push(`${e} ${c ?? ''}`) } }
+  return { calls, logs, deps: { getSession: async () => auth, fetchIntents: async ids => { calls.push(ids); return { data: rows, error: err } }, recoveryTier: () => null, now: () => new Date('2026-10-24T12:00:00Z'), log: (e, c) => logs.push(`${e} ${c ?? ''}`) } }
 }
 const recReq = q => new Request(`https://falafel.test/api/kitchen/payments${q ?? ''}`)
 await test('unauthorized: no / invalid kitchen session → 401 and no data read', async () => {

@@ -32,6 +32,7 @@ function load(file) {
   return mod.exports
 }
 const R = load(join(ROOT, 'lib', 'hyp', 'hypStaffRecovery.ts'))
+const KA = load(join(ROOT, 'lib', 'kitchenAuth.ts'))
 const REC = load(join(ROOT, 'lib', 'hyp', 'hypReconciliation.ts'))
 const TAB = load(join(ROOT, 'app', 'dashboard', 'orders', 'PaymentsTab.tsx'))
 const src = f => readFileSync(join(ROOT, f), 'utf8').replace(/\r\n/g, '\n')
@@ -47,6 +48,7 @@ const OTHER = 'f1e2d3c4-b5a6-4978-8a9b-0c1d2e3f4a5b'
 const REF = 'A1B2C3D4E5F60718293A4B5C6D7E8F90'
 const ORIGIN = 'https://falafel.test'
 const ENV = { HYP_STAFF_RECOVERY_ENABLED: 'true', HYP_STAFF_RECOVERY_USERS: 'owner,manager2' }
+const BENV = { HYP_STAFF_RECOVERY_ENABLED: 'true', HYP_STAFF_RECOVERY_USERS: 'owner,adumim' }   // HYP-12C: shared branch account
 const NOW = new Date('2026-10-24T12:00:00Z')
 const session = (role = 'admin', username = 'owner', branchId = null) => ({ ok: true, session: { username, role, branchId, label: 'x', exp: 0, iat: 0 } })
 
@@ -85,19 +87,99 @@ await test('cross-origin / non-JSON → 400; no session → 401; nothing read', 
   }
   const r = await call(FIN, new FakeDb(), { auth: { ok: false, status: 401, error: 'unauthorized' } }); assert.equal(r.status, 401); assert.equal(r.db.calls.length, 0)
 })
-await test('role matrix: branch tablet, unlisted admin, malformed allowlist → 404 (same as off); listed admin only', async () => {
-  for (const [auth, env] of [[session('branch', 'owner', B1), ENV], [session('admin', 'boss'), ENV], [session('admin', 'owner'), { ...ENV, HYP_STAFF_RECOVERY_USERS: 'owner,BAD NAME' }],
-                             [session('admin', 'owner'), { ...ENV, HYP_STAFF_RECOVERY_USERS: '' }], [session('admin', 'Owner'), ENV]]) {
-    const r = await call(FIN, new FakeDb(), { auth, env }); assert.equal(r.status, 404); assert.equal(r.db.calls.length, 0)
+await test('role matrix: unlisted users, other-branch / non-pilot branch users, malformed allowlist → 404 (same as off); tiers', async () => {
+  for (const [auth, env] of [[session('branch', 'adumim', B1), ENV], [session('admin', 'boss'), ENV], [session('admin', 'owner'), { ...ENV, HYP_STAFF_RECOVERY_USERS: 'owner,BAD NAME' }],
+                             [session('admin', 'owner'), { ...ENV, HYP_STAFF_RECOVERY_USERS: '' }], [session('admin', 'owner'), { ...ENV, HYP_STAFF_RECOVERY_USERS: undefined }],
+                             [session('admin', 'Owner'), ENV], [session('branch', 'otherbr', OTHER), { ...ENV, HYP_STAFF_RECOVERY_USERS: 'owner,otherbr' }],
+                             [session('branch', 'nobranch', null), { ...ENV, HYP_STAFF_RECOVERY_USERS: 'nobranch' }], [session('admin', 'owner', B1), ENV],
+                             [session('kitchen', 'owner', B1), ENV], [session('branch', 'adumim', B1), { ...ENV, HYP_STAFF_RECOVERY_USERS: 'Adumim' }],
+                             [session('branch', 'adumim', B1), { ...ENV, HYP_STAFF_RECOVERY_USERS: 'adumim2' }]]) {
+    const r = await call(FIN, new FakeDb({ paidSource: 'verify' }), { auth, env }); assert.equal(r.status, 404, JSON.stringify([auth.session, env])); assert.equal(r.db.calls.length, 0)
   }
   assert.equal((await call(FIN)).status, 200)
-  assert.equal(R.isStaffRecoveryAllowedFor(ENV, { role: 'admin', username: 'manager2' }), true)
-  assert.equal(R.isStaffRecoveryAllowedFor(ENV, { role: 'branch', username: 'manager2' }), false)
+  assert.equal(R.staffRecoveryTierFor(ENV, { role: 'admin', username: 'manager2', branchId: null }), 'full')
+  assert.equal(R.staffRecoveryTierFor(BENV, { role: 'branch', username: 'adumim', branchId: B1 }), 'branch')
+  assert.equal(R.staffRecoveryTierFor(ENV, { role: 'branch', username: 'manager2', branchId: OTHER }), null)
+  assert.equal(R.staffRecoveryTierFor({ ...BENV, HYP_STAFF_RECOVERY_ENABLED: 'false' }, { role: 'branch', username: 'adumim', branchId: B1 }), null)
+  assert.equal(R.isStaffRecoveryAllowedFor(ENV, { role: 'admin', username: 'manager2', branchId: null }), true)
+  assert.equal(R.isStaffRecoveryAllowedFor(ENV, { role: 'branch', username: 'manager2', branchId: null }), false)
 })
 await test('branch isolation: an intent outside the session scope is indistinguishable from a missing one (404)', async () => {
   const r = await call(FIN, new FakeDb({ branchId: OTHER })); assert.equal(r.status, 404); assert.ok(!r.db.calls.some(c => c[0] === 'finalize'))
   assert.equal((await call(FIN, new FakeDb(), { ref: 'ZZZZZZZZZZZZZZZZ' })).status, 404)
   assert.equal((await call(FIN, new FakeDb(), { ref: 'not-a-ref' })).status, 400)
+})
+
+console.log('Branch tier (HYP-12C: listed pilot-branch account, restricted actions)')
+const ADUMIM = session('branch', 'adumim', B1)
+const asBranch = (body, intent = {}, o = {}) => call(body, new FakeDb(intent, o.db), { auth: ADUMIM, env: BENV, ...o })
+await test('safe reconciliation accepted in its own branch: no_charge_found, flags, finalize of a VERIFY-confirmed payment', async () => {
+  const nc = await asBranch({ action: 'no_charge_found', note: 'nothing in portal', confirm: true }, { status: 'outcome_unknown', paidSource: null })
+  assert.equal(nc.status, 200); assert.equal(nc.db.calls.find(c => c[0] === 'resolve')[1].staffUser, 'adumim')
+  const sw = await asBranch({ action: 'no_charge_found', note: 'abandoned page', confirm: true }, { status: 'redirected', paidSource: null })
+  assert.equal(sw.status, 200); assert.ok(sw.db.calls.some(c => c[0] === 'sweepExpired'))
+  for (const action of ['flag_refund_required', 'flag_investigation']) {
+    const r = await asBranch({ action, note: 'customer called', confirm: true }, { status: 'paid', paidSource: 'verify' })
+    assert.equal(r.status, 200, action); assert.equal(r.db.calls.find(c => c[0] === 'resolve')[1].action, action)
+  }
+  for (const [status, holdReason] of [['paid', null], ['paid_hold', 'late_return'], ['paid_hold', 'finalize_error']]) {
+    const f = await asBranch(FIN, { status, holdReason, paidSource: 'verify' })
+    assert.equal(f.status, 200, status); assert.deepEqual(f.db.calls.find(c => c[0] === 'finalize'), ['finalize', 'int-1', 'adumim'])
+    assert.equal(f.db.calls.find(c => c[0] === 'resolve')[1].action, 'note')                 // audit note first, as for admins
+  }
+  const dup = await asBranch(FIN, { status: 'paid_hold', holdReason: 'duplicate_charge', duplicateChargeAt: 'x', paidSource: 'verify' })
+  assert.equal(dup.status, 400); assert.equal(dup.json.error, 'duplicate_ack_required')
+})
+await test('manual payment / reversal assertions and flag clearing are refused (403) before any database access', async () => {
+  const bodies = [{ action: 'portal_paid', note: 'found in portal', confirm: true, hypTransId: '5001', amount: '40.00' },
+                  { action: 'record_void', note: 'voided in portal', confirm: true, hypTransId: '5001', amount: '40.00', reference: 'V1' },
+                  { action: 'record_refund', note: 'refunded in portal', confirm: true, hypTransId: '5001', amount: '40.00', reference: 'RF1' },
+                  { action: 'clear_flag', note: 'resolved', confirm: true }]
+  for (const b of bodies) {
+    const r = await asBranch(b, { status: 'outcome_unknown', staffFlag: 'investigation' })
+    assert.equal(r.status, 403, b.action); assert.equal(r.json.error, 'action_not_permitted'); assert.equal(r.db.calls.length, 0, b.action)
+  }
+  // The same request from a listed admin still reaches the state machine (existing behaviour).
+  const admin = await call(bodies[0], new FakeDb({ status: 'outcome_unknown' })); assert.equal(admin.status, 200)
+  assert.equal(admin.db.calls.find(c => c[0] === 'resolve')[1].action, 'portal_paid')
+})
+await test('finalize of a portal-asserted (or unknown-source) payment is refused for the branch tier; admins keep it', async () => {
+  for (const paidSource of ['portal', null, undefined, 'VERIFY']) {
+    const r = await asBranch(FIN, { status: 'paid', paidSource })
+    assert.equal(r.status, 409, String(paidSource)); assert.equal(r.json.error, 'action_not_allowed'); assert.ok(!r.db.calls.some(c => c[0] === 'finalize' || c[0] === 'resolve'))
+  }
+  const a = await call(FIN, new FakeDb({ status: 'paid', paidSource: 'portal' })); assert.equal(a.status, 200)
+  assert.deepEqual(R.allowedRecoveryActions({ status: 'paid', holdReason: null, staffFlag: 'investigation', duplicateChargeAt: null, expiresAt: '2026-10-24T11:15:00Z', paidSource: 'portal' }, NOW, 'branch'),
+                   ['flag_refund_required'])
+  assert.deepEqual(R.allowedRecoveryActions({ status: 'finalized', holdReason: null, staffFlag: null, duplicateChargeAt: null, expiresAt: '2026-10-24T11:15:00Z', paidSource: 'verify' }, NOW, 'branch'),
+                   ['flag_refund_required', 'flag_investigation'])
+  assert.deepEqual([...R.BRANCH_RECOVERY_ACTIONS], ['finalize', 'no_charge_found', 'flag_refund_required', 'flag_investigation'])
+})
+await test('branch tier: other-branch intent → 404 indistinguishable from missing; nothing written', async () => {
+  for (const body of [FIN, { action: 'no_charge_found', note: 'nothing in portal', confirm: true }, { action: 'flag_investigation', note: 'check', confirm: true }]) {
+    const r = await asBranch(body, { branchId: OTHER, status: 'paid', paidSource: 'verify' })
+    assert.equal(r.status, 404, body.action); assert.deepEqual(r.db.calls.map(c => c[0]), ['findIntent'])
+  }
+})
+await test('branch tier keeps CSRF, session, flag and allowlist checks: cross-origin 400, revoked session 401, flag off 404', async () => {
+  for (const h of [{ origin: 'https://evil.test' }, { 'sec-fetch-site': 'cross-site' }, { 'content-type': 'text/plain' }]) {
+    const r = await asBranch(FIN, { paidSource: 'verify' }, { headers: h }); assert.equal(r.status, 400); assert.equal(r.db.calls.length, 0)
+  }
+  const revoked = await asBranch(FIN, { paidSource: 'verify' }, { auth: { ok: false, status: 401, error: 'unauthorized' } }); assert.equal(revoked.status, 401); assert.equal(revoked.db.calls.length, 0)
+  const off = await asBranch(FIN, { paidSource: 'verify' }, { env: { ...BENV, HYP_STAFF_RECOVERY_ENABLED: undefined } }); assert.equal(off.status, 404); assert.equal(off.db.calls.length, 0)
+})
+await test('inactive / re-scoped / promoted kitchen accounts: the server session check revokes the cookie (401)', async () => {
+  const secret = 'k'.repeat(64)
+  const user = { username: 'adumim', role: 'branch', branchId: B1, label: 'מישור אדומים' }
+  const cookie = KA.KITCHEN_SESSION_COOKIE + '=' + KA.signSession(user, secret)
+  const req = () => new Request(ORIGIN + '/api/kitchen/payments/' + REF, { headers: { cookie } })
+  const store = rec => ({ findByUsername: async () => rec })
+  const base = { ...user, isActive: true, passwordHash: 'x' }
+  assert.equal((await KA.verifyKitchenRequest(req(), { store: store(base), env: { KITCHEN_SESSION_SECRET: secret } })).ok, true)
+  for (const rec of [null, { ...base, isActive: false }, { ...base, branchId: OTHER }, { ...base, role: 'admin', branchId: null }]) {
+    const r = await KA.verifyKitchenRequest(req(), { store: store(rec), env: { KITCHEN_SESSION_SECRET: secret } })
+    assert.equal(r.ok, false, JSON.stringify(rec)); assert.equal(r.status, 401)
+  }
 })
 
 console.log('Validation and evidence')
@@ -187,26 +269,40 @@ const row = o => ({ hyp_order_ref: o.ref, status: o.status, hold_reason: o.hold 
   payment_returns: [], payment_reversals: o.revs ?? [] })
 const ROWS = [row({ ref: 'R1', status: 'paid' }), row({ ref: 'R2', status: 'outcome_unknown' }), row({ ref: 'R3', status: 'outcome_unknown', err: 'non_capture_ccode_700' }),
   row({ ref: 'R4', status: 'finalized', flag: 'refund_required' }), row({ ref: 'R5', status: 'refunded', flag: 'investigation', revs: [{ kind: 'refund', amount_agorot: 4000, hyp_reference: 'RF1', staff_user: 'owner', created_at: 'x' }] })]
-async function list(canRecover, auth = session()) {
-  const res = await REC.handleKitchenPayments(new Request(`${ORIGIN}/api/kitchen/payments`), { getSession: async () => auth, fetchIntents: async () => ({ data: ROWS, error: null }),
-    canRecover: () => canRecover, now: () => NOW, log: () => {} })
+async function list(tier, auth = session(), rows = ROWS) {
+  const res = await REC.handleKitchenPayments(new Request(`${ORIGIN}/api/kitchen/payments`), { getSession: async () => auth, fetchIntents: async () => ({ data: rows, error: null }),
+    recoveryTier: () => tier, now: () => NOW, log: () => {} })
   return res.json()
 }
 await test('money states are kept apart: confirmed / unknown / not captured / refund required / refunded externally', async () => {
-  const b = await list(false)
+  const b = await list(null)
   assert.deepEqual(Object.fromEntries(b.items.map(i => [i.ref, i.moneyState])),
     { R1: 'confirmed', R2: 'unknown', R3: 'not_captured', R4: 'refund_required', R5: 'refunded_externally' })
   assert.equal(b.items.find(i => i.ref === 'R4').category, 'flagged')
 })
 await test('actions are listed only for an authorized account; read-only accounts get none and see no controls', async () => {
-  const ro = await list(false); assert.equal(ro.canRecover, false); assert.ok(ro.items.every(i => i.actions.length === 0))
+  const ro = await list(null); assert.equal(ro.canRecover, false); assert.ok(ro.items.every(i => i.actions.length === 0))
   const m = renderToStaticMarkup(React.createElement(TAB.PaymentsReconciliationList, { items: ro.items, available: true, error: '', canRecover: false }))
   assert.ok(!/<button|<select|<form|<details/i.test(m)); assert.match(m, /לקריאה בלבד/)
-  const rw = await list(true); assert.equal(rw.canRecover, true)
+  const rw = await list('full'); assert.equal(rw.canRecover, true); assert.equal(rw.recoveryTier, 'full')
   assert.deepEqual(rw.items.find(i => i.ref === 'R1').actions, ['finalize', 'flag_refund_required', 'flag_investigation'])
   const m2 = renderToStaticMarkup(React.createElement(TAB.PaymentsReconciliationList, { items: rw.items, available: true, error: '', canRecover: true, onAction: async () => ({ ok: true, message: '' }) }))
   assert.match(m2, /<details/); assert.match(m2, /פעולות צוות/); assert.match(m2, /dir="rtl"/)
   assert.match(m2, /נדרש זיכוי — טרם בוצע/); assert.match(m2, /זיכוי \/ ביטול בוצע בפורטל/); assert.match(m2, /אסמכתא <span[^>]*>RF1<\/span>/)
+})
+await test('branch tier list: only the restricted actions are offered; finalize only for a VERIFY-confirmed payment', async () => {
+  const rows = [row({ ref: 'V1', status: 'paid' }), { ...row({ ref: 'P1', status: 'paid' }), paid_source: 'portal' }, row({ ref: 'U1', status: 'outcome_unknown' }),
+                row({ ref: 'F1', status: 'finalized', flag: 'refund_required' })].map(r => ({ paid_source: r.status === 'outcome_unknown' ? null : 'verify', ...r }))
+  const b = await list('branch', ADUMIM, rows); assert.equal(b.canRecover, true); assert.equal(b.recoveryTier, 'branch')
+  const acts = Object.fromEntries(b.items.map(i => [i.ref, i.actions]))
+  assert.deepEqual(acts.V1, ['finalize', 'flag_refund_required', 'flag_investigation'])
+  assert.deepEqual(acts.P1, ['flag_refund_required', 'flag_investigation'])
+  assert.deepEqual(acts.U1, ['no_charge_found', 'flag_investigation'])
+  assert.deepEqual(acts.F1, ['flag_investigation'])
+  for (const i of b.items) assert.ok(!i.actions.some(a => ['portal_paid', 'record_void', 'record_refund', 'clear_flag'].includes(a)), i.ref)
+  assert.ok(REC.RECONCILIATION_SELECT.split(', ').includes('paid_source'))
+  assert.ok(src('app/api/kitchen/payments/route.ts').includes('recoveryTier: session => staffRecoveryTierFor(process.env, session)'))
+  assert.ok(src('app/api/kitchen/payments/[ref]/route.ts').includes("expires_at, paid_source')"))
 })
 await test('every action has an explicit confirmation text; refunds are only ever "already performed in the portal"', () => {
   for (const a of R.RECOVERY_ACTIONS) assert.ok(TAB.ACTION_UI[a]?.confirm.length > 10, a)
