@@ -46,7 +46,7 @@ const test = async (name, fn) => {
 /* ─── fixtures (fake) ─── */
 const ORIGIN = 'https://falafel.test'
 const API_KEY = 'fakeKEY-7f3a9c11', PASSP = 'fakePassP-42b8'
-const ENV = { HYP_PAYMENTS_ENABLED: 'true', HYP_TERMINAL: '0010000001', HYP_API_KEY: API_KEY, HYP_PASSP: PASSP, HYP_TERMINAL_KIND: 'test' }
+const ENV = { HYP_PAYMENTS_ENABLED: 'true', HYP_TERMINAL: '0010000001', HYP_API_KEY: API_KEY, HYP_PASSP: PASSP, HYP_TERMINAL_KIND: 'test', HYP_PILOT_PHONES: '0501234567' }
 const B1 = '8fed141d-0e7c-46c1-803b-88d3d811c1f8'
 const M1 = '11111111-1111-4111-8111-111111111111', M2 = '22222222-2222-4222-8222-222222222222'
 const CAT = 'c0c0c0c0-0000-4000-8000-000000000001'
@@ -173,9 +173,12 @@ await test('missing / malformed credentials or a live terminal outside Productio
   }
 })
 
-await test('pilot allowlist HYP_PILOT_PHONES: only listed phones may start; malformed list blocks everyone; unset = no restriction', async () => {
+await test('pilot allowlist HYP_PILOT_PHONES: only listed phones may start; missing / empty / malformed list blocks everyone', async () => {
   for (const [list, phone, expected] of [['0501234567', PHONE, 200], ['0509999999', PHONE, 404], ['0509999999, 0501234567', PHONE, 200],
-                                         ['050-1234567', PHONE, 404], ['', PHONE, 200], [undefined, PHONE, 200]]) {
+                                         [' 0501234567 ', PHONE, 200], ['050-1234567', PHONE, 404], ['+972501234567', PHONE, 404],
+                                         ['0501234567,', PHONE, 404], ['0501234567,,0509999999', PHONE, 404], ['0501234567;0509999999', PHONE, 404],
+                                         ['501234567', PHONE, 404], [Array.from({ length: 21 }, (_, i) => `05${String(i).padStart(8, '0')}`).concat('0501234567').join(','), PHONE, 404],
+                                         ['', PHONE, 404], ['   ', PHONE, 404], [undefined, PHONE, 404]]) {
     const db = new FakeDb(); const r = await call(S.handleHypStart, startReq(body({ phone })), deps(db, { env: { ...ENV, HYP_PILOT_PHONES: list }, answers: ['sign_echo'] }).d)
     assert.equal(r.status, expected, `${list}`)
     if (expected === 404) { assert.equal(r.json.error, 'payments_disabled'); assert.ok(!db.ops().includes('createIntent')) }

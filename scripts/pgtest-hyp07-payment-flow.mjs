@@ -133,10 +133,11 @@ const ORIGIN = 'https://falafel.test'
 let phoneSeq = 0
 const nextPhone = () => `050${String(1000000 + ++phoneSeq).slice(-7)}`
 
+// HYP_PILOT_PHONES is mandatory (HYP-12C): each checkout's own phone is the pilot phone unless o.pilot overrides it.
 async function start(o = {}) {
   const b = { checkoutKey: o.key ?? randomUUID(), branchId: B1, type: 'pickup', customerName: 'Flow Customer', phone: o.phone ?? nextPhone(), items: o.items ?? [{ itemId: M1, quantity: 2 }] }
   const res = await S.handleHypStart(new Request(`${ORIGIN}/api/payments/hyp/start`, { method: 'POST', body: JSON.stringify(b),
-    headers: { origin: ORIGIN, 'content-type': 'application/json', 'sec-fetch-site': 'same-origin' } }), deps)
+    headers: { origin: ORIGIN, 'content-type': 'application/json', 'sec-fetch-site': 'same-origin' } }), { ...deps, env: { ...deps.env, HYP_PILOT_PHONES: 'pilot' in o ? o.pilot : b.phone } })
   return { status: res.status, json: await res.json(), body: b }
 }
 const refOf = token => val(`SELECT hyp_order_ref FROM public.payment_intents WHERE public_token = '${token}';`)
@@ -375,6 +376,13 @@ try {
     assert.deepEqual(await publicStatus(s.json.statusToken), { state: 'refunded' })
   })
 
+  await test('E13', 'pilot allowlist is mandatory: missing / empty / malformed / other phone → 404 and no intent row', async () => {
+    const before = Number(val('SELECT count(*) FROM public.payment_intents;'))
+    for (const pilot of [undefined, '', '   ', '050-1234567', '0509999999', '0509999999,']) {
+      const r = await start({ pilot }); assert.equal(r.status, 404, String(pilot)); assert.equal(r.json.error, 'payments_disabled')
+    }
+    assert.equal(Number(val('SELECT count(*) FROM public.payment_intents;')), before)
+  })
   await test('E12', 'no credentials or customer data in logs; HYP received the server amount and our Order only', () => {
     const blob = logs.join('\n')
     for (const s of [ENV.HYP_API_KEY, ENV.HYP_PASSP, 'Flow Customer', '050']) assert.ok(!blob.includes(s), s)

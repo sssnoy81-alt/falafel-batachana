@@ -15,16 +15,21 @@ export const HYP_ALLOWED_BRANCH_IDS: readonly string[] = ['8fed141d-0e7c-46c1-80
 export const HYP_ALLOWED_ORDER_TYPES: readonly OrderType[] = ['pickup']
 
 /**
- * HYP_PILOT_PHONES — optional controlled-pilot allowlist of customer phones (comma-separated, 05XXXXXXXX). When set,
- * ONLY these phones may start an online payment (e.g. the owner's own phone during the test-terminal run, so no real
- * customer can "pay" on a test terminal). Unset / empty = no phone restriction. A malformed list blocks everyone.
+ * HYP_PILOT_PHONES — REQUIRED controlled-pilot allowlist of customer phones (comma-separated, 05XXXXXXXX). ONLY these
+ * phones may start an online payment. Fail closed (HYP-12C): unset / empty / whitespace-only = nobody, and a malformed
+ * list (dash, +972, trailing comma, > 20 entries) = nobody. Opening to all customers needs a deliberate code change.
  */
-export function isHypPilotPhoneAllowed(env: EnvLike, normalizedPhone: string): boolean {
+export function hypPilotPhones(env: EnvLike): readonly string[] | null {
   const raw = (env.HYP_PILOT_PHONES ?? '').trim()
-  if (!raw) return true
+  if (!raw) return null
   const phones = raw.split(',').map(p => p.trim())
-  if (phones.length > 20 || phones.some(p => !/^05\d{8}$/.test(p))) return false
-  return phones.includes(normalizedPhone)
+  if (phones.length > 20 || phones.some(p => !/^05\d{8}$/.test(p))) return null
+  return phones
+}
+
+export function isHypPilotPhoneAllowed(env: EnvLike, normalizedPhone: string): boolean {
+  const phones = hypPilotPhones(env)
+  return phones !== null && phones.includes(normalizedPhone)
 }
 
 export const HYP_INTENT_TTL_SECONDS = 900          // payment_intents.expires_at = created_at + 15 min

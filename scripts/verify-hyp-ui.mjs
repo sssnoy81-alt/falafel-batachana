@@ -62,20 +62,22 @@ const test = async (name, fn) => {
 const B1 = '8fed141d-0e7c-46c1-803b-88d3d811c1f8'
 const B2 = '3ab15ad1-e835-492b-bae5-11b202ee2314'
 const API_KEY = 'fakeKEY-7f3a9c11', PASSP = 'fakePassP-42b8'
-const ENV = { HYP_PAYMENTS_ENABLED: 'true', HYP_TERMINAL: '0010000001', HYP_API_KEY: API_KEY, HYP_PASSP: PASSP, HYP_TERMINAL_KIND: 'test' }
+const ENV = { HYP_PAYMENTS_ENABLED: 'true', HYP_TERMINAL: '0010000001', HYP_API_KEY: API_KEY, HYP_PASSP: PASSP, HYP_TERMINAL_KIND: 'test', HYP_PILOT_PHONES: '0501234567' }
 const TOKEN = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
 const TRACK = 'f0e1d2c3-b4a5-4697-8879-6a5b4c3d2e1f'
 
 console.log('Visibility (server config + client gating)')
-await test('GET /api/payments/config: null unless the flag is exactly true AND the terminal configuration is valid', async () => {
+await test('GET /api/payments/config: null unless the flag is exactly true AND the terminal configuration AND the pilot phone list are valid', async () => {
   for (const env of [{}, { ...ENV, HYP_PAYMENTS_ENABLED: 'false' }, { ...ENV, HYP_PAYMENTS_ENABLED: 'TRUE' }, { ...ENV, HYP_PASSP: '' },
-                     { ...ENV, HYP_TERMINAL: '0882001234', HYP_TERMINAL_KIND: 'live', VERCEL_ENV: 'preview' }]) {
+                     { ...ENV, HYP_TERMINAL: '0882001234', HYP_TERMINAL_KIND: 'live', VERCEL_ENV: 'preview' },
+                     { ...ENV, HYP_PILOT_PHONES: undefined }, { ...ENV, HYP_PILOT_PHONES: '' }, { ...ENV, HYP_PILOT_PHONES: '  ' }, { ...ENV, HYP_PILOT_PHONES: '050-1234567' },
+                     { ...ENV, HYP_PILOT_PHONES: '0501234567,' }]) {
     const res = SVC.handlePaymentsConfig(env)
     assert.deepEqual(await res.json(), { hypPayments: null }); assert.equal(res.headers.get('cache-control'), 'no-store, max-age=0')
   }
   const on = await SVC.handlePaymentsConfig(ENV).text()
   assert.deepEqual(JSON.parse(on), { hypPayments: { branchIds: [B1], orderTypes: ['pickup'] } })
-  assert.ok(!on.includes(API_KEY) && !on.includes(PASSP) && !on.includes('0010000001'))
+  assert.ok(!on.includes(API_KEY) && !on.includes(PASSP) && !on.includes('0010000001') && !on.includes('0501234567'))
   assert.match(src('app/api/payments/config/route.ts'), /return handlePaymentsConfig\(process\.env\)/)
 })
 await test('client parsing fails closed; delivery can never be enabled by the response', () => {

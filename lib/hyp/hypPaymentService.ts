@@ -14,7 +14,7 @@ import { buildOrderFromCatalog, isUuid, parseCreateOrderRequest, type CreateOrde
 import { resolveHypConfig } from './hypConfig'
 import { signPayment, toVerificationRecord, verificationRpcArgs, verifyHypReturn, type HypTransport } from './hypClient'
 import { HypDbError, type HypDb } from './hypDb'
-import { HYP_ALLOWED_BRANCH_IDS, HYP_ALLOWED_ORDER_TYPES, HYP_INTENT_TTL_SECONDS, HYP_PAYMENT_DESCRIPTION, isHypPaymentsEnabled, isHypPilotPhoneAllowed, type EnvLike } from './hypFlags'
+import { HYP_ALLOWED_BRANCH_IDS, HYP_ALLOWED_ORDER_TYPES, HYP_INTENT_TTL_SECONDS, HYP_PAYMENT_DESCRIPTION, hypPilotPhones, isHypPaymentsEnabled, isHypPilotPhoneAllowed, type EnvLike } from './hypFlags'
 import { clientKey, type RateLimiter } from './hypRateLimit'
 
 if (typeof window !== 'undefined') {
@@ -193,9 +193,9 @@ export async function handleHypReturn(req: Request, deps: HypDeps): Promise<Resp
 /* ─── GET /api/payments/config (HYP-08) ─── */
 
 /** Whether the checkout may SHOW the online option. Presentation only: start re-checks everything. Fail closed —
- *  flag not exactly 'true' or credentials not valid → null. The reason is never disclosed. */
+ *  flag not exactly 'true', credentials not valid or no valid HYP_PILOT_PHONES list → null. The reason is never disclosed. */
 export function handlePaymentsConfig(env: EnvLike): Response {
-  const on = isHypPaymentsEnabled(env) && resolveHypConfig(env).ok
+  const on = isHypPaymentsEnabled(env) && resolveHypConfig(env).ok && hypPilotPhones(env) !== null
   return json(200, { hypPayments: on ? { branchIds: [...HYP_ALLOWED_BRANCH_IDS], orderTypes: [...HYP_ALLOWED_ORDER_TYPES] } : null })
 }
 
