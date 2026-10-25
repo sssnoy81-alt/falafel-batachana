@@ -123,6 +123,10 @@ const transport = async (url, init) => {
   }
   const a = verifyPlan.length ? verifyPlan.shift() : { body: 'CCode=0' }
   if (a === 'timeout') return new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(new Error('aborted'))))
+  // HYP-20: emulates the HYP-18B observation — VERIFY with the credentials out of the documented order (Masof, KEY,
+  // PassP) answers CCode=200 (the live cause is not yet confirmed; this mock pins the documented order).
+  const DOC_PREFIX = `https://pay.hyp.co.il/p/?action=APISign&What=VERIFY&Masof=${ENV.HYP_TERMINAL}&KEY=${encodeURIComponent(ENV.HYP_API_KEY)}&PassP=${encodeURIComponent(ENV.HYP_PASSP)}&`
+  if (!url.startsWith(DOC_PREFIX)) return { status: 200, text: async () => 'CCode=200' }
   return { status: a.status ?? 200, text: async () => a.body }
 }
 const ENV = { HYP_PAYMENTS_ENABLED: 'true', HYP_TERMINAL: '0010000001', HYP_API_KEY: 'fakeKEY-7f3a9c11', HYP_PASSP: 'fakePassP-42b8', HYP_TERMINAL_KIND: 'test' }

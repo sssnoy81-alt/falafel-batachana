@@ -216,9 +216,11 @@ export interface HypVerifyResult {
 
 const NON_CAPTURE_CODES = new Set(['600', '700', '800'])
 
-/** The documented VERIFY request: auth parameters first, then the return query string byte-for-byte. Never log it. */
+/** The documented VERIFY request, in the documented order (Hyp Pay "Validate a transaction"): action, What, Masof,
+ *  KEY, PassP, then the return query string byte-for-byte. HYP-20: the earlier order (Masof after PassP) is the
+ *  suspected cause of CCode=200 for an approved payment (HYP-18B) — not yet confirmed by a live VERIFY. Never log it. */
 export function buildVerifyUrl(config: HypConfig, raw: string): string {
-  return `${HYP_PAY_URL}?action=APISign&What=VERIFY&KEY=${enc(config.apiKey)}&PassP=${enc(config.passP)}&Masof=${enc(config.terminal)}&${raw}`
+  return `${HYP_PAY_URL}?action=APISign&What=VERIFY&Masof=${enc(config.terminal)}&KEY=${enc(config.apiKey)}&PassP=${enc(config.passP)}&${raw}`
 }
 
 export async function verifyHypReturn(config: HypConfig, input: HypVerifyInput, opts: HypCallOptions = {}): Promise<HypVerifyResult> {
