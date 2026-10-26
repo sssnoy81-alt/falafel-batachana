@@ -18,6 +18,7 @@ import { signPayment, toVerificationRecord, verificationRpcArgs, verifyHypReturn
 import { HypDbError, type HypDb } from './hypDb'
 import { HYP_ALLOWED_BRANCH_IDS, HYP_INTENT_TTL_SECONDS, HYP_PAYMENT_DESCRIPTION, hypAllowedOrderTypes, isHypAudienceConfigured, isHypDeliveryEnabled, isHypPaymentsEnabled, isHypPhoneAllowed, isHypPrefillEnabled, type EnvLike } from './hypFlags'
 import { customerPrefillFromSnapshot } from './hypPrefill'
+import { parseCustomerNameParts } from '../customerName'
 
 // SIGN failures a pre-filled value could cause (never retried: network / HTTP errors, already retried in signPayment,
 // and credential_echo, a security stop).
@@ -93,6 +94,13 @@ export async function handleHypStart(req: Request, deps: HypDeps): Promise<Respo
   const placeholder = delivery && (orderBody as { type?: unknown }).type === 'delivery' ? 'cash' : 'credit'
   const parsed = parseCreateOrderRequest({ ...orderBody, paymentMethod: placeholder }, { parcelCheckoutEnabled: delivery && isParcelCheckoutEnabled(deps.env) })
   if (!parsed.ok) return json(400, parsed.detail ? { error: parsed.code, detail: parsed.detail } : { error: parsed.code })
+  // S4-HYP-PREFILL-03: the separately entered first / last name (pre-fill only; flag OFF = ignored exactly as before)
+  let nameParts: { first: string; last: string } | null = null
+  if (isHypPrefillEnabled(deps.env)) {
+    const np = parseCustomerNameParts(orderBody, parsed.value.customerName)
+    if (!np.ok) return fail(400, 'invalid_name')
+    nameParts = np.parts
+  }
   let order = parsed.value
   if (!hypAllowedOrderTypes(deps.env).includes(order.type)) return fail(400, 'online_payment_type_not_allowed')
   if (!HYP_ALLOWED_BRANCH_IDS.includes(order.branchId)) return fail(400, 'online_payment_branch_not_allowed')
@@ -142,7 +150,7 @@ export async function handleHypStart(req: Request, deps: HypDeps): Promise<Respo
     const signReq = { orderRef: intent.hypOrderRef, amountAgorot, description: HYP_PAYMENT_DESCRIPTION }
     // S4-HYP-PREFILL-01: the customer's own validated details from the stored snapshot (flag ON only). Pre-fill is a
     // convenience and never blocks a payment: a SIGN refused / unreadable with it is signed once more without it.
-    const prefill = isHypPrefillEnabled(deps.env) ? customerPrefillFromSnapshot(snapshot) : {}
+    const prefill = isHypPrefillEnabled(deps.env) ? customerPrefillFromSnapshot(snapshot, nameParts) : {}
     let signed = await signPayment(config, Object.keys(prefill).length ? { ...signReq, customer: prefill } : signReq, { transport: deps.transport })
     if (!signed.ok && Object.keys(prefill).length && PREFILL_FALLBACK_ERRORS.includes(signed.error)) {
       deps.log('hyp_start_prefill_fallback', signed.error)

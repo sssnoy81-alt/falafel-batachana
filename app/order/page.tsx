@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { getBrowserSupabase } from '@/lib/supabaseBrowser'
 import {
-  ACTIVE_DELIVERY_AREAS, DELIVERY_FEE_RANGE, DELIVERY_FIELD_LIMITS, DELIVERY_MEAL_SURCHARGE, MAX_CUSTOMER_NAME, MAX_ITEM_NOTES, MAX_LINE_QUANTITY, PAYMENT_METHOD_LABELS, PHONE_REGEX, getDeliveryFeeForArea,
+  ACTIVE_DELIVERY_AREAS, DELIVERY_FEE_RANGE, DELIVERY_FIELD_LIMITS, DELIVERY_MEAL_SURCHARGE, MAX_ITEM_NOTES, MAX_LINE_QUANTITY, PAYMENT_METHOD_LABELS, PHONE_REGEX, getDeliveryFeeForArea,
   SET_ADDON_FREE, SET_ADDONS_PAID, SET_DRINK_EXTRA, SET_DRINKS_FREE, SET_DRINKS_PAID,
   isDealCategory, isDeliveryBranch, isDrinkCategory, isOrderType, isPaymentMethod, isSidesCategory, isToppingAllowedForItem,
   allowedPaymentMethods, normalizePhone, requiresVerifiedHouseAddress, resolvePaymentMethod, setAddonExtra, setDrinkExtra,
@@ -13,6 +13,7 @@ import {
   type PricingBreakdown, type PricingLineInput,
 } from '@/lib/pricing'
 import { getBusinessStatus } from '@/lib/hours'
+import { MAX_NAME_PART, isValidNamePart, joinCustomerName, normalizeNamePart, splitSavedFullName } from '@/lib/customerName'
 import { formatDeliveryAddress } from '@/lib/deliveryAddress'
 import DeliveryAddressPicker from './DeliveryAddressPicker'
 import Link from 'next/link'
@@ -170,10 +171,25 @@ export default function Home() {
   const [sheetNoLettuce, setSheetNoLettuce] = useState(false)
   const [sheetNotes, setSheetNotes] = useState('')
   const [sheetQty, setSheetQty] = useState(1)
-  const [customerName, setCustomerName] = useState(() => {
-    if (typeof window === 'undefined') return ''
-    return localStorage.getItem('falafel_customer_name') || ''
+  // S4-HYP-PREFILL-03: first + last name entered separately (both required); everything downstream keeps the single
+  // full name "<first> <last>". A name saved by the old single field pre-fills both boxes (first word / the rest).
+  const [savedName] = useState(() => {
+    if (typeof window === 'undefined') return { first: '', last: '' }
+    const first = localStorage.getItem('falafel_customer_first_name'), last = localStorage.getItem('falafel_customer_last_name')
+    return first !== null && last !== null ? { first, last } : splitSavedFullName(localStorage.getItem('falafel_customer_name') || '')
   })
+  const [firstName, setFirstName] = useState(savedName.first)
+  const [lastName, setLastName] = useState(savedName.last)
+  const namesValid = isValidNamePart(firstName) && isValidNamePart(lastName)
+  const customerName = namesValid ? joinCustomerName(firstName, lastName) : ''
+  // the two parts are remembered next to the full name placeOrder saves (only once an order was placed)
+  useEffect(() => {
+    if (screen !== 'tracking' || !namesValid) return
+    try {
+      localStorage.setItem('falafel_customer_first_name', normalizeNamePart(firstName))
+      localStorage.setItem('falafel_customer_last_name', normalizeNamePart(lastName))
+    } catch { /* storage unavailable */ }
+  }, [screen])   // eslint-disable-line react-hooks/exhaustive-deps
   const [orderPhone, setOrderPhone] = useState(() => {
     if (typeof window === 'undefined') return ''
     return localStorage.getItem('falafel_customer_phone') || ''
@@ -437,7 +453,7 @@ export default function Home() {
   const onlineAvailable = isOnlinePaymentAvailable(hypConfig, selectedBranch?.id, effectiveOrderType, isParcelOrder)
   const payOnline = onlineAvailable && onlineSelected
   const parcelError = parcelFormError(parcelForm)
-  const canPlaceOrder = isOpen && isValidPhone(orderPhone) && cart.length > 0 && customerName.trim().length >= 2
+  const canPlaceOrder = isOpen && isValidPhone(orderPhone) && cart.length > 0 && namesValid
     && orderTypeReady && parcelError === null && !placingOrder
 
   // Leaving delivery (pickup, back to the start) or the flag going off clears the parcel — no stale data is sent.
@@ -566,7 +582,7 @@ export default function Home() {
     }
     return {
       branchId, type,
-      customerName: customerName.trim(),
+      customerName,
       phone: normalizePhone(orderPhone),
       paymentMethod: methodFor(type),
       items,
@@ -662,12 +678,13 @@ export default function Home() {
     setPlacingOrder(true)
     let storage: Storage | null = null
     try { storage = window.sessionStorage } catch { /* unavailable */ }
-    const key = checkoutKeyFor(storage, JSON.stringify(buildHypStartBody(request, '')), () => crypto.randomUUID())
+    const names = { first: normalizeNamePart(firstName), last: normalizeNamePart(lastName) }
+    const key = checkoutKeyFor(storage, JSON.stringify(buildHypStartBody(request, '', names)), () => crypto.randomUUID())
     let outcome: HypStartOutcome
     try {
       const res = await fetch('/api/payments/hyp/start', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store', credentials: 'same-origin',
-        body: JSON.stringify(buildHypStartBody(request, key)),
+        body: JSON.stringify(buildHypStartBody(request, key, names)),
       })
       outcome = interpretStartResponse(res.status, await res.json().catch(() => null))
     } catch {
@@ -1124,9 +1141,13 @@ export default function Home() {
         )}
         <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${C.border}` }}>
           <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>👤 שם מלא</div>
-          <input type="text" value={customerName} maxLength={MAX_CUSTOMER_NAME} onChange={e => setCustomerName(e.target.value)} placeholder="שם ושם משפחה" dir="rtl"
-            style={{ width: '100%', padding: 14, border: `1px solid ${customerName.trim().length >= 2 ? C.green : C.border}`, borderRadius: 12, fontSize: 17, fontFamily: 'Heebo, sans-serif', outline: 'none', boxSizing: 'border-box', background: C.bg, color: C.white }} />
-          {customerName.length > 0 && customerName.trim().length < 2 && <div style={{ color: C.red, fontSize: 12, marginTop: 6 }}>נא להזין שם מלא</div>}
+          {([['שם פרטי', firstName, setFirstName, 'given-name'], ['שם משפחה', lastName, setLastName, 'family-name']] as const).map(([label, value, set, auto], i) => (
+            <div key={auto} style={{ marginTop: i ? 10 : 0 }}>
+              <input type="text" value={value} maxLength={MAX_NAME_PART} onChange={e => set(e.target.value)} placeholder={label} aria-label={label} autoComplete={auto} dir="rtl" required
+                style={{ width: '100%', padding: 14, border: `1px solid ${isValidNamePart(value) ? C.green : C.border}`, borderRadius: 12, fontSize: 17, fontFamily: 'Heebo, sans-serif', outline: 'none', boxSizing: 'border-box', background: C.bg, color: C.white }} />
+            </div>
+          ))}
+          {(firstName.length > 0 || lastName.length > 0) && !namesValid && <div style={{ color: C.red, fontSize: 12, marginTop: 6 }}>נא להזין שם פרטי ושם משפחה</div>}
         </div>
         <div style={{ background: C.bgCard, borderRadius: 18, padding: 20, marginBottom: 14, border: `1px solid ${C.border}` }}>
           <div style={{ fontWeight: 800, fontSize: 16, color: C.white, marginBottom: 14 }}>📱 מספר טלפון</div>

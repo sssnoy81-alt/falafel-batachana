@@ -222,7 +222,9 @@ await test('legacy order path byte-identical to the pre-HYP baseline: placeOrder
   assert.ok(fn(pageHead, 'placeOrder')); assert.equal(fn(page, 'placeOrder'), fn(pageHead, 'placeOrder'))
   // HYP-DELIVERY-02: exactly one line differs — the payment method through methodFor(), which equals
   // resolvePaymentMethod() unless telephone credit is retired for a delivery (checked below)
-  assert.equal(fnSync(page, 'buildOrderRequest').replace('      paymentMethod: methodFor(type),', '      paymentMethod: resolvePaymentMethod(type, paymentMethod),'), fnSync(pageHead, 'buildOrderRequest'))
+  assert.equal(fnSync(page, 'buildOrderRequest').replace('      paymentMethod: methodFor(type),', '      paymentMethod: resolvePaymentMethod(type, paymentMethod),')
+    .replace('      customerName,', '      customerName: customerName.trim(),'),   // S4-HYP-PREFILL-03: the full name from the two fields
+    fnSync(pageHead, 'buildOrderRequest'))
   const poll = s => s.slice(s.indexOf("    if (screen !== 'tracking' || !orderId) return"), s.indexOf('    const id = setInterval(poll, 10000)'))
   assert.equal(poll(page), poll(pageHead))
   assert.equal((page.match(/fetch\('\/api\/orders'/g) ?? []).length, 1)
@@ -252,7 +254,7 @@ await test('start path: server-priced, guarded against double click, navigates o
   assert.match(s, /setPlacingOrder\(true\)/)
   const success = s.slice(s.indexOf('try { localStorage.setItem(HYP_PENDING_PAYMENT_KEY'))
   assert.ok(success.includes('window.location.assign') && !success.includes('setPlacingOrder(false)'), 'the button stays locked while navigating')
-  assert.match(s, /body: JSON\.stringify\(buildHypStartBody\(request, key\)\)/)
+  assert.match(s, /body: JSON\.stringify\(buildHypStartBody\(request, key, names\)\)/)   // S4-HYP-PREFILL-03: + first / last name
   assert.match(s, /window\.location\.assign\(outcome\.kind === 'redirect' \? outcome\.url : `\/order\/payment\/\$\{outcome\.token\}`\)/)
   assert.ok(!/total|amount|price/i.test(s.replace(/HYP_START_MESSAGES|Storage/g, '')), 'no amount sent from the browser')
   assert.match(page, /const canPlaceOrder = isOpen && [^;]*&& !placingOrder\n/)
@@ -354,7 +356,23 @@ await test('HYP-DELIVERY-02 checkout: every change since the release is gated on
     "-    const request = buildOrderRequest(selectedBranch.id, 'pickup')",
     "-          {/* HYP-08: online card payment — rendered only when the server permits it for this branch + pickup */}",
   ]
-  assert.deepEqual([...removed].sort(), [...allowedRemoved].sort(), removed.join('\n'))
+  // S4-HYP-PREFILL-03 (owner request): the single name field became first name + last name; downstream the same full name
+  const prefill03Removed = [
+    "-  ACTIVE_DELIVERY_AREAS, DELIVERY_FEE_RANGE, DELIVERY_FIELD_LIMITS, DELIVERY_MEAL_SURCHARGE, MAX_CUSTOMER_NAME, MAX_ITEM_NOTES, MAX_LINE_QUANTITY, PAYMENT_METHOD_LABELS, PHONE_REGEX, getDeliveryFeeForArea,",
+    "-  const [customerName, setCustomerName] = useState(() => {",
+    "-    if (typeof window === 'undefined') return ''",
+    "-    return localStorage.getItem('falafel_customer_name') || ''",
+    "-  const canPlaceOrder = isOpen && isValidPhone(orderPhone) && cart.length > 0 && customerName.trim().length >= 2",
+    "-      customerName: customerName.trim(),",
+    "-    const key = checkoutKeyFor(storage, JSON.stringify(buildHypStartBody(request, '')), () => crypto.randomUUID())",
+    "-        body: JSON.stringify(buildHypStartBody(request, key)),",
+    "-          <input type=\"text\" value={customerName} maxLength={MAX_CUSTOMER_NAME} onChange={e => setCustomerName(e.target.value)} placeholder=\"שם ושם משפחה\" dir=\"rtl\"",
+    "-            style={{ width: '100%', padding: 14, border: `1px solid ${customerName.trim().length >= 2 ? C.green : C.border}`, borderRadius: 12, fontSize: 17, fontFamily: 'Heebo, sans-serif', outline: 'none', boxSizing: 'border-box', background: C.bg, color: C.white }} />",
+    "-          {customerName.length > 0 && customerName.trim().length < 2 && <div style={{ color: C.red, fontSize: 12, marginTop: 6 }}>נא להזין שם מלא</div>}",
+  ]
+  assert.deepEqual([...removed].sort(), [...allowedRemoved, ...prefill03Removed].sort(), removed.join('\n'))
+  assert.match(page, /const customerName = namesValid \? joinCustomerName\(firstName, lastName\) : ''/)
+  assert.match(page, /cart\.length > 0 && namesValid/)
   // with deliveryCreditRetired false (default, server flag off) methodFor() is resolvePaymentMethod() and the options are unchanged
   assert.match(page, /const \[deliveryCreditRetired, setDeliveryCreditRetired\] = useState\(false\)/)
   assert.match(page, /return t === 'delivery' && deliveryCreditRetired && m === 'credit' \? 'cash' : m/)

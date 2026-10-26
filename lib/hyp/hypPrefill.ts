@@ -6,6 +6,9 @@
 // Documented APISign SIGN customer parameters (developers.hyp.co.il/pay, API Actions): UserId, ClientName,
 // ClientLName, street, city, email, cell — all optional. Whether the payment page DISPLAYS them is not documented
 // (it depends on the page template); a value that is not a plain printable text is dropped, never "repaired".
+// Observed on the Production page (owner screenshots, S4-HYP-PREFILL-03): first name, last name, email, card, expiry,
+// CVV and Israeli ID are required there; mobile, address, city and ZIP optional. Email / ID / card stay for the
+// customer to enter on HYP — never sent from here.
 
 if (typeof window !== 'undefined') {
   throw new Error('lib/hyp/hypPrefill is server-only')
@@ -32,11 +35,17 @@ export interface PrefillSource {
   p_delivery?: { street?: unknown; house_number?: unknown; city?: unknown }
 }
 
-/** Customer details for the SIGN request; only fields we really have and that are valid plain text. */
-export function customerPrefillFromSnapshot(s: PrefillSource): HypCustomerPrefill {
+/** Customer details for the SIGN request; only fields we really have and that are valid plain text.
+ *  S4-HYP-PREFILL-03: `names` = the first / last name the customer entered separately (lib/customerName, checked
+ *  against the snapshot's full name by the caller); without it (an older page) the full name is split as before. */
+export function customerPrefillFromSnapshot(s: PrefillSource, names?: { first: string; last: string } | null): HypCustomerPrefill {
   const out: HypCustomerPrefill = {}
   const name = clean(s.p_order.customer_name)
-  if (name) {
+  if (names) {
+    const first = clean(names.first), last = clean(names.last)
+    if (first) out.ClientName = first
+    if (last) out.ClientLName = last
+  } else if (name) {
     const space = name.indexOf(' ')
     if (space === -1) out.ClientName = name
     else { out.ClientName = name.slice(0, space); out.ClientLName = name.slice(space + 1) }

@@ -167,7 +167,8 @@ await test('food-only request keys are unchanged (same object shape as before S4
   const m = /return \{\n\s*branchId, type,\n[\s\S]*?\.\.\.parcelWireFor\(type\)/.exec(PAGE)
   assert.ok(m, 'request builder found')
   // HYP-DELIVERY-02: methodFor(type) = resolvePaymentMethod(type, paymentMethod) unless telephone credit is retired (verify-hyp-ui)
-  for (const k of ['customerName: customerName.trim()', 'phone: normalizePhone(orderPhone)', 'paymentMethod: methodFor(type)', 'items,', "delivery: type === 'delivery' ?"])
+  // S4-HYP-PREFILL-03: customerName = joinCustomerName(first, last) (the full name, as before)
+  for (const k of ['customerName,', 'phone: normalizePhone(orderPhone)', 'paymentMethod: methodFor(type)', 'items,', "delivery: type === 'delivery' ?"])
     assert.ok(m[0].includes(k), k)
 })
 await test('parcel UI is rendered only when parcelSectionVisible (flag on + delivery); checkbox text as specified', () => {

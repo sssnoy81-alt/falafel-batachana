@@ -657,5 +657,65 @@ await test('PREFILL leaves idempotency and the return / VERIFY path untouched', 
   for (const f of ['lib/hyp/hypCapture.ts', 'api/hyp-return.js', 'lib/hyp/hypProtocol.ts']) assert.equal(execFileSync('git', ['diff', '--stat', 'origin/main', '--', f], { cwd: ROOT, encoding: 'utf8' }), '', f)
 })
 
+console.log('S4-HYP-PREFILL-03 — first / last name entered separately on the website')
+const CN = load(join(ROOT, 'lib', 'customerName.ts'))
+const CUI = load(join(ROOT, 'lib', 'hyp', 'hypCheckoutUi.ts'))
+const named = (first, last, o = {}) => HEB_BODY({ customerName: CN.joinCustomerName(first, last), customerFirstName: first, customerLastName: last, ...o })
+await test('PREFILL-03 module: join / normalize / limits; the old single saved name pre-fills the two boxes (one word → empty last name)', () => {
+  assert.equal(CN.joinCustomerName('  אנה  מריה ', ' כהן '), 'אנה מריה כהן'); assert.equal(CN.MAX_NAME_PART * 2 + 1 <= OC.MAX_CUSTOMER_NAME, true)
+  assert.equal(CN.isValidNamePart(''), false); assert.equal(CN.isValidNamePart('   '), false); assert.equal(CN.isValidNamePart('x'.repeat(CN.MAX_NAME_PART + 1)), false)
+  assert.deepEqual(CN.splitSavedFullName('דנה'), { first: 'דנה', last: '' }); assert.deepEqual(CN.splitSavedFullName('דנה בן דוד'), { first: 'דנה', last: 'בן דוד' })
+  assert.deepEqual(CN.parseCustomerNameParts({}, 'דנה'), { ok: true, parts: null })
+  assert.deepEqual(CN.parseCustomerNameParts({ customerFirstName: 'דנה', customerLastName: 'כהן' }, 'דנה כהן'), { ok: true, parts: { first: 'דנה', last: 'כהן' } })
+  for (const b of [{ customerFirstName: 'דנה' }, { customerFirstName: 'דנה', customerLastName: '' }, { customerFirstName: 'דנה', customerLastName: 'לוי' }, { customerFirstName: 1, customerLastName: 'כהן' }])
+    assert.equal(CN.parseCustomerNameParts(b, 'דנה כהן').ok, false, JSON.stringify(b))
+})
+await test('PREFILL-03 SIGN: ClientName / ClientLName exactly as typed (compound first name kept whole), UTF-8; customerName in the snapshot = the full name', async () => {
+  const db = new FakeDb(); const x = deps(db, { env: { ...ENV, HYP_PREFILL_ENABLED: 'true' }, answers: ['sign_echo'] })
+  const r = await call(S.handleHypStart, startReq(named('אנה מריה', 'כהן')), x.d); assert.equal(r.status, 200, JSON.stringify(r.json))
+  const q = signParams(x.transportCalls[0]); assert.deepEqual([q.get('ClientName'), q.get('ClientLName'), q.get('cell')], ['אנה מריה', 'כהן', PHONE_N])
+  assert.ok(x.transportCalls[0].includes('ClientName=%D7%90%D7%A0%D7%94%20%D7%9E%D7%A8%D7%99%D7%94&ClientLName=%D7%9B%D7%94%D7%9F&'))
+  for (const k of ['email', 'UserId']) assert.equal(q.has(k), false)
+  assert.equal(db.calls.find(y => y.op === 'createIntent').args.snapshot.p_order.customer_name, 'אנה מריה כהן')
+  assert.equal(JSON.stringify(db.calls.find(y => y.op === 'createIntent').args.snapshot).includes('customerFirstName'), false, 'snapshot shape unchanged')
+})
+await test('PREFILL-03 delivery + parcel: first / last name, mobile, street, city; tracking number never sent', async () => {
+  const db = new FakeDb(); const x = delDeps(db, { env: { ...PRE_ENV, PARCEL_CHECKOUT_ENABLED: 'true' } })
+  const b = delBody({ customerName: 'דנה כהן', customerFirstName: 'דנה', customerLastName: 'כהן', parcel: { trackingRef: 'RR123456789IL' } })
+  assert.equal((await call(S.handleHypStart, startReq(b), x.d)).status, 200)
+  const q = signParams(x.transportCalls[0])
+  assert.deepEqual([q.get('ClientName'), q.get('ClientLName'), q.get('cell'), q.get('street'), q.get('city')], ['דנה', 'כהן', PHONE_N, 'הרצל 1', CITY])
+})
+await test('PREFILL-03 refuses a name pair that does not match the full name (400, nothing written, no SIGN); flag OFF → ignored exactly as before', async () => {
+  for (const b of [named('דנה', 'כהן', { customerName: 'דנה לוי' }), named('דנה', ''), HEB_BODY({ customerFirstName: 'ישראל' })]) {
+    const db = new FakeDb(); const x = deps(db, { env: { ...ENV, HYP_PREFILL_ENABLED: 'true' } })
+    const r = await call(S.handleHypStart, startReq(b), x.d)
+    assert.deepEqual([r.status, r.json], [400, { error: 'invalid_name' }]); assert.equal(db.calls.length, 0); assert.equal(x.transportCalls.length, 0)
+  }
+  const off = deps(new FakeDb(), { answers: ['sign_echo'] })
+  assert.equal((await call(S.handleHypStart, startReq(named('דנה', 'כהן', { customerName: 'דנה לוי' })), off.d)).status, 200)
+  assert.deepEqual(keysOf(off.transportCalls[0]), BASE_KEYS)
+})
+await test('PREFILL-03 backward compatible: an older page (full name only) still works — split fallback; POST /api/orders parser ignores the pair', async () => {
+  const x = deps(new FakeDb(), { env: { ...ENV, HYP_PREFILL_ENABLED: 'true' }, answers: ['sign_echo'] })
+  assert.equal((await call(S.handleHypStart, startReq(HEB_BODY()), x.d)).status, 200)
+  assert.deepEqual([signParams(x.transportCalls[0]).get('ClientName'), signParams(x.transportCalls[0]).get('ClientLName')], ['ישראל', 'ישראלי'])
+  const p = OR.parseCreateOrderRequest({ branchId: B1, type: 'pickup', customerName: 'דנה כהן', customerFirstName: 'דנה', customerLastName: 'כהן', phone: PHONE, paymentMethod: 'cash', items: [{ itemId: M1, quantity: 1 }] })
+  assert.equal(p.ok, true); assert.equal(p.value.customerName, 'דנה כהן'); assert.equal('customerFirstName' in p.value, false)
+  // the browser start body: the pair only when given; without it exactly the previous keys
+  const req = { branchId: B1, type: 'pickup', customerName: 'דנה כהן', phone: PHONE_N, paymentMethod: 'cash', items: [] }
+  assert.deepEqual(Object.keys(CUI.buildHypStartBody(req, 'k')), ['checkoutKey', 'branchId', 'type', 'customerName', 'phone', 'items'])
+  assert.deepEqual(CUI.buildHypStartBody(req, 'k', { first: 'דנה', last: 'כהן' }), { checkoutKey: 'k', branchId: B1, type: 'pickup', customerName: 'דנה כהן', phone: PHONE_N, items: [], customerFirstName: 'דנה', customerLastName: 'כהן' })
+})
+await test('PREFILL-03 order page: two required fields, full name = "<first> <last>", placeOrder and POST /api/orders body unchanged', () => {
+  const page = src('app/order/page.tsx')
+  assert.match(page, /\['שם פרטי', firstName, setFirstName, 'given-name'\], \['שם משפחה', lastName, setLastName, 'family-name'\]/)
+  assert.match(page, /maxLength=\{MAX_NAME_PART\}[^\n]*required/)
+  assert.match(page, /const customerName = namesValid \? joinCustomerName\(firstName, lastName\) : ''/)
+  assert.match(page, /cart\.length > 0 && namesValid/)
+  assert.ok(!/email|UserId|teudat|ת\.ז|תעודת זהות/i.test(page.slice(page.indexOf('👤 שם מלא'), page.indexOf('📱 מספר טלפון'))), 'no email / ID on our site')
+  assert.equal((page.match(/buildHypStartBody\(request, [^)]*names\)/g) ?? []).length, 2)
+})
+
 console.log(`\n${passed}/${passed + failed} PASS${failed ? ` — ${failed} FAILED` : ''}`)
 process.exit(failed ? 1 : 0)

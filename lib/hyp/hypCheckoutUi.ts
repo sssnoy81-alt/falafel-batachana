@@ -45,11 +45,14 @@ export function parseDeliveryCreditRetired(json: unknown): boolean {
 }
 
 /** The start body: the same order intent as POST /api/orders, without the payment method. Pickup: exactly the five
- *  fields as before; delivery (HYP-DELIVERY-02) adds the delivery address and, when attached, the parcel. */
-export function buildHypStartBody(request: CreateOrderRequest, checkoutKey: string) {
+ *  fields as before; delivery (HYP-DELIVERY-02) adds the delivery address and, when attached, the parcel.
+ *  S4-HYP-PREFILL-03: `names` (the separately entered first / last name; customerName = "<first> <last>") adds
+ *  customerFirstName / customerLastName for the payment-page pre-fill. */
+export function buildHypStartBody(request: CreateOrderRequest, checkoutKey: string, names?: { first: string; last: string }) {
   const { branchId, type, customerName, phone, items } = request
-  if (type !== 'delivery') return { checkoutKey, branchId, type, customerName, phone, items }
-  return { checkoutKey, branchId, type, customerName, phone, items, delivery: request.delivery, ...(request.parcel ? { parcel: request.parcel } : {}) }
+  const n = names ? { customerFirstName: names.first, customerLastName: names.last } : {}
+  if (type !== 'delivery') return { checkoutKey, branchId, type, customerName, phone, items, ...n }
+  return { checkoutKey, branchId, type, customerName, phone, items, ...n, delivery: request.delivery, ...(request.parcel ? { parcel: request.parcel } : {}) }
 }
 
 export interface KeyStorage { getItem(k: string): string | null; setItem(k: string, v: string): void; removeItem(k: string): void }
