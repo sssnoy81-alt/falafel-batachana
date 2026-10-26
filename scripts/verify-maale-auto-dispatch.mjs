@@ -51,8 +51,8 @@ const NOW = Date.parse('2026-10-25T12:00:00.000Z')
 const iso = ms => new Date(ms).toISOString()
 
 /* ─── in-memory queue (mirrors the s4_05 guard) + worker deps ─── */
-function world({ task = {}, order = {}, dispatch, block = null, blockThrows = false, loadThrows = false } = {}) {
-  const st = { now: NOW, dispatchCalls: 0, logs: [], scopes: [],
+function world({ task = {}, order = {}, dispatch, block = null, blockThrows = false, loadThrows = false, repair } = {}) {
+  const st = { now: NOW, dispatchCalls: 0, logs: [], scopes: [], repairs: [],
     task: task === null ? null : { order_id: ORDER, branch_id: B1, state: 'queued', reason_code: null, attempts: 0, enqueued_at: iso(NOW - 60_000), claimed_at: null, ...task },
     order: order === null ? null : { id: ORDER, branch_id: B1, status: 'confirmed', type: 'delivery', delivery_fee: 20, ...order } }
   const FINAL = ['dispatched', 'manual', 'investigate', 'skipped']
@@ -83,10 +83,21 @@ function world({ task = {}, order = {}, dispatch, block = null, blockThrows = fa
     async loadOrder() { if (loadThrows) throw new Error('db'); return st.order ? { ...st.order } : null },
     ...(block !== undefined ? { async dispatchBlockingRecord() { if (blockThrows) throw new Error('ledger'); return block } } : {}),
     async dispatch() { st.dispatchCalls++; await tick(); if (typeof dispatch === 'function') return dispatch(); return dispatch ?? { ok: true, outcome: 'sent', kind: 'created' } },
+    // S4-MAALE-02 repair, mirroring enqueue_missing_maale_auto_dispatch: check-and-insert without an await between
+    // (= PK + ON CONFLICT DO NOTHING); the task is dated with the order's created_at
+    ...(repair ? { async repairMissing(scope) {
+      st.repairs.push(scope); await tick()
+      if (repair.throws) throw new Error('db')
+      const o = st.order
+      if (st.task || !o || o.type !== 'delivery' || !['confirmed', 'preparing'].includes(o.status) || (scope && !scope.includes(o.branch_id))) return 0
+      st.task = { order_id: ORDER, branch_id: o.branch_id, state: 'queued', reason_code: 'repaired', attempts: 0, enqueued_at: iso(repair.createdAt ?? NOW - 60_000), claimed_at: null }
+      return 1
+    } } : {}),
     now: () => st.now,
     log: c => st.logs.push(c),
   }
-  return { st, deps, run: () => A.runAutoDispatch(deps, ORDER), sweep: scope => A.sweepAutoDispatch(deps, scope ?? null) }
+  return { st, deps, run: () => A.runAutoDispatch(deps, ORDER), sweep: scope => A.sweepAutoDispatch(deps, scope ?? null),
+           afterConfirm: scope => A.runAutoDispatchAfterConfirmation(deps, ORDER, scope ?? null) }
 }
 
 console.log('P) Found parcel travels with the food (MAALE_PARCEL_DISPATCH_ENABLED)')
@@ -234,6 +245,63 @@ await test('W11. sweep: only due tasks, in the caller\'s branch scope, oldest fi
   assert.equal(A.AUTO_DISPATCH_SWEEP_LIMIT, 5)
 })
 
+console.log('E) Enqueue failure never costs a confirmation (S4-MAALE-02)')
+
+await test('W12. confirmation committed without a task (enqueue failed) → after(): repair in the session scope, then ONE dispatch', async () => {
+  const w = world({ task: null, repair: {} })
+  assert.deepEqual(await w.afterConfirm([B1]), { result: 'finished', state: 'dispatched', reason: null })
+  assert.deepEqual(w.st.repairs, [[B1]]); assert.equal(w.st.dispatchCalls, 1); assert.equal(w.st.task.attempts, 1)
+  assert.ok(w.st.logs.includes('auto_dispatch_repaired'))
+  const queued = world({ repair: {} }); await queued.afterConfirm([B1]); assert.deepEqual(queued.st.repairs, [], 'a normal enqueue needs no repair')
+})
+await test('W13. repair unavailable → nothing sent, task stays missing for the next sweep; the sweep still processes due tasks', async () => {
+  const w = world({ task: null, repair: { throws: true } })
+  assert.deepEqual(await w.afterConfirm([B1]), { result: 'not_queued' }); assert.equal(w.st.dispatchCalls, 0); assert.ok(w.st.logs.includes('auto_dispatch_repair_failed'))
+  const s = world({ repair: { throws: true } }); assert.deepEqual(await s.sweep([B1]), { processed: 1, finished: 1 }); assert.equal(s.st.dispatchCalls, 1)
+  const fix = world({ task: null, repair: {} }); assert.deepEqual(await fix.sweep([B1]), { processed: 1, finished: 1 }); assert.equal(fix.st.dispatchCalls, 1)
+})
+await test('W14. repaired task of an OLD order (created 40 min ago) → skipped:stale, no courier; the kitchen sees a warning + manual button', async () => {
+  const w = world({ task: null, repair: { createdAt: NOW - 40 * 60_000 } })
+  assert.deepEqual(await w.afterConfirm([B1]), { result: 'finished', state: 'skipped', reason: 'stale' }); assert.equal(w.st.dispatchCalls, 0)
+  const line = UI.autoDispatchLine({ state: 'skipped', reason: 'stale' })
+  assert.deepEqual(line, { text: 'לא הוזמן שליח אוטומטית (עבר זמן רב מאישור ההזמנה)', tone: 'warn' })
+  const order = { type: 'delivery', status: 'confirmed', paymentMethod: 'cash', totalPrice: 73, parcel: null, dispatch: null,
+    delivery: { address: 'מעלה אדומים, הגעש 6', courierNotes: null, mealQuantity: 1, mealSurcharge: 4, deliveryFee: 20 } }
+  assert.equal(UI.isDispatchButtonVisible({ ...order, autoDispatch: { state: 'skipped', reason: 'stale' } }, undefined), true)
+})
+await test('W15. missing task + 8 concurrent paths (after() + sweeps from several tablets) → ONE task, ONE dispatch', async () => {
+  const w = world({ task: null, repair: {} })
+  await Promise.all([w.afterConfirm([B1]), ...Array.from({ length: 7 }, () => w.sweep([B1]))])
+  assert.equal(w.st.dispatchCalls, 1); assert.equal(w.st.task.state, 'dispatched')
+  const scoped = world({ task: null, repair: {} }); await scoped.sweep(['f1e2d3c4-b5a6-4978-8a9b-0c1d2e3f4a5b'])
+  assert.equal(scoped.st.task, null, 'another branch never repairs this order'); assert.equal(scoped.st.dispatchCalls, 0)
+})
+
+console.log('C) The two delivery flows end to end: queue → worker → real dispatch service (every gate) → fake Maale')
+
+await test('C1. food only: received → confirmed → task → ONE Maale order (cash collection, stored fee, food items); repeat / sweep = nothing more', async () => {
+  const m = dispatchSetup(null, false)
+  const w = world({ dispatch: () => m.run() })
+  assert.deepEqual(await w.run(), { result: 'finished', state: 'dispatched', reason: null })
+  assert.equal(m.quotes.length, 1); assert.equal(m.sends.length, 1)
+  const p = m.sends[0]
+  assert.equal(p.payment_method, 'cash'); assert.equal(p.external_order_id, ORDER)
+  assert.ok(Array.isArray(p.items) && p.items.length === 2)
+  assert.deepEqual(await w.run(), { result: 'busy' }); await w.sweep([B1]); assert.equal(m.sends.length, 1, 'never a second Maale order')
+})
+await test('C2. food + FOUND parcel: with MAALE_PARCEL_DISPATCH_ENABLED → ONE Maale order (same food payload); flag OFF → manual, nothing sent', async () => {
+  const on = dispatchSetup('found', true), w = world({ dispatch: () => on.run() })
+  assert.deepEqual(await w.run(), { result: 'finished', state: 'dispatched', reason: null }); assert.equal(on.sends.length, 1)
+  const food = dispatchSetup(null, false); await food.run()
+  assert.deepEqual(on.sends[0], food.sends[0], 'same food payload as a food-only order (no parcel line — item line not implemented)')
+  const off = dispatchSetup('found', false), w2 = world({ dispatch: () => off.run() })
+  assert.deepEqual(await w2.run(), { result: 'finished', state: 'manual', reason: 'parcel_manual_dispatch_required' })
+  assert.equal(off.sends.length + off.quotes.length, 0)
+  assert.equal(UI.autoDispatchLine({ state: 'manual', reason: 'parcel_manual_dispatch_required' }).text, 'לא הוזמן אוטומטית — יש להזמין שליח ידנית (יש חבילה בהזמנה)')
+  const unresolved = dispatchSetup('awaiting_search', true), w3 = world({ dispatch: () => unresolved.run() })
+  assert.equal((await w3.run()).state, 'manual'); assert.equal(unresolved.sends.length, 0, 'a parcel not yet found is never dispatched')
+})
+
 console.log('R) Routes, read model and kitchen display')
 
 const { NextRequest } = require('next/server')
@@ -258,10 +326,11 @@ await test('R1. sweep route: flag off → 404 before session or DB; CSRF → 400
 })
 await test('R2. status route: worker scheduled with after() ONLY for a successful → confirmed with the flag; response unchanged', () => {
   const s = src('app/api/kitchen/orders/[id]/status/route.ts')
-  assert.match(s, /if \(result\.value\.status === 'confirmed' && isAutoDispatchEnabled\(process\.env\)\) \{\n\s+after\(async \(\) => \{/)
+  assert.match(s, /if \(result\.value\.status === 'confirmed' && isAutoDispatchEnabled\(process\.env\)\) \{\n[^\n]*\n\s+const scope = auth\.session\.role === 'admin' \? null : auth\.session\.branchId \? \[auth\.session\.branchId\] : \[\]\n\s+after\(async \(\) => \{/)
   assert.ok(s.indexOf("if (!result.ok) return json({ error: result.error }, result.status)") < s.indexOf('after(async'), 'only after a successful transition')
   assert.match(s, /\}\n\s+return json\(result\.value\)/)
-  assert.equal((s.match(/runAutoDispatch\(/g) || []).length, 1)
+  assert.equal((s.match(/runAutoDispatchAfterConfirmation\(productionAutoDispatchDeps\(\), id, scope\)/g) || []).length, 1)
+  assert.equal((s.match(/runAutoDispatch\(/g) || []).length, 0, 'only the repair-aware run')
   assert.ok(!/maale_auto_dispatch_queue/.test(s), 'the route never writes the queue — the database trigger enqueues atomically')
 })
 await test('R3. read model: queue embed only with the flag; normalization is field-by-field and fails closed', () => {
@@ -291,6 +360,14 @@ await test('R4. kitchen display: statuses queued / sending / sent / manual / inv
   for (const s of ['manual', 'skipped']) assert.equal(UI.isDispatchButtonVisible({ ...order, autoDispatch: { state: s, reason: 'x' } }, undefined), true, s)
   assert.equal(UI.needsAutoDispatchSweep([{ autoDispatch: { state: 'dispatched' } }, {}]), false)
   assert.equal(UI.needsAutoDispatchSweep([{ autoDispatch: { state: 'queued' } }]), true)
+  // S4-MAALE-02: a confirmed / preparing delivery with neither task nor courier record → sweep (its repair) runs
+  for (const status of ['confirmed', 'preparing']) assert.equal(UI.needsAutoDispatchSweep([{ type: 'delivery', status, dispatch: null, autoDispatch: null }]), true, status)
+  for (const o of [{ type: 'delivery', status: 'confirmed', dispatch: { status: 'sent' }, autoDispatch: null },     // courier exists
+                   { type: 'delivery', status: 'confirmed', dispatch: null },                                     // feature off: key absent
+                   { type: 'delivery', status: 'received', dispatch: null, autoDispatch: null },
+                   { type: 'delivery', status: 'ready', dispatch: null, autoDispatch: null },
+                   { type: 'pickup', status: 'confirmed', dispatch: null, autoDispatch: null }])
+    assert.equal(UI.needsAutoDispatchSweep([o]), false, JSON.stringify(o))
   const page = src('app/dashboard/orders/page.tsx')
   assert.match(page, /kitchenPost\('\/api\/kitchen\/dispatch\/sweep', \{\}\)/); assert.match(page, /res\.status === 404\) \{ sweepOff\.current = true/)
 })

@@ -63,6 +63,11 @@ export function productionAutoDispatchDeps(): AutoDispatchDeps {
       ...defaultDispatchDeps(),
       consumeQuoteSlot: (id, branchId) => consumeQuoteSlotRpc(supabase, id, branchId, AUTO_DISPATCH_ACTOR),
     }),
+    async repairMissing(branchIds) {
+      const { data, error } = await supabase.rpc('enqueue_missing_maale_auto_dispatch', { p_branch_ids: branchIds ? [...branchIds] : null })
+      if (error) throw new Error(`repair ${code(error)}`)
+      return typeof data === 'number' ? data : 0
+    },
     now: () => Date.now(),
     log,
   }

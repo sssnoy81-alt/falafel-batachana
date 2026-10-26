@@ -69,6 +69,7 @@ try {
     CREATE TABLE public.branches (id uuid PRIMARY KEY, name text NOT NULL);
     CREATE TABLE public.orders (id uuid PRIMARY KEY, branch_id uuid NOT NULL REFERENCES public.branches(id), type text NOT NULL,
       status text NOT NULL DEFAULT 'received', payment_method text NOT NULL DEFAULT 'cash', parcel_ready boolean NOT NULL DEFAULT true,
+      created_at timestamptz NOT NULL DEFAULT now(),
       CONSTRAINT orders_status_check CHECK (status IN ('received', 'confirmed', 'preparing', 'ready', 'delivered', 'cancelled')));
     CREATE TABLE public.delivery_dispatches (order_id uuid PRIMARY KEY REFERENCES public.orders(id), external_order_id text NOT NULL,
       status text NOT NULL DEFAULT 'pending', attempts integer NOT NULL DEFAULT 0);
@@ -99,7 +100,7 @@ try {
   })
   await test('P2. install + verify: every row PASS; config starts OFF; nothing enqueued for orders confirmed before install', () => {
     psql(read('s4_05_maale_auto_dispatch_queue.sql'))
-    const v = rows(read('s4_05_verify.sql')); allPass(v, 'verify'); assert.equal(v.length, 13)
+    const v = rows(read('s4_05_verify.sql')); allPass(v, 'verify'); assert.equal(v.length, 16)
     assert.equal(v.find(x => x[0] === '09')[3], 'enqueue_enabled=false')
     assert.equal(tasks(), 0)
   })
@@ -133,11 +134,12 @@ try {
     assert.equal(ostatus(oid(6)), 'received'); assert.equal(task(oid(6)), '')
     psql(`UPDATE public.orders SET parcel_ready = true WHERE id = '${oid(6)}';`); confirm(oid(6)); assert.equal(task(oid(6)), 'queued/0/-')
   })
-  await test('Q5. atomic: when the task cannot be written, the confirmation is rolled back (no silent loss)', () => {
+  await test('Q5. S4-MAALE-02: when the task cannot be written, the confirmation STILL commits (no reconfirmation); the repair covers it (E2–E5)', () => {
     psql('ALTER TABLE public.maale_auto_dispatch_queue ADD CONSTRAINT fixture_block CHECK (false) NOT VALID;')
-    assert.match(confirm(oid(7), { expectError: true }), /fixture_block/)
-    assert.equal(ostatus(oid(7)), 'received'); assert.equal(task(oid(7)), '')
-    psql('ALTER TABLE public.maale_auto_dispatch_queue DROP CONSTRAINT fixture_block;'); confirm(oid(7)); assert.equal(task(oid(7)), 'queued/0/-')
+    confirm(oid(7))
+    assert.equal(ostatus(oid(7)), 'confirmed'); assert.equal(task(oid(7)), '')
+    psql('ALTER TABLE public.maale_auto_dispatch_queue DROP CONSTRAINT fixture_block;')
+    psql(`UPDATE public.orders SET status = 'received' WHERE id = '${oid(7)}';`); confirm(oid(7)); assert.equal(task(oid(7)), 'queued/0/-')
   })
   await test('Q6. idempotent: a second confirmation of the same order (back to received by the owner) never duplicates the task', () => {
     psql(`UPDATE public.orders SET status = 'received' WHERE id = '${oid(7)}';`); confirm(oid(7))
@@ -206,6 +208,68 @@ try {
     assert.equal(fingerprint(unrelated), dispatchBefore)
     assert.match(psql(`DELETE FROM public.orders WHERE id = '${oid(2)}';`, { expectError: true }), /maale_auto_dispatch_queue_order_fk/)
   })
+  /* ─── S4-MAALE-02: an enqueue failure never costs a confirmation; the repair re-creates the task ─── */
+  const B2 = 'b2b2b2b2-0000-4000-8000-000000000002'
+  const ordersFp = () => fingerprint('SELECT string_agg(o::text, \',\' ORDER BY o.id) FROM public.orders o')
+  const newOrder = (n, { type = 'delivery', branch = B1, status = 'received' } = {}) =>
+    psql(`INSERT INTO public.orders (id, branch_id, type, status, created_at) VALUES ('${oid(n)}', '${branch}', '${type}', '${status}', now());`)
+  const repair = (scope = 'NULL', role = 'service_role') => psql(`SELECT public.enqueue_missing_maale_auto_dispatch(${scope});`, { role })
+  const cfgRow = () => psql("SELECT enqueue_enabled || '/' || (enabled_at IS NOT NULL) FROM public.maale_auto_dispatch_config;")
+
+  await test('E1. config guard: enabled_at set when turned on, NULL while off, kept on a repeated "on"; singleton immutable', () => {
+    enable(false); assert.equal(cfgRow(), 'false/false')
+    enable(true); assert.equal(cfgRow(), 'true/true')
+    const at = psql('SELECT enabled_at FROM public.maale_auto_dispatch_config;')
+    enable(true); assert.equal(psql('SELECT enabled_at FROM public.maale_auto_dispatch_config;'), at, 'a repeated "on" keeps the original moment')
+    assert.match(psql('UPDATE public.maale_auto_dispatch_config SET singleton = false;', { expectError: true }), /singleton/)
+  })
+  await test('E2. enqueue failure (forced) → the kitchen confirmation STILL commits; no task; a code-only WARNING', () => {
+    newOrder(81)
+    psql('ALTER TABLE public.maale_auto_dispatch_queue ADD CONSTRAINT s4_05_test_force_fail CHECK (order_id IS NULL) NOT VALID;')
+    const r = docker(['exec', '-i', NAME, 'psql', '-X', '-q', '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-At'],
+      `SET ROLE service_role;\nUPDATE public.orders SET status = 'confirmed' WHERE id = '${oid(81)}' AND status = 'received';`)
+    assert.equal(r.code, 0, r.err); assert.match(r.err, /maale_auto_dispatch_enqueue_failed sqlstate=23514/)
+    assert.ok(!r.err.includes(oid(81)), 'the warning carries no order data')
+    psql('ALTER TABLE public.maale_auto_dispatch_queue DROP CONSTRAINT s4_05_test_force_fail;')
+    assert.equal(ostatus(oid(81)), 'confirmed'); assert.equal(task(oid(81)), '')
+  })
+  await test('E3. repair re-creates exactly that task (queued, reason repaired, enqueued_at = order created_at); idempotent', () => {
+    assert.equal(repair(), '1')
+    assert.equal(task(oid(81)), 'queued/0/repaired')
+    assert.equal(psql(`SELECT q.enqueued_at = o.created_at FROM public.maale_auto_dispatch_queue q JOIN public.orders o ON o.id = q.order_id WHERE q.order_id = '${oid(81)}';`), 't')
+    assert.equal(repair(), '0'); assert.equal(repair(), '0')
+  })
+  await test('E4. repair never reaches: orders created before the switch, a courier-owned order, pickup, received / ready, another branch, switch off', () => {
+    psql(`INSERT INTO public.branches VALUES ('${B2}', 'other');`)
+    // delivery orders confirmed earlier (before install / while off) — created before enabled_at
+    assert.equal(task(oid(71)), ''); assert.equal(task(oid(1)), '')
+    // courier already requested (delivery_dispatches row) — confirmed while off, then re-dated after enabled_at
+    enable(false); psql(`UPDATE public.orders SET status = 'confirmed' WHERE id = '${oid(75)}';`); enable(true)
+    psql(`UPDATE public.orders SET created_at = now() WHERE id = '${oid(75)}';`)
+    newOrder(82, { type: 'pickup', status: 'confirmed' }); newOrder(83, { status: 'received' }); newOrder(84, { status: 'ready' })
+    newOrder(85, { status: 'confirmed', branch: B2 })
+    assert.equal(repair(`ARRAY['${B1}']::uuid[]`), '0', 'own branch: nothing eligible')
+    for (const n of [71, 1, 75, 82, 83, 84, 85]) assert.equal(task(oid(n)), '', String(n))
+    enable(false); assert.equal(repair(), '0', 'switch off → never')
+    enable(true); assert.equal(repair(`ARRAY['${B2}']::uuid[]`), '0', 're-enabling moves enabled_at: the order (created before it) is no longer covered')
+    psql(`UPDATE public.orders SET created_at = now() WHERE id = '${oid(85)}';`)
+    assert.equal(repair(`ARRAY['${B1}']::uuid[]`), '0'); assert.equal(repair(`ARRAY['${B2}']::uuid[]`), '1'); assert.equal(task(oid(85)), 'queued/0/repaired')
+    assert.equal(repair("ARRAY[]::uuid[]"), '0')
+  })
+  await test('E5. CONCURRENCY: 8 simultaneous repairs (sweeps / after()) over 5 missing tasks → exactly 5 tasks, no error', async () => {
+    enable(false); for (const n of [86, 87, 88, 89, 90]) newOrder(n, { status: 'confirmed' }); enable(true)
+    psql(`UPDATE public.orders SET created_at = now() WHERE id IN (${[86, 87, 88, 89, 90].map(n => `'${oid(n)}'`).join(',')});`)
+    const before = tasks()
+    const rs = await Promise.all(Array.from({ length: 8 }, () => psqlAsync('SELECT public.enqueue_missing_maale_auto_dispatch(NULL);', 'service_role')))
+    for (const r of rs) assert.equal(r.code, 0, r.err)
+    assert.equal(rs.reduce((n, r) => n + Number(r.out), 0), 5); assert.equal(tasks(), before + 5)
+    for (const n of [86, 87, 88, 89, 90]) assert.equal(task(oid(n)), 'queued/0/repaired')
+  })
+  await test('E6. repair: service_role only; never changes an order or a delivery_dispatches row', () => {
+    for (const role of ['anon', 'authenticated']) assert.match(as('SELECT public.enqueue_missing_maale_auto_dispatch(NULL);', role), /permission denied/)
+    const o = ordersFp(); assert.equal(repair(), '0'); assert.equal(ordersFp(), o); assert.equal(fingerprint(unrelated), dispatchBefore)
+  })
+
   await test('R1. rollback refuses without confirmation, while tasks are queued / processing, and without the export confirmation', () => {
     assert.match(psql(read('s4_05_rollback.sql'), { expectError: true }), /not confirmed/)
     assert.match(psql("SET s4_05.confirm_rollback = 'DROP-AUTO-DISPATCH-QUEUE';\n" + read('s4_05_rollback.sql'), { expectError: true }), /still queued \/ processing/)
@@ -218,7 +282,7 @@ try {
     const ordersBefore = fingerprint('SELECT string_agg(o::text, \',\' ORDER BY o.id) FROM public.orders o')
     psql("SET s4_05.confirm_rollback = 'DROP-AUTO-DISPATCH-QUEUE';\nSET s4_05.confirm_history_exported = 'yes';\n" + read('s4_05_rollback.sql'))
     assert.equal(psql("SELECT count(*) FROM pg_class WHERE relname IN ('maale_auto_dispatch_queue', 'maale_auto_dispatch_config');"), '0')
-    assert.equal(psql("SELECT count(*) FROM pg_proc WHERE proname IN ('orders_enqueue_maale_auto_dispatch', 'maale_auto_dispatch_queue_guard');"), '0')
+    assert.equal(psql("SELECT count(*) FROM pg_proc WHERE proname IN ('orders_enqueue_maale_auto_dispatch', 'maale_auto_dispatch_queue_guard', 'enqueue_missing_maale_auto_dispatch', 'maale_auto_dispatch_config_guard');"), '0')
     assert.equal(psql("SELECT count(*) FROM pg_trigger WHERE tgname = 'orders_enqueue_maale_auto_dispatch';"), '0')
     assert.equal(fingerprint('SELECT string_agg(o::text, \',\' ORDER BY o.id) FROM public.orders o'), ordersBefore)
     assert.equal(fingerprint(unrelated), dispatchBefore)

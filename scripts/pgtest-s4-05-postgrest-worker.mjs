@@ -95,7 +95,7 @@ try {
   /* fixture shaped like Production (orders.type, deliveries one-to-one, delivery_dispatches) + s4_05 */
   psql(`CREATE TABLE public.branches (id uuid PRIMARY KEY, name text NOT NULL);
     CREATE TABLE public.orders (id uuid PRIMARY KEY, branch_id uuid NOT NULL REFERENCES public.branches(id), type text NOT NULL, status text NOT NULL DEFAULT 'received',
-      customer_name text, phone text);
+      customer_name text, phone text, created_at timestamptz NOT NULL DEFAULT now());
     CREATE TABLE public.deliveries (order_id uuid PRIMARY KEY REFERENCES public.orders(id), delivery_fee numeric(10,2) NOT NULL, address text);
     CREATE TABLE public.delivery_dispatches (order_id uuid PRIMARY KEY REFERENCES public.orders(id), external_order_id text NOT NULL, status text NOT NULL DEFAULT 'pending', attempts integer NOT NULL DEFAULT 0);
     ALTER TABLE public.orders ENABLE ROW LEVEL SECURITY; ALTER TABLE public.deliveries ENABLE ROW LEVEL SECURITY; ALTER TABLE public.delivery_dispatches ENABLE ROW LEVEL SECURITY;
@@ -210,6 +210,24 @@ try {
     assert.equal((await c.from('maale_auto_dispatch_config').update({ enqueue_enabled: false }).eq('singleton', true)).error?.code, '42501')
     const anon = createClient('http://worker.invalid', jwt('anon'), { auth: { persistSession: false, autoRefreshToken: false }, global: { fetch: containerFetch } })
     assert.equal((await anon.from('maale_auto_dispatch_queue').select('order_id')).error?.code, '42501')
+  })
+
+  await test('Q13. S4-MAALE-02 repair through PostgREST (uuid[] / null args): missing task of a committed confirmation → re-created once → ONE dispatch', async () => {
+    // a confirmed delivery order WITHOUT a task = what a failed enqueue leaves behind
+    psql(`INSERT INTO public.orders (id, branch_id, type, status, customer_name, phone, created_at) VALUES ('${oid(51)}', '${B1}', 'delivery', 'confirmed', 'fixture', '0500000000', now());
+          INSERT INTO public.deliveries (order_id, delivery_fee, address) VALUES ('${oid(51)}', 20, 'x');`)
+    assert.equal(task(oid(51)), '')
+    const d = deps(), before = dispatchCalls
+    assert.equal(await d.repairMissing([B2]), 0, 'another branch never repairs it')
+    assert.equal(await d.repairMissing([B1]), 1); assert.equal(task(oid(51)), 'queued/0/repaired')
+    assert.equal(await d.repairMissing(null), 0, 'idempotent')
+    const sentFor = []   // the sweeps may also finish other fixture tasks: count the provider calls per order
+    const rec = () => deps({ dispatch: async id => { sentFor.push(id); return { ok: true, outcome: 'sent', kind: 'created' } } })
+    await Promise.all([A.runAutoDispatchAfterConfirmation(rec(), oid(51), [B1]), A.sweepAutoDispatch(rec(), [B1]), A.sweepAutoDispatch(rec(), null)])
+    assert.equal(sentFor.filter(id => id === oid(51)).length, 1, 'ONE provider call for the repaired order'); assert.equal(task(oid(51)), 'dispatched/1/-')
+    assert.equal(dispatchCalls, before)
+    const anon = createClient('http://worker.invalid', jwt('anon'), { auth: { persistSession: false, autoRefreshToken: false }, global: { fetch: containerFetch } })
+    assert.equal((await anon.rpc('enqueue_missing_maale_auto_dispatch', { p_branch_ids: null })).error?.code, '42501')
   })
 
   console.log(`\nAll ${passed} isolated PostgREST worker checks passed (internal network ${NET}).`)

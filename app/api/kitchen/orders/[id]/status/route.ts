@@ -5,7 +5,7 @@ import { changeOrderStatus, isUuid, ParcelNotReadyError, ParcelStateRejectedErro
 import { parcelStatusFromEmbed } from '@/lib/parcelRequest'
 import { sendReadyPush } from '@/lib/push'
 import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
-import { isAutoDispatchEnabled, runAutoDispatch } from '@/lib/kitchenAutoDispatch'
+import { isAutoDispatchEnabled, runAutoDispatchAfterConfirmation } from '@/lib/kitchenAutoDispatch'
 import { productionAutoDispatchDeps } from '@/lib/kitchenAutoDispatchServer'
 
 // PATCH /api/kitchen/orders/[id]/status — { status }
@@ -21,7 +21,8 @@ import { productionAutoDispatchDeps } from '@/lib/kitchenAutoDispatchServer'
 // maintained by the app or by an active trigger) — this route preserves that behavior exactly.
 // S4-MAALE-03: received → confirmed of a delivery order is queued for an automatic courier request BY THE DATABASE, in
 // the same transaction (s4_05 trigger, switch public.maale_auto_dispatch_config). With MAALE_AUTO_DISPATCH_ENABLED the
-// worker runs AFTER the response (the kitchen never waits for Maale); a lost run is picked up by the dashboard sweep
+// worker runs AFTER the response (the kitchen never waits for Maale); a lost run or a failed enqueue (S4-MAALE-02:
+// the confirmation still commits) is picked up by the repair + dashboard sweep
 // (POST /api/kitchen/dispatch/sweep). The response is unchanged.
 
 const NO_STORE = { 'Cache-Control': 'no-store' }
@@ -69,8 +70,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
     if (!result.ok) return json({ error: result.error }, result.status)
     if (result.value.status === 'confirmed' && isAutoDispatchEnabled(process.env)) {
+      // S4-MAALE-02: a missing task (enqueue failed) is repaired in the session's branch scope, then run once more.
+      const scope = auth.session.role === 'admin' ? null : auth.session.branchId ? [auth.session.branchId] : []
       after(async () => {
-        try { await runAutoDispatch(productionAutoDispatchDeps(), id) } catch { console.warn('kitchen auto dispatch: run_failed') }
+        try { await runAutoDispatchAfterConfirmation(productionAutoDispatchDeps(), id, scope) } catch { console.warn('kitchen auto dispatch: run_failed') }
       })
     }
     return json(result.value)

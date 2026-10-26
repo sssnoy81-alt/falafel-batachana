@@ -13,10 +13,11 @@ keyed AS (
 checks (check_id, check_name, ok, detail) AS (
   SELECT '01', 'public.orders exists', to_regclass('public.orders') IS NOT NULL, ''
   UNION ALL
-  SELECT '02', 'orders.id uuid, status text, type text, branch_id uuid',
-         (SELECT count(*) FROM col WHERE (column_name, data_type) IN (('id', 'uuid'), ('status', 'text'), ('type', 'text'), ('branch_id', 'uuid'))) = 4,
+  SELECT '02', 'orders.id uuid, status text, type text, branch_id uuid, created_at timestamptz',
+         (SELECT count(*) FROM col WHERE (column_name, data_type) IN (('id', 'uuid'), ('status', 'text'), ('type', 'text'), ('branch_id', 'uuid'),
+                                                                       ('created_at', 'timestamp with time zone'))) = 5,
          COALESCE((SELECT string_agg(column_name || ':' || data_type, ', ' ORDER BY column_name) FROM col
-                    WHERE column_name IN ('id', 'status', 'type', 'branch_id')), 'missing')
+                    WHERE column_name IN ('id', 'status', 'type', 'branch_id', 'created_at')), 'missing')
   UNION ALL
   SELECT '03', 'orders(id) is a primary / unique key (FK target)', EXISTS (SELECT 1 FROM keyed), ''
   UNION ALL
@@ -27,7 +28,8 @@ checks (check_id, check_name, ok, detail) AS (
   UNION ALL
   SELECT '06', 's4_05 functions / trigger do not exist yet',
          NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public'
-                      AND p.proname IN ('orders_enqueue_maale_auto_dispatch', 'maale_auto_dispatch_queue_guard'))
+                      AND p.proname IN ('orders_enqueue_maale_auto_dispatch', 'maale_auto_dispatch_queue_guard',
+                                        'enqueue_missing_maale_auto_dispatch', 'maale_auto_dispatch_config_guard'))
          AND NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = to_regclass('public.orders') AND tgname = 'orders_enqueue_maale_auto_dispatch'), ''
   UNION ALL
   SELECT '07', 'roles service_role / anon / authenticated exist',

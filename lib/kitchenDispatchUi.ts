@@ -201,9 +201,12 @@ export function autoDispatchLine(a: KitchenAutoDispatch | null | undefined): { t
   const tone = a.state === 'dispatched' ? 'ok' : a.state === 'investigate' ? 'alert' : a.state === 'manual' || a.state === 'skipped' ? 'warn' : 'info'
   return { text: AUTO_DISPATCH_LABELS[a.state] + (a.state === 'manual' || a.state === 'skipped' || a.state === 'investigate' ? why : ''), tone }
 }
-/** The dashboard asks the server to process due tasks only while one of its orders still waits for the worker. */
-export const needsAutoDispatchSweep = (orders: readonly { autoDispatch?: KitchenAutoDispatch | null }[]): boolean =>
-  orders.some(o => o.autoDispatch?.state === 'queued' || o.autoDispatch?.state === 'processing')
+/** The dashboard asks the server to process due tasks only while one of its orders still waits for the worker — or
+ *  (S4-MAALE-02) while a confirmed / preparing delivery order has neither a task nor a courier record yet (the enqueue
+ *  failed; the sweep's repair re-creates the task). autoDispatch === null only when the feature is on (key absent off). */
+export const needsAutoDispatchSweep = (orders: readonly { type?: string; status?: string; dispatch?: unknown; autoDispatch?: KitchenAutoDispatch | null }[]): boolean =>
+  orders.some(o => o.autoDispatch?.state === 'queued' || o.autoDispatch?.state === 'processing'
+    || (o.autoDispatch === null && o.type === 'delivery' && (o.status === 'confirmed' || o.status === 'preparing') && !o.dispatch))
 export const AUTO_DISPATCH_SWEEP_MS = 60_000
 
 /* ─── Server response → Hebrew ─── */

@@ -6,7 +6,7 @@
 -- Both switches stop the feature without touching data.
 --
 -- This script removes the orders trigger first (confirmations stop creating tasks immediately), then the queue, the
--- config and both functions. It DESTROYS the task history (states, reason codes, timestamps — no customer data):
+-- config, the repair function and both guards. It DESTROYS the task history (states, reason codes, timestamps — no customer data):
 -- EXPORT IT FIRST. It refuses unless:
 --   * SET s4_05.confirm_rollback = 'DROP-AUTO-DISPATCH-QUEUE';   (same session, immediately before)
 --   * no task is still 'queued' or 'processing' (finish or switch them off first — a dropped running task could leave a
@@ -42,8 +42,11 @@ $s4_05_rollback_guard$;
 
 DROP TRIGGER orders_enqueue_maale_auto_dispatch ON public.orders;
 DROP FUNCTION public.orders_enqueue_maale_auto_dispatch();
+DROP FUNCTION public.enqueue_missing_maale_auto_dispatch(uuid[]);
 DROP TRIGGER maale_auto_dispatch_queue_guard ON public.maale_auto_dispatch_queue;
 DROP FUNCTION public.maale_auto_dispatch_queue_guard();
+DROP TRIGGER maale_auto_dispatch_config_guard ON public.maale_auto_dispatch_config;
+DROP FUNCTION public.maale_auto_dispatch_config_guard();
 DROP TABLE public.maale_auto_dispatch_queue;
 DROP TABLE public.maale_auto_dispatch_config;
 

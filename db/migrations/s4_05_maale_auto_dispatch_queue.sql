@@ -15,9 +15,17 @@
 --   3) BEFORE UPDATE guard on the queue: identity columns immutable, closed transition table, terminal states final,
 --      attempts +1 only when a task is claimed, a stale 'processing' task re-claimable only after 2 minutes.
 --   4) AFTER UPDATE OF status trigger on public.orders, WHEN received → confirmed AND type = 'delivery': if the config
---      switch is on, adds the task IN THE SAME TRANSACTION as the confirmation (ON CONFLICT DO NOTHING). Atomic: a task
---      exists if and only if the confirmation committed; a failed enqueue aborts the confirmation (the kitchen retries)
---      instead of silently losing the courier request. SECURITY DEFINER (owner = installer), search_path ''.
+--      switch is on, adds the task IN THE SAME TRANSACTION as the confirmation (ON CONFLICT DO NOTHING). S4-MAALE-02: the
+--      enqueue runs in its own sub-block — an enqueue error NEVER aborts the kitchen confirmation (WARNING only).
+--      SECURITY DEFINER (owner = installer), search_path ''.
+--   5) public.enqueue_missing_maale_auto_dispatch(p_branch_ids uuid[]) (S4-MAALE-02) — the durable obligation is the
+--      committed order row itself (a confirmed / preparing delivery order); this idempotent repair re-creates a missing
+--      task for such an order created since the switch was turned on (enabled_at), when it has no task and no
+--      delivery_dispatches row. The repaired task is dated enqueued_at = orders.created_at, so the worker's freshness
+--      rule skips an old order ('stale', shown to the kitchen) instead of sending a late courier. Called by the sweep.
+--      Never sends anything. SECURITY DEFINER, search_path '', EXECUTE for service_role only.
+--   6) BEFORE UPDATE guard on the config row: enabled_at = when the switch was last turned on (NULL while off),
+--      updated_at maintained by the database.
 --
 -- The queue never sends anything. The application worker (lib/kitchenAutoDispatch.ts) processes a task through the
 -- existing lib/maaleDispatch service, whose atomic claim (public.claim_maale_dispatch on delivery_dispatches) remains the
@@ -37,8 +45,9 @@ BEGIN
   IF (SELECT data_type FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'orders' AND column_name = 'id') IS DISTINCT FROM 'uuid'
      OR (SELECT data_type FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'orders' AND column_name = 'status') IS DISTINCT FROM 'text'
      OR (SELECT data_type FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'orders' AND column_name = 'type') IS DISTINCT FROM 'text'
-     OR (SELECT data_type FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'orders' AND column_name = 'branch_id') IS DISTINCT FROM 'uuid' THEN
-    RAISE EXCEPTION 's4_05_preflight: orders.id / status / type / branch_id have unexpected types';
+     OR (SELECT data_type FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'orders' AND column_name = 'branch_id') IS DISTINCT FROM 'uuid'
+     OR (SELECT data_type FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'orders' AND column_name = 'created_at') IS DISTINCT FROM 'timestamp with time zone' THEN
+    RAISE EXCEPTION 's4_05_preflight: orders.id / status / type / branch_id / created_at have unexpected types';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conrelid = 'public.orders'::regclass AND c.contype IN ('p', 'u')
                   AND c.conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = 'public.orders'::regclass AND attname = 'id')]::int2[]) THEN
@@ -49,7 +58,8 @@ BEGIN
   END IF;
   IF to_regclass('public.maale_auto_dispatch_queue') IS NOT NULL OR to_regclass('public.maale_auto_dispatch_config') IS NOT NULL
      OR EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public'
-                 AND p.proname IN ('orders_enqueue_maale_auto_dispatch', 'maale_auto_dispatch_queue_guard'))
+                 AND p.proname IN ('orders_enqueue_maale_auto_dispatch', 'maale_auto_dispatch_queue_guard',
+                                   'enqueue_missing_maale_auto_dispatch', 'maale_auto_dispatch_config_guard'))
      OR EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'public.orders'::regclass AND tgname = 'orders_enqueue_maale_auto_dispatch') THEN
     RAISE EXCEPTION 's4_05_preflight: s4_05 objects already exist (no silent re-apply)';
   END IF;
@@ -63,9 +73,11 @@ $s4_05_preflight$;
 CREATE TABLE public.maale_auto_dispatch_config (
   singleton        boolean     NOT NULL DEFAULT true,
   enqueue_enabled  boolean     NOT NULL DEFAULT false,
+  enabled_at       timestamptz NULL,
   updated_at       timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT maale_auto_dispatch_config_pkey PRIMARY KEY (singleton),
-  CONSTRAINT maale_auto_dispatch_config_singleton_check CHECK (singleton)
+  CONSTRAINT maale_auto_dispatch_config_singleton_check CHECK (singleton),
+  CONSTRAINT maale_auto_dispatch_config_enabled_at_check CHECK (enqueue_enabled = (enabled_at IS NOT NULL))
 );
 COMMENT ON TABLE public.maale_auto_dispatch_config IS
   'S4-MAALE-03: single row. enqueue_enabled (default false) lets a kitchen confirmation create an auto-dispatch task. Owner-only switch.';
@@ -73,6 +85,33 @@ INSERT INTO public.maale_auto_dispatch_config (singleton, enqueue_enabled) VALUE
 ALTER TABLE public.maale_auto_dispatch_config ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.maale_auto_dispatch_config FROM PUBLIC, anon, authenticated, service_role;
 GRANT SELECT ON public.maale_auto_dispatch_config TO service_role;
+
+-- S4-MAALE-02: the database dates the switch. enabled_at = the moment it was last turned on (NULL while off) — the
+-- repair (section 5) only covers orders created since then, so turning the switch on never reaches older orders.
+CREATE FUNCTION public.maale_auto_dispatch_config_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = ''
+AS $maale_auto_dispatch_config_guard$
+BEGIN
+  IF NEW.singleton IS DISTINCT FROM OLD.singleton THEN
+    RAISE EXCEPTION 'auto_dispatch_config_singleton' USING ERRCODE = '22023';
+  END IF;
+  IF NEW.enqueue_enabled AND NOT OLD.enqueue_enabled THEN
+    NEW.enabled_at := pg_catalog.now();
+  ELSIF NOT NEW.enqueue_enabled THEN
+    NEW.enabled_at := NULL;
+  ELSE
+    NEW.enabled_at := OLD.enabled_at;
+  END IF;
+  NEW.updated_at := pg_catalog.now();
+  RETURN NEW;
+END
+$maale_auto_dispatch_config_guard$;
+REVOKE ALL ON FUNCTION public.maale_auto_dispatch_config_guard() FROM PUBLIC, anon, authenticated, service_role;
+CREATE TRIGGER maale_auto_dispatch_config_guard
+  BEFORE UPDATE ON public.maale_auto_dispatch_config
+  FOR EACH ROW EXECUTE FUNCTION public.maale_auto_dispatch_config_guard();
 
 -- ─── 2) Queue ──────────────────────────────────────────────────────────────────────────────────────────────────────
 CREATE TABLE public.maale_auto_dispatch_queue (
@@ -156,10 +195,16 @@ SECURITY DEFINER
 SET search_path = ''
 AS $orders_enqueue_maale_auto_dispatch$
 BEGIN
-  IF (SELECT c.enqueue_enabled FROM public.maale_auto_dispatch_config AS c WHERE c.singleton) IS TRUE THEN
-    INSERT INTO public.maale_auto_dispatch_queue (order_id, branch_id) VALUES (NEW.id, NEW.branch_id)
-      ON CONFLICT (order_id) DO NOTHING;
-  END IF;
+  -- S4-MAALE-02: own sub-block — the confirmation commits even if the enqueue fails. Nothing is lost: the committed
+  -- confirmed order is the obligation, and enqueue_missing_maale_auto_dispatch (sweep) re-creates the task.
+  BEGIN
+    IF (SELECT c.enqueue_enabled FROM public.maale_auto_dispatch_config AS c WHERE c.singleton) IS TRUE THEN
+      INSERT INTO public.maale_auto_dispatch_queue (order_id, branch_id) VALUES (NEW.id, NEW.branch_id)
+        ON CONFLICT (order_id) DO NOTHING;
+    END IF;
+  EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'maale_auto_dispatch_enqueue_failed sqlstate=%', SQLSTATE;   -- code only, no order data
+  END;
   RETURN NULL;
 END
 $orders_enqueue_maale_auto_dispatch$;
@@ -170,5 +215,48 @@ CREATE TRIGGER orders_enqueue_maale_auto_dispatch
   FOR EACH ROW
   WHEN (OLD.status = 'received' AND NEW.status = 'confirmed' AND NEW.type = 'delivery')
   EXECUTE FUNCTION public.orders_enqueue_maale_auto_dispatch();
+
+-- ─── 5) Repair: re-create a missing task from the committed order (S4-MAALE-02) ──────────────────────────────────────
+-- Same eligibility as the trigger + the worker: delivery, confirmed / preparing (reachable only through
+-- received → confirmed), created since the switch was turned on, no task, no delivery_dispatches row (a manual or
+-- earlier courier request owns the order). enqueued_at = created_at: the worker's 30-minute freshness rule then skips an
+-- old order ('stale') instead of a late courier. ON CONFLICT DO NOTHING + PK = idempotent under concurrency.
+-- p_branch_ids NULL = every branch (admin), otherwise the caller's branch scope.
+CREATE FUNCTION public.enqueue_missing_maale_auto_dispatch(p_branch_ids uuid[])
+RETURNS integer
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = ''
+SET lock_timeout = '3s'
+AS $enqueue_missing_maale_auto_dispatch$
+DECLARE
+  v_enabled_at timestamptz;
+  v_rows       integer;
+BEGIN
+  SELECT c.enabled_at INTO v_enabled_at FROM public.maale_auto_dispatch_config AS c WHERE c.singleton AND c.enqueue_enabled;
+  IF v_enabled_at IS NULL THEN
+    RETURN 0;                                             -- switch off: nothing is ever created
+  END IF;
+  INSERT INTO public.maale_auto_dispatch_queue (order_id, branch_id, enqueued_at, reason_code)
+  SELECT o.id, o.branch_id, o.created_at, 'repaired'
+    FROM public.orders AS o
+   WHERE o.type = 'delivery'
+     AND o.status IN ('confirmed', 'preparing')
+     AND o.created_at >= v_enabled_at
+     AND o.created_at > pg_catalog.now() - interval '1 day'
+     AND (p_branch_ids IS NULL OR o.branch_id = ANY (p_branch_ids))
+     AND NOT EXISTS (SELECT 1 FROM public.maale_auto_dispatch_queue AS q WHERE q.order_id = o.id)
+     AND NOT EXISTS (SELECT 1 FROM public.delivery_dispatches AS d WHERE d.order_id = o.id)
+  ON CONFLICT (order_id) DO NOTHING;
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  RETURN v_rows;
+END
+$enqueue_missing_maale_auto_dispatch$;
+COMMENT ON FUNCTION public.enqueue_missing_maale_auto_dispatch(uuid[]) IS
+  'S4-MAALE-02: idempotently re-creates a missing auto-dispatch task for a confirmed / preparing delivery order created since '
+  'the switch was turned on (no task, no delivery_dispatches row). Returns the number created. Never contacts a provider.';
+REVOKE ALL ON FUNCTION public.enqueue_missing_maale_auto_dispatch(uuid[]) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.enqueue_missing_maale_auto_dispatch(uuid[]) TO service_role;
 
 COMMIT;

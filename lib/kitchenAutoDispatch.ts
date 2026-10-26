@@ -66,6 +66,9 @@ export interface AutoDispatchDeps {
   dispatchBlockingRecord?: (orderId: string) => Promise<'manual_courier_recorded' | 'manual_review_open' | null>
   /** The lib/maaleDispatch dispatch service with production deps and the AUTO_DISPATCH_ACTOR quote slot. */
   dispatch(orderId: string): Promise<DispatchResult>
+  /** S4-MAALE-02: re-creates missing tasks of committed confirmations in scope (enqueue_missing_maale_auto_dispatch;
+   *  null = every branch). Idempotent; never sends. Returns how many were created; throws on a database error. */
+  repairMissing?: (branchIds: readonly string[] | null) => Promise<number>
   now(): number
   log(code: string): void
 }
@@ -153,8 +156,21 @@ async function finishAs(deps: AutoDispatchDeps, orderId: string, state: FinalSta
   return { result: 'finished', state: to, reason }
 }
 
-/** Fallback sweep: processes due tasks (oldest first) one after another. branchIds null = every branch. */
+/** After a confirmation (status route): runs the order's task; when the enqueue did not happen (S4-MAALE-02), repairs
+ *  the scope once and runs again. The kitchen never sees an error from here. */
+export async function runAutoDispatchAfterConfirmation(deps: AutoDispatchDeps, orderId: string, branchIds: readonly string[] | null): Promise<AutoDispatchRun> {
+  const first = await runAutoDispatch(deps, orderId)
+  if (first.result !== 'not_queued' || !deps.repairMissing) return first
+  try { if ((await deps.repairMissing(branchIds)) > 0) deps.log('auto_dispatch_repaired') } catch { deps.log('auto_dispatch_repair_failed'); return first }
+  return runAutoDispatch(deps, orderId)
+}
+
+/** Fallback sweep: repairs missing tasks (S4-MAALE-02), then processes due tasks (oldest first) one after another.
+ *  branchIds null = every branch. */
 export async function sweepAutoDispatch(deps: AutoDispatchDeps, branchIds: readonly string[] | null): Promise<{ processed: number; finished: number }> {
+  if (deps.repairMissing) {
+    try { if ((await deps.repairMissing(branchIds)) > 0) deps.log('auto_dispatch_repaired') } catch { deps.log('auto_dispatch_repair_failed') }
+  }
   const staleBefore = new Date(deps.now() - AUTO_DISPATCH_STALE_CLAIM_MS).toISOString()
   const due = await deps.listDue(branchIds, staleBefore, AUTO_DISPATCH_SWEEP_LIMIT)
   let finished = 0

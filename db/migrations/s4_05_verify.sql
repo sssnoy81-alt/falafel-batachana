@@ -1,5 +1,5 @@
 -- FALAFEL BATACHANA — s4_05_verify.sql (S4-MAALE-03) — READ-ONLY, ONE SELECT. Run AFTER the migration.
--- Catalog + counts only (no customer data). Expected: every row PASS (row 13 INFO).
+-- Catalog + counts only (no customer data). Expected: every row PASS (row 16 INFO).
 -- Columns: check_id | check_name | result | detail
 WITH
 qcols AS (
@@ -69,7 +69,24 @@ checks (check_id, check_name, ok, detail) AS (
                   AND t.tgname = 'maale_auto_dispatch_queue_guard' AND t.tgenabled = 'O'
                   AND pg_get_triggerdef(t.oid) = 'CREATE TRIGGER maale_auto_dispatch_queue_guard BEFORE UPDATE ON public.maale_auto_dispatch_queue FOR EACH ROW EXECUTE FUNCTION maale_auto_dispatch_queue_guard()'), ''
   UNION ALL
-  SELECT '13', 'INFO queue rows by state (counts only)', NULL,
+  SELECT '13', 'enqueue never aborts the confirmation: the INSERT runs in an EXCEPTION WHEN OTHERS sub-block (S4-MAALE-02)',
+         EXISTS (SELECT 1 FROM pg_proc p WHERE p.oid = to_regprocedure('public.orders_enqueue_maale_auto_dispatch()')
+                  AND p.prosrc ~ 'EXCEPTION WHEN OTHERS THEN\s+RAISE WARNING ''maale_auto_dispatch_enqueue_failed'), ''
+  UNION ALL
+  SELECT '14', 'repair function: SECURITY DEFINER, search_path empty + lock_timeout 3s, EXECUTE service_role only',
+         EXISTS (SELECT 1 FROM pg_proc p WHERE p.oid = to_regprocedure('public.enqueue_missing_maale_auto_dispatch(uuid[])') AND p.prosecdef
+                  AND p.proconfig = ARRAY['search_path=""', 'lock_timeout=3s'])
+         AND has_function_privilege('service_role', 'public.enqueue_missing_maale_auto_dispatch(uuid[])', 'EXECUTE')
+         AND NOT has_function_privilege('anon', 'public.enqueue_missing_maale_auto_dispatch(uuid[])', 'EXECUTE')
+         AND NOT has_function_privilege('authenticated', 'public.enqueue_missing_maale_auto_dispatch(uuid[])', 'EXECUTE'), ''
+  UNION ALL
+  SELECT '15', 'config: enabled_at column + consistency CHECK + BEFORE UPDATE guard, enabled',
+         EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('public.maale_auto_dispatch_config') AND attname = 'enabled_at' AND NOT attisdropped)
+         AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = to_regclass('public.maale_auto_dispatch_config') AND conname = 'maale_auto_dispatch_config_enabled_at_check')
+         AND EXISTS (SELECT 1 FROM pg_trigger t WHERE t.tgrelid = to_regclass('public.maale_auto_dispatch_config')
+                      AND t.tgname = 'maale_auto_dispatch_config_guard' AND t.tgenabled = 'O'), ''
+  UNION ALL
+  SELECT '16', 'INFO queue rows by state (counts only)', NULL,
          COALESCE((SELECT string_agg(state || '=' || n, ', ' ORDER BY state) FROM (SELECT state, count(*) AS n FROM public.maale_auto_dispatch_queue GROUP BY state) s), 'none')
 )
 SELECT check_id, check_name,
