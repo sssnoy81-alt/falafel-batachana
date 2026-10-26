@@ -159,6 +159,9 @@ export interface ParseOrderOptions {
   /** HYP-DELIVERY-02 (HYP_DELIVERY_ENABLED): telephone credit is retired for NEW delivery orders — cash or HYP only.
    *  Default false: the delivery payment methods are exactly as before (cash / credit). */
   deliveryCreditRetired?: boolean
+  /** S4-PAYMENT-CLEANUP-01: telephone credit is retired for NEW pickup orders (cash / Bit / Cibus, or HYP online).
+   *  POST /api/orders always sets it; the value 'credit' itself stays valid (historical orders, HYP placeholder). */
+  pickupCreditRetired?: boolean
 }
 
 export function parseCreateOrderRequest(body: unknown, opts: ParseOrderOptions = {}): Result<CreateOrderRequest> {
@@ -193,6 +196,7 @@ export function parseCreateOrderRequest(body: unknown, opts: ParseOrderOptions =
   // Delivery is credit-only (temporary rule until HYP). Rejected before any catalog/DB access.
   if (!isPaymentMethodAllowed(type, paymentMethod)) return fail('payment_method_not_allowed')
   if (type === 'delivery' && paymentMethod === 'credit' && opts.deliveryCreditRetired === true) return fail('payment_method_not_allowed')
+  if (type === 'pickup' && paymentMethod === 'credit' && opts.pickupCreditRetired === true) return fail('payment_method_not_allowed')
 
   if (!Array.isArray(items) || items.length === 0) return fail('empty_cart')
   if (items.length > MAX_CART_LINES) return fail('invalid_request', 'too_many_lines')

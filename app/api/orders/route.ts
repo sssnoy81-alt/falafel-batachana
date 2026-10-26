@@ -45,7 +45,8 @@ export async function POST(req: NextRequest) {
   }
 
   // HYP-DELIVERY-02: with HYP_DELIVERY_ENABLED a new delivery order is cash (here) or HYP (POST /api/payments/hyp/start)
-  const parsed = parseCreateOrderRequest(body, { parcelCheckoutEnabled: isParcelCheckoutEnabled(process.env), deliveryCreditRetired: isHypDeliveryEnabled(process.env) })
+  // S4-PAYMENT-CLEANUP-01: telephone credit is retired for new pickup orders (also stale pages / direct API calls)
+  const parsed = parseCreateOrderRequest(body, { parcelCheckoutEnabled: isParcelCheckoutEnabled(process.env), deliveryCreditRetired: isHypDeliveryEnabled(process.env), pickupCreditRetired: true })
   if (!parsed.ok) return errorResponse(400, parsed.code, parsed.detail)
 
   if (!isShopOpen()) return errorResponse(409, 'closed')

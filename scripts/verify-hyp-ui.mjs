@@ -377,13 +377,14 @@ await test('HYP-DELIVERY-02 checkout: every change since the release is gated on
     "-            <h2 style={{ color: C.white, fontSize: 20, fontWeight: 900, marginBottom: 8 }}>אנחנו סגורים כרגע</h2>",
     "-              <strong style={{ color: C.white }}>ראשון–חמישי | 08:00–19:30</strong><br />",
   ]
+  // (S4-PAYMENT-CLEANUP-01 only edits lines added after this baseline — methodFor / paymentOptions, checked below)
   assert.deepEqual([...removed].sort(), [...allowedRemoved, ...prefill03Removed, ...hours01Removed].sort(), removed.join('\n'))
   assert.match(page, /const customerName = namesValid \? joinCustomerName\(firstName, lastName\) : ''/)
   assert.match(page, /cart\.length > 0 && namesValid/)
   // with deliveryCreditRetired false (default, server flag off) methodFor() is resolvePaymentMethod() and the options are unchanged
   assert.match(page, /const \[deliveryCreditRetired, setDeliveryCreditRetired\] = useState\(false\)/)
-  assert.match(page, /return t === 'delivery' && deliveryCreditRetired && m === 'credit' \? 'cash' : m/)
-  assert.match(page, /const paymentOptions = displayType === 'delivery' && deliveryCreditRetired\n\s+\? allowedPaymentMethods\('delivery'\)\.filter\(m => m !== 'credit'\) : allowedPaymentMethods\(displayType\)/)
+  assert.match(page, /return \(\(t === 'delivery' && deliveryCreditRetired\) \|\| t === 'pickup'\) && m === 'credit' \? 'cash' : m/)
+  assert.match(page, /const paymentOptions = displayType === 'delivery' && deliveryCreditRetired\n\s+\? allowedPaymentMethods\('delivery'\)\.filter\(m => m !== 'credit'\)\n\s+: displayType === 'pickup' \? allowedPaymentMethods\('pickup'\)\.filter\(m => m !== 'credit'\) : allowedPaymentMethods\(displayType\)/)
   assert.match(page, /setDeliveryCreditRetired\(parseDeliveryCreditRetired\(j\)\)/)
   for (const l of added) assert.ok(!/fetch\('\/api\/orders'|total_price|amountAgorot|deliveryFee/.test(l), `no price / order path change: ${l}`)
   // the regular order path and the tracking poll are byte-identical to the release

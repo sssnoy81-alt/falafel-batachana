@@ -406,12 +406,14 @@ export default function Home() {
   // Payment: delivery allows cash or credit (no Cibus / Bit). Derived, so switching modes never leaves a stale
   // method: cash / credit are kept, Cibus / Bit fall back to credit; back to pickup restores the earlier choice.
   // HYP-DELIVERY-02: with telephone credit retired a delivery offers cash (+ HYP below); credit falls back to cash.
+  // S4-PAYMENT-CLEANUP-01: telephone credit is retired for pickup too (cash / Bit / Cibus, or HYP online).
   const methodFor = (t: OrderType): PaymentMethod => {
     const m = resolvePaymentMethod(t, paymentMethod)
-    return t === 'delivery' && deliveryCreditRetired && m === 'credit' ? 'cash' : m
+    return ((t === 'delivery' && deliveryCreditRetired) || t === 'pickup') && m === 'credit' ? 'cash' : m
   }
   const paymentOptions = displayType === 'delivery' && deliveryCreditRetired
-    ? allowedPaymentMethods('delivery').filter(m => m !== 'credit') : allowedPaymentMethods(displayType)
+    ? allowedPaymentMethods('delivery').filter(m => m !== 'credit')
+    : displayType === 'pickup' ? allowedPaymentMethods('pickup').filter(m => m !== 'credit') : allowedPaymentMethods(displayType)
   const effectivePaymentMethod = methodFor(displayType)
   const linePrice = (c: CartItem) => displayLineTotal(toPricingInput(c), displayType)
   const menuPrice = (item: MenuItem) => displayMenuPrice(item.price || 0, item.category_id, displayType)

@@ -437,7 +437,9 @@ await test('legacy checkout untouched: POST /api/orders unchanged in git, the pa
   const d2 = execFileSync('git', ['diff', '-U0', HYP_DELIVERY_BASE, '--', 'app/api/orders', 'lib/orderRequest.ts'], { cwd: ROOT, encoding: 'utf8' }).replace(/\r\n/g, '\n').split('\n')
   const removed2 = d2.filter(l => l.startsWith('-') && !l.startsWith('---')), added2 = d2.filter(l => l.startsWith('+') && !l.startsWith('+++'))
   assert.deepEqual(removed2, ["-  const parsed = parseCreateOrderRequest(body, { parcelCheckoutEnabled: isParcelCheckoutEnabled(process.env) })"], removed2.join('\n'))
-  for (const l of added2) assert.ok(/deliveryCreditRetired|isHypDeliveryEnabled|HYP-DELIVERY-02|Default false: the delivery payment methods/.test(l), `ungated legacy change: ${l}`)
+  // S4-PAYMENT-CLEANUP-01 (owner request): pickup telephone credit retired in POST /api/orders (pickupCreditRetired)
+  for (const l of added2) assert.ok(/deliveryCreditRetired|isHypDeliveryEnabled|HYP-DELIVERY-02|Default false: the delivery payment methods|pickupCreditRetired|S4-PAYMENT-CLEANUP-01|POST \/api\/orders always sets it/.test(l), `ungated legacy change: ${l}`)
+  assert.equal(added2.filter(l => /pickupCreditRetired|S4-PAYMENT-CLEANUP-01|POST \/api\/orders always sets it/.test(l)).length, 6)
   assert.deepEqual([...OC.PAYMENT_METHODS], ['cash', 'credit', 'cibus', 'bit'])
   const p = OR.parseCreateOrderRequest({ branchId: B1, type: 'pickup', customerName: NAME, phone: PHONE, paymentMethod: 'online', items: [{ itemId: M1, quantity: 1 }] })
   assert.equal(p.ok, false); assert.equal(p.code, 'invalid_payment_method')
@@ -715,6 +717,40 @@ await test('PREFILL-03 order page: two required fields, full name = "<first> <la
   assert.match(page, /cart\.length > 0 && namesValid/)
   assert.ok(!/email|UserId|teudat|ת\.ז|תעודת זהות/i.test(page.slice(page.indexOf('👤 שם מלא'), page.indexOf('📱 מספר טלפון'))), 'no email / ID on our site')
   assert.equal((page.match(/buildHypStartBody\(request, [^)]*names\)/g) ?? []).length, 2)
+})
+
+console.log('S4-PAYMENT-CLEANUP-01 — legacy telephone credit retired for new pickup orders')
+await test('CLEANUP-01 server: POST /api/orders refuses pickup "credit" (direct API / stale page); cash / Bit / Cibus accepted; delivery unchanged', () => {
+  assert.match(src('app/api/orders/route.ts'), /deliveryCreditRetired: isHypDeliveryEnabled\(process\.env\), pickupCreditRetired: true \}\)/)
+  const opts = { pickupCreditRetired: true, deliveryCreditRetired: true }   // exactly what Production passes
+  const req = (type, pm) => ({ branchId: B1, type, customerName: NAME, phone: PHONE, paymentMethod: pm, items: [{ itemId: M1, quantity: 1 }],
+    ...(type === 'delivery' ? { delivery: { city: CITY, street: 'הרצל', houseNumber: '1' } } : {}) })
+  const r = OR.parseCreateOrderRequest(req('pickup', 'credit'), opts); assert.deepEqual([r.ok, r.code], [false, 'payment_method_not_allowed'])
+  for (const pm of ['cash', 'bit', 'cibus']) assert.equal(OR.parseCreateOrderRequest(req('pickup', pm), opts).ok, true, pm)
+  assert.equal(OR.parseCreateOrderRequest(req('pickup', 'online'), opts).code, 'invalid_payment_method')
+  // delivery: exactly as before (cash; credit only by the HYP-DELIVERY flag); Bit / Cibus never for delivery
+  assert.equal(OR.parseCreateOrderRequest(req('delivery', 'cash'), opts).ok, true)
+  assert.equal(OR.parseCreateOrderRequest(req('delivery', 'credit'), opts).code, 'payment_method_not_allowed')
+  assert.equal(OR.parseCreateOrderRequest(req('delivery', 'credit'), { pickupCreditRetired: true }).ok, true, 'pickup retirement never touches delivery')
+  for (const pm of ['bit', 'cibus']) assert.equal(OR.parseCreateOrderRequest(req('delivery', pm), opts).code, 'payment_method_not_allowed')
+})
+await test('CLEANUP-01 HYP untouched: pickup HYP start still works (its internal placeholder is not retired); no HYP file changed', async () => {
+  const db = new FakeDb(); const x = deps(db, { answers: ['sign_echo'] })
+  const r = await call(S.handleHypStart, startReq(body()), x.d); assert.equal(r.status, 200, JSON.stringify(r.json))
+  assert.equal(db.calls.find(y => y.op === 'createIntent').args.snapshot.p_order.payment_method, 'online')
+  assert.equal(execFileSync('git', ['diff', '--name-only', 'origin/main', '--', 'lib/hyp', 'app/api/payments', 'api', 'db', 'lib/maaleDispatch.ts', 'lib/maalePayload.ts', 'lib/kitchenAutoDispatch.ts', 'lib/hours.ts'], { cwd: ROOT, encoding: 'utf8' }).trim(), '')
+})
+await test('CLEANUP-01 historical orders: "credit" stays a valid stored value with its label; kitchen / dashboard code unchanged', () => {
+  assert.deepEqual([...OC.PAYMENT_METHODS], ['cash', 'credit', 'cibus', 'bit']); assert.equal(OC.isPaymentMethod('credit'), true)
+  assert.equal(OC.PAYMENT_METHOD_LABELS.credit, '💳 אשראי')
+  assert.equal(execFileSync('git', ['diff', '--name-only', 'origin/main', '--', 'app/dashboard', 'app/api/kitchen', 'lib/orderConfig.ts', 'lib/kitchenMutations.ts'], { cwd: ROOT, encoding: 'utf8' }).trim(), '')
+})
+await test('CLEANUP-01 customer UI: pickup offers cash / Cibus / Bit (+ HYP online button); delivery options unchanged', () => {
+  const page = src('app/order/page.tsx')
+  assert.deepEqual(OC.allowedPaymentMethods('pickup').filter(m => m !== 'credit'), ['cash', 'cibus', 'bit'])
+  assert.match(page, /: displayType === 'pickup' \? allowedPaymentMethods\('pickup'\)\.filter\(m => m !== 'credit'\) : allowedPaymentMethods\(displayType\)/)
+  assert.match(page, /\(\(t === 'delivery' && deliveryCreditRetired\) \|\| t === 'pickup'\) && m === 'credit' \? 'cash' : m/)
+  assert.match(page, /\{onlineAvailable && \(\r?\n\s+<button type="button" onClick=\{\(\) => setOnlineSelected\(true\)\}/)
 })
 
 console.log(`\n${passed}/${passed + failed} PASS${failed ? ` — ${failed} FAILED` : ''}`)
