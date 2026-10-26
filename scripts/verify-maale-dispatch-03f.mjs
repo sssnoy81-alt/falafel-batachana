@@ -135,7 +135,12 @@ await test('D2. credit is never auto-dispatched (even if a payment check says tr
   noEffects(s, 'credit'); assert.equal(s.quotes.length, 0)
   const t = setup({ orderSnapshot: snapshot({ order: { payment_method: 'credit', customer_name: '🧪 בדיקה — לא לשלוח' } }) })
   assert.equal((await t.run({ testMode: { orderId: ORDER_ID, bypassPaymentGate: true, bypassAreaGate: true } })).reason, 'credit_dispatch_disabled', 'test mode bypasses nothing')
-  assert.ok(src('lib/maaleDispatch.ts').includes('isPaymentVerified: async () => false'))
+  // HYP-DELIVERY-02: the production payment check is the real, read-only HYP verification (finalized + VERIFY + no flag);
+  // telephone credit stays blocked regardless of it (credit_dispatch_disabled above).
+  { const md = readFileSync(join(ROOT, 'lib', 'maaleDispatch.ts'), 'utf8').replace(/\r\n/g, '\n')
+    assert.ok(md.includes('isPaymentVerified: orderId => isHypPaymentVerified(orderId),'), 'production wiring: real HYP check')
+    assert.match(md, /\.eq\('order_id', orderId\)\.eq\('status', 'finalized'\)\.eq\('paid_source', 'verify'\)\.is\('staff_flag', null\)\.limit\(2\)/)
+    assert.match(md, /return Array\.isArray\(data\) && data\.length === 1/) }
 })
 
 await test('D3. cash food total: 60000 agorot dispatches, 60001 is blocked before any quote', async () => {

@@ -11,8 +11,20 @@ export const isHypPaymentsEnabled = (env: EnvLike): boolean => env.HYP_PAYMENTS_
 /** Pilot: מישור אדומים only (Production branch id, lib/orderConfig DELIVERY_BRANCH_IDS). */
 export const HYP_ALLOWED_BRANCH_IDS: readonly string[] = ['8fed141d-0e7c-46c1-803b-88d3d811c1f8']
 
-/** Pilot: pickup only — no online delivery (lib/maalePayload refuses 'online') and therefore no online parcel. */
+/** Default scope: pickup only. Delivery (food only and food + parcel) only with HYP_DELIVERY_ENABLED (below). */
 export const HYP_ALLOWED_ORDER_TYPES: readonly OrderType[] = ['pickup']
+
+/**
+ * HYP_DELIVERY_ENABLED (HYP-DELIVERY-02) — exactly 'true' adds delivery (food only and food + parcel) to the online
+ * payment scope AND retires telephone credit for new delivery orders (cash or HYP only). Anything else (unset, 'TRUE',
+ * '1', …) = pickup only and the delivery payment methods exactly as before. Branch scope, HYP_PAYMENTS_ENABLED, the
+ * phone audience and server-side VERIFY are unchanged.
+ */
+export const isHypDeliveryEnabled = (env: EnvLike): boolean => env.HYP_DELIVERY_ENABLED === 'true'
+
+/** The order types POST /api/payments/hyp/start accepts and GET /api/payments/config advertises. */
+export const hypAllowedOrderTypes = (env: EnvLike): readonly OrderType[] =>
+  isHypDeliveryEnabled(env) ? ['pickup', 'delivery'] : HYP_ALLOWED_ORDER_TYPES
 
 /**
  * HYP_PILOT_PHONES — REQUIRED controlled-pilot allowlist of customer phones (comma-separated, 05XXXXXXXX). ONLY these

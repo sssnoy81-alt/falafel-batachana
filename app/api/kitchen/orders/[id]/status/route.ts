@@ -7,6 +7,7 @@ import { sendReadyPush } from '@/lib/push'
 import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
 import { isAutoDispatchEnabled, runAutoDispatchAfterConfirmation } from '@/lib/kitchenAutoDispatch'
 import { productionAutoDispatchDeps } from '@/lib/kitchenAutoDispatchServer'
+import { flagRefundForCancelledOrder } from '@/lib/hyp/hypRefundFlag'
 
 // PATCH /api/kitchen/orders/[id]/status — { status }
 // Kitchen session + same-origin JSON. Branch scope from the session only. Locked transition table,
@@ -45,13 +46,15 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
   try {
     const supabase = getServerSupabase()
+    let paymentMethod: string | null = null   // HYP-DELIVERY-02: read with the order, for the prepaid-cancel flag below
     const result = await changeOrderStatus({
       async loadOrder(orderId) {
-        const { data, error } = await supabase.from('orders').select('id, status, branch_id, parcel_requests(status)')
+        const { data, error } = await supabase.from('orders').select('id, status, branch_id, payment_method, parcel_requests(status)')
           .eq('id', orderId).maybeSingle()
         if (error) throw new Error(`load ${error.code}`)
         if (!data) return null
-        const row = data as { id: string; status: string; branch_id: string | null; parcel_requests?: unknown }
+        const row = data as { id: string; status: string; branch_id: string | null; payment_method?: unknown; parcel_requests?: unknown }
+        paymentMethod = typeof row.payment_method === 'string' ? row.payment_method : null
         return { id: row.id, status: row.status, branch_id: row.branch_id, parcel_status: parcelStatusFromEmbed(row.parcel_requests) }
       },
       async updateStatusIfCurrent(orderId, from, to: OrderStatusValue) {
@@ -74,6 +77,29 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       const scope = auth.session.role === 'admin' ? null : auth.session.branchId ? [auth.session.branchId] : []
       after(async () => {
         try { await runAutoDispatchAfterConfirmation(productionAutoDispatchDeps(), id, scope) } catch { console.warn('kitchen auto dispatch: run_failed') }
+      })
+    }
+    if (result.value.status === 'cancelled' && paymentMethod === 'online') {
+      // HYP-DELIVERY-02: a cancelled PREPAID order is marked refund_required on its payment (never refunded here); the
+      // cancellation never waits for it. Staff see it in the payments tab; the portal refund stays a manual owner action.
+      const staff = auth.session.username
+      after(async () => {
+        try {
+          await flagRefundForCancelledOrder({
+            async findFinalizedIntent(orderId) {
+              const { data, error } = await supabase.from('payment_intents').select('id').eq('order_id', orderId).eq('status', 'finalized').limit(1)
+              if (error) throw new Error(`intent ${error.code}`)
+              return Array.isArray(data) && data[0] ? String((data[0] as { id: unknown }).id) : null
+            },
+            async flagRefundRequired(intentId, staffUser, note) {
+              const { data, error } = await supabase.rpc('resolve_payment_intent', { p_intent_id: intentId, p_action: 'flag_refund_required', p_staff_user: staffUser, p_note: note })
+              if (error) throw new Error(`flag ${error.code}`)
+              const row = Array.isArray(data) ? data[0] : data
+              return row && typeof (row as { result?: unknown }).result === 'string' ? (row as { result: string }).result : 'no_row'
+            },
+            log: code => console.warn('payments:', code),
+          }, id, staff)
+        } catch { console.warn('payments: refund_flag_failed') }
       })
     }
     return json(result.value)

@@ -2,6 +2,8 @@
 // opening hours, module-level rate limiters and a code-only logger. Tests use lib/hyp/hypPaymentService directly.
 
 import { isShopOpen } from '../hours'
+import { resolveGoogleDeliveryAddress } from '../orderAddress'
+import { attachDeliveryGeo } from '../orderGeo'
 import { supabaseHypDb } from './hypDb'
 import type { HypDeps } from './hypPaymentService'
 import { createRateLimiter } from './hypRateLimit'
@@ -24,5 +26,8 @@ export function productionHypDeps(): HypDeps {
     isShopOpen: () => isShopOpen(),
     limits,
     log: (event, code) => console.error(`payments: ${event}${code ? ` ${code}` : ''}`),
+    // HYP-DELIVERY-02: the same delivery steps as POST /api/orders (server Google verification + geocoding)
+    resolveAddress: order => resolveGoogleDeliveryAddress(order),
+    attachGeo: (order, built) => attachDeliveryGeo(order, built),
   }
 }

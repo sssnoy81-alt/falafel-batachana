@@ -19,7 +19,8 @@ export interface HypCheckoutConfig {
   readonly orderTypes: readonly OrderType[]
 }
 
-/** GET /api/payments/config → config, or null (OFF) for anything but the exact expected shape. Delivery never. */
+/** GET /api/payments/config → config, or null (OFF) for anything but the exact expected shape. Delivery only when the
+ *  server advertises it (HYP_DELIVERY_ENABLED, HYP-DELIVERY-02). */
 export function parsePaymentsConfig(json: unknown): HypCheckoutConfig | null {
   if (typeof json !== 'object' || json === null) return null
   const h = (json as { hypPayments?: unknown }).hypPayments
@@ -27,20 +28,28 @@ export function parsePaymentsConfig(json: unknown): HypCheckoutConfig | null {
   const { branchIds, orderTypes } = h as { branchIds?: unknown; orderTypes?: unknown }
   if (!Array.isArray(branchIds) || !Array.isArray(orderTypes)) return null
   const branches = branchIds.filter((b): b is string => typeof b === 'string' && UUID_RE.test(b))
-  const types = orderTypes.filter((t): t is OrderType => t === 'pickup')
+  const types = orderTypes.filter((t): t is OrderType => t === 'pickup' || t === 'delivery')
   return branches.length && types.length ? { branchIds: branches, orderTypes: types } : null
 }
 
 export function isOnlinePaymentAvailable(config: HypCheckoutConfig | null, branchId: string | null | undefined,
                                          orderType: OrderType | null, isParcelOrder: boolean): boolean {
-  return !!config && !!branchId && orderType === 'pickup' && !isParcelOrder
+  return !!config && !!branchId && !!orderType && (orderType === 'pickup' ? !isParcelOrder : orderType === 'delivery')
     && config.branchIds.includes(branchId) && config.orderTypes.includes(orderType)
 }
 
-/** The start body: the same order intent as POST /api/orders, without payment method, delivery or parcel. */
+/** HYP-DELIVERY-02: true when the server has retired telephone credit for new delivery orders (cash or HYP only) —
+ *  advertised independently of HYP availability, so cash stays when HYP is down. Anything else → false (as before). */
+export function parseDeliveryCreditRetired(json: unknown): boolean {
+  return typeof json === 'object' && json !== null && (json as { deliveryCreditRetired?: unknown }).deliveryCreditRetired === true
+}
+
+/** The start body: the same order intent as POST /api/orders, without the payment method. Pickup: exactly the five
+ *  fields as before; delivery (HYP-DELIVERY-02) adds the delivery address and, when attached, the parcel. */
 export function buildHypStartBody(request: CreateOrderRequest, checkoutKey: string) {
   const { branchId, type, customerName, phone, items } = request
-  return { checkoutKey, branchId, type, customerName, phone, items }
+  if (type !== 'delivery') return { checkoutKey, branchId, type, customerName, phone, items }
+  return { checkoutKey, branchId, type, customerName, phone, items, delivery: request.delivery, ...(request.parcel ? { parcel: request.parcel } : {}) }
 }
 
 export interface KeyStorage { getItem(k: string): string | null; setItem(k: string, v: string): void; removeItem(k: string): void }

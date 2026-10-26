@@ -32,7 +32,7 @@ import {
 } from '@/lib/parcelCheckoutForm'
 import {
   HYP_CHECKOUT_KEY, HYP_PENDING_PAYMENT_KEY, HYP_START_MESSAGES, ONLINE_PAYMENT_LABEL, buildHypStartBody, checkoutKeyFor,
-  interpretStartResponse, isOnlinePaymentAvailable, parsePaymentsConfig, type HypCheckoutConfig, type HypStartOutcome,
+  interpretStartResponse, isOnlinePaymentAvailable, parseDeliveryCreditRetired, parsePaymentsConfig, type HypCheckoutConfig, type HypStartOutcome,
 } from '@/lib/hyp/hypCheckoutUi'
 
 
@@ -226,11 +226,13 @@ export default function Home() {
   // re-checks the flag, branch, order type and prices. With the flag off nothing below changes the checkout.
   const [hypConfig, setHypConfig] = useState<HypCheckoutConfig | null>(null)
   const [onlineSelected, setOnlineSelected] = useState(false)
+  // HYP-DELIVERY-02: the server retired telephone credit for new delivery orders (cash or HYP only). Default false.
+  const [deliveryCreditRetired, setDeliveryCreditRetired] = useState(false)
   useEffect(() => {
     let cancelled = false
     fetch('/api/payments/config', { cache: 'no-store' })
       .then(r => (r.ok ? r.json() : null))
-      .then(j => { if (!cancelled) setHypConfig(parsePaymentsConfig(j)) }) // anything else → off
+      .then(j => { if (!cancelled) { setHypConfig(parsePaymentsConfig(j)); setDeliveryCreditRetired(parseDeliveryCreditRetired(j)) } }) // anything else → off
       .catch(() => { if (!cancelled) setHypConfig(null) })
     return () => { cancelled = true }
   }, [])
@@ -387,8 +389,14 @@ export default function Home() {
   const displayType: OrderType = effectiveOrderType ?? 'pickup'
   // Payment: delivery allows cash or credit (no Cibus / Bit). Derived, so switching modes never leaves a stale
   // method: cash / credit are kept, Cibus / Bit fall back to credit; back to pickup restores the earlier choice.
-  const paymentOptions = allowedPaymentMethods(displayType)
-  const effectivePaymentMethod = resolvePaymentMethod(displayType, paymentMethod)
+  // HYP-DELIVERY-02: with telephone credit retired a delivery offers cash (+ HYP below); credit falls back to cash.
+  const methodFor = (t: OrderType): PaymentMethod => {
+    const m = resolvePaymentMethod(t, paymentMethod)
+    return t === 'delivery' && deliveryCreditRetired && m === 'credit' ? 'cash' : m
+  }
+  const paymentOptions = displayType === 'delivery' && deliveryCreditRetired
+    ? allowedPaymentMethods('delivery').filter(m => m !== 'credit') : allowedPaymentMethods(displayType)
+  const effectivePaymentMethod = methodFor(displayType)
   const linePrice = (c: CartItem) => displayLineTotal(toPricingInput(c), displayType)
   const menuPrice = (item: MenuItem) => displayMenuPrice(item.price || 0, item.category_id, displayType)
   // Tracking: server-stored line total (base) shown in the same inclusive style for delivery orders.
@@ -424,7 +432,8 @@ export default function Home() {
   const orderTypeLabel = effectiveOrderType === 'delivery' ? (isParcelOrder ? '📦 משלוח אוכל + חבילה' : '🛵 משלוח אוכל')
     : effectiveOrderType === 'pickup' ? '🏃 איסוף עצמי' : 'לא נבחר סוג הזמנה'
   const menuOrderTypeLabel = isParcelOrder ? '📦 משלוח + חבילה' : orderTypeLabel   // shorter for the narrow menu header
-  // Online payment: pilot branch + pickup only, never delivery / parcel (derived, so a mode switch never keeps it).
+  // Online payment: only where the server permits it — pickup; delivery and delivery + parcel with HYP_DELIVERY_ENABLED
+  // (derived, so a mode switch never keeps it).
   const onlineAvailable = isOnlinePaymentAvailable(hypConfig, selectedBranch?.id, effectiveOrderType, isParcelOrder)
   const payOnline = onlineAvailable && onlineSelected
   const parcelError = parcelFormError(parcelForm)
@@ -559,7 +568,7 @@ export default function Home() {
       branchId, type,
       customerName: customerName.trim(),
       phone: normalizePhone(orderPhone),
-      paymentMethod: resolvePaymentMethod(type, paymentMethod),
+      paymentMethod: methodFor(type),
       items,
       delivery: type === 'delivery' ? {
         city: deliveryForm.city,
@@ -646,9 +655,9 @@ export default function Home() {
   // Online payment (HYP-08): the server builds and prices the order; no order exists until the payment is verified.
   // The same cart reuses the same checkout key, so a retry or double click never opens a second payment.
   async function startOnlinePayment() {
-    if (!selectedBranch || effectiveOrderType !== 'pickup' || !canPlaceOrder || !payOnline) return
+    if (!selectedBranch || !effectiveOrderType || !canPlaceOrder || !payOnline) return
     setOrderError('')
-    const request = buildOrderRequest(selectedBranch.id, 'pickup')
+    const request = buildOrderRequest(selectedBranch.id, effectiveOrderType)
     if (!request) { setOrderError(ORDER_ERROR_MESSAGES.invalid_option!); return }
     setPlacingOrder(true)
     let storage: Storage | null = null
@@ -1135,7 +1144,7 @@ export default function Home() {
               </button>
             ))}
           </div>
-          {/* HYP-08: online card payment — rendered only when the server permits it for this branch + pickup */}
+          {/* HYP-08 / HYP-DELIVERY-02: online card payment — only when the server permits it for this branch + order type */}
           {onlineAvailable && (
             <button type="button" onClick={() => setOnlineSelected(true)} aria-pressed={payOnline}
               style={{ width: '100%', marginTop: 10, padding: 14, border: `1px solid ${payOnline ? C.gold : C.border}`, borderRadius: 12, background: payOnline ? 'rgba(255,215,0,0.1)' : C.bg, fontWeight: 700, fontSize: 14, color: payOnline ? C.gold : C.gray, cursor: 'pointer', fontFamily: 'Heebo, sans-serif' }}>

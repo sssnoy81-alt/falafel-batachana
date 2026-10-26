@@ -20,7 +20,7 @@ export interface HypStoredReturn { id: string; intentId: string; returnRaw: stri
 export interface HypFinalized { result: string; orderId: string | null; orderNumber: number | null; dailyNumber: number | null }
 
 export interface HypDb {
-  createIntent(a: { checkoutKey: string; terminalKind: 'test' | 'live'; snapshot: object; amountAgorot: number; ttlSeconds: number }): Promise<HypIntentCreated>
+  createIntent(a: { checkoutKey: string; terminalKind: 'test' | 'live'; orderKind?: 'plain' | 'parcel'; snapshot: object; amountAgorot: number; ttlSeconds: number }): Promise<HypIntentCreated>
   recordSignResult(intentId: string, redirected: boolean): Promise<{ result: string; status: string | null }>
   recordReturn(raw: string): Promise<HypReturnRecorded>
   recordVerification(args: { p_return_id: string; p_outcome: 'authentic' | 'rejected'; p_verify_response: string }): Promise<{ result: string; status: string | null }>
@@ -47,7 +47,7 @@ async function rpc(fn: string, args: Record<string, unknown>): Promise<Row> {
 
 export const supabaseHypDb: HypDb = {
   async createIntent(a) {
-    const r = await rpc('create_payment_intent', { p_checkout_key: a.checkoutKey, p_terminal_kind: a.terminalKind, p_order_kind: 'plain',
+    const r = await rpc('create_payment_intent', { p_checkout_key: a.checkoutKey, p_terminal_kind: a.terminalKind, p_order_kind: a.orderKind ?? 'plain',
                                                    p_snapshot: a.snapshot, p_amount_agorot: a.amountAgorot, p_ttl_seconds: a.ttlSeconds })
     return { result: String(r.result), intentId: str(r.intent_id), publicToken: str(r.public_token), hypOrderRef: str(r.hyp_order_ref), status: str(r.intent_status) }
   },

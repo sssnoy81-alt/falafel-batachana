@@ -285,7 +285,12 @@ await test('29. no browser/client import of the Maale modules; only the flag-gat
   }
   for (const f of walk(LIB).filter(p => p.endsWith('.ts') && !/maale(Dispatch|Client|Payload)\.ts$/.test(p) && !p.endsWith('kitchenAutoDispatchServer.ts')))   // S4-MAALE-03 worker wiring: see verify-maale-auto-dispatch
     assert.ok(!/dispatchOrderToMaale|sendMaaleOrder/.test(readFileSync(f, 'utf8')), f)
-  assert.ok(readFileSync(join(LIB, 'maaleDispatch.ts'), 'utf8').includes('isPaymentVerified: async () => false'), 'production wiring: HYP gate hard-false')
+  // HYP-DELIVERY-02: the production payment check is the real, read-only HYP verification (finalized + VERIFY + no flag);
+  // telephone credit stays blocked regardless of it (credit_dispatch_disabled above).
+  { const md = readFileSync(join(ROOT, 'lib', 'maaleDispatch.ts'), 'utf8').replace(/\r\n/g, '\n')
+    assert.ok(md.includes('isPaymentVerified: orderId => isHypPaymentVerified(orderId),'), 'production wiring: real HYP check')
+    assert.match(md, /\.eq\('order_id', orderId\)\.eq\('status', 'finalized'\)\.eq\('paid_source', 'verify'\)\.is\('staff_flag', null\)\.limit\(2\)/)
+    assert.match(md, /return Array\.isArray\(data\) && data\.length === 1/) }
   for (const f of ['maaleClient.ts', 'maaleDispatch.ts']) assert.ok(!/NEXT_PUBLIC/.test(readFileSync(join(LIB, f), 'utf8')))
 })
 

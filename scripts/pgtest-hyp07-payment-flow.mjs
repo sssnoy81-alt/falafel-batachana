@@ -76,7 +76,7 @@ const CATALOG = {
 const db = {
   async loadCatalog() { return CATALOG },
   async createIntent(a) {
-    const [r] = await q('createIntent', `SELECT result, intent_id, public_token, hyp_order_ref, intent_status FROM public.create_payment_intent(${lit(a.checkoutKey)}::uuid, ${lit(a.terminalKind)}, 'plain', ${lit(JSON.stringify(a.snapshot))}::jsonb, ${a.amountAgorot}, ${a.ttlSeconds});`)
+    const [r] = await q('createIntent', `SELECT result, intent_id, public_token, hyp_order_ref, intent_status FROM public.create_payment_intent(${lit(a.checkoutKey)}::uuid, ${lit(a.terminalKind)}, ${lit(a.orderKind ?? 'plain')}, ${lit(JSON.stringify(a.snapshot))}::jsonb, ${a.amountAgorot}, ${a.ttlSeconds});`)
     return { result: r[0], intentId: nul(r[1]), publicToken: nul(r[2]), hypOrderRef: nul(r[3]), status: nul(r[4]) }
   },
   async recordSignResult(id, ok) { const [r] = await q('recordSignResult', `SELECT result, intent_status FROM public.record_hyp_sign_result(${lit(id)}::uuid, ${ok});`); return { result: r[0], status: nul(r[1]) } },
@@ -422,6 +422,93 @@ try {
     const blob = logs.join('\n')
     for (const s of [ENV.HYP_API_KEY, ENV.HYP_PASSP, 'Flow Customer', '050']) assert.ok(!blob.includes(s), s)
     const u = new URL(lastSignUrl); assert.equal(u.origin, 'https://pay.hyp.co.il'); assert.match(u.searchParams.get('Order'), /^[A-Z0-9]{32}$/)
+  })
+
+  /* ─── HYP-DELIVERY-02: delivery / food + parcel through the real HYP-05 ledger and the real create_order bodies ─── */
+  const OGEO = load(join(ROOT, 'lib', 'orderGeo.ts')), OC = load(join(ROOT, 'lib', 'orderConfig.ts'))
+  const RF = load(join(ROOT, 'lib', 'hyp', 'hypRefundFlag.ts'))
+  const CITY = OC.ACTIVE_DELIVERY_AREAS[0], FEE = OC.DELIVERY_FEES_BY_AREA[CITY], GOOGLE = { lat: 31.7711, lng: 35.2981 }
+  const DENV = { ...ENV, HYP_DELIVERY_ENABLED: 'true', PARCEL_CHECKOUT_ENABLED: 'true' }
+  // Google verification is faked (no network); the REAL server geocode step (lib/orderGeo) applies the verified point
+  const ddeps = { ...deps, resolveAddress: async order => ({ ok: true, order: { ...order, googleAddress: { status: 'verified', ...GOOGLE } } }),
+                  attachGeo: (order, built) => OGEO.attachDeliveryGeo(order, built) }
+  async function startDelivery(o = {}) {
+    const b = { checkoutKey: o.key ?? randomUUID(), branchId: B1, type: 'delivery', customerName: 'Flow Customer', phone: o.phone ?? nextPhone(),
+                items: o.items ?? [{ itemId: M1, quantity: 2 }], delivery: { city: CITY, street: 'הרצל', houseNumber: '1', apartment: '3' }, ...(o.parcel ? { parcel: o.parcel } : {}) }
+    const res = await S.handleHypStart(new Request(`${ORIGIN}/api/payments/hyp/start`, { method: 'POST', body: JSON.stringify(b),
+      headers: { origin: ORIGIN, 'content-type': 'application/json', 'sec-fetch-site': 'same-origin' } }), { ...ddeps, env: { ...DENV, HYP_PILOT_PHONES: b.phone, ...(o.env ?? {}) } })
+    return { status: res.status, json: await res.json(), body: b }
+  }
+  const amountOf = token => Number(val(`SELECT amount_agorot FROM public.payment_intents WHERE public_token = '${token}';`))
+  const orderRow = token => val(`SELECT o.type || '/' || o.payment_method || '/' || o.total_price || '/' || d.delivery_fee || '/' || d.geo_source FROM public.orders o JOIN public.payment_intents pi ON pi.order_id = o.id JOIN public.deliveries d ON d.order_id = o.id WHERE pi.public_token = '${token}';`)
+  // the same SELECT lib/maaleDispatch isHypPaymentVerified runs (service_role)
+  const verifiedRows = token => Number(val(`SET ROLE service_role; SELECT count(*) FROM public.payment_intents WHERE order_id = (SELECT order_id FROM public.payment_intents WHERE public_token = '${token}') AND status = 'finalized' AND paid_source = 'verify' AND staff_flag IS NULL;`))
+
+  await test('D1', 'delivery food only: server-priced intent (food + fee + surcharge) → VERIFY CCode 0 → ONE real delivery order, online, verified for dispatch', async () => {
+    const s = await startDelivery({ items: [{ itemId: M1, quantity: 2 }, { itemId: M2, quantity: 1 }] })
+    assert.equal(s.status, 200, JSON.stringify(s.json))
+    const snap = JSON.parse(val(`SELECT snapshot::text FROM public.payment_intents WHERE public_token = '${s.json.statusToken}';`))
+    assert.equal(val(`SELECT order_kind FROM public.payment_intents WHERE public_token = '${s.json.statusToken}';`), 'plain')
+    const total = 2 * 20 + 26 + FEE + Number(snap.p_delivery.meal_surcharge)
+    assert.equal(snap.p_order.total_price, total); assert.equal(amountOf(s.json.statusToken), Math.round(total * 100))
+    assert.deepEqual([snap.p_delivery.delivery_lat, snap.p_delivery.delivery_lng, snap.p_delivery.geo_source], [GOOGLE.lat, GOOGLE.lng, 'geocoder'])
+    assert.equal(Number(val("SELECT count(*) FROM public.orders WHERE payment_method = 'online' AND type = 'delivery';")), 0, 'no kitchen order before VERIFY')
+    await hypReturn(rawFor(refOf(s.json.statusToken), { amount: total.toFixed(2) }))
+    assert.equal(intentOf(s.json.statusToken), 'finalized/-'); assert.equal(ordersOf(s.json.statusToken), 1)
+    assert.equal(orderRow(s.json.statusToken), `delivery/online/${total.toFixed(2)}/${FEE.toFixed(2)}/geocoder`)
+    assert.equal(verifiedRows(s.json.statusToken), 1)
+  })
+  await test('D2', 'delivery: VERIFY rejected (902) / wrong amount → no order, not verified; 8 parallel duplicate callbacks → exactly one order', async () => {
+    const a = await startDelivery(); const ta = a.json.statusToken
+    verifyPlan.push({ body: 'CCode=902' }); await hypReturn(rawFor(refOf(ta), { amount: (amountOf(ta) / 100).toFixed(2) }))
+    assert.equal(ordersOf(ta), 0)
+    const b = await startDelivery(); const tb = b.json.statusToken
+    await hypReturn(rawFor(refOf(tb), { amount: ((amountOf(tb) - 100) / 100).toFixed(2) }))
+    assert.equal(intentOf(tb), 'paid_amount_mismatch/-'); assert.equal(ordersOf(tb), 0)
+    const c = await startDelivery(); const tc = c.json.statusToken; const raw = rawFor(refOf(tc), { amount: (amountOf(tc) / 100).toFixed(2) })
+    await Promise.all(Array.from({ length: 8 }, () => hypReturn(raw)))
+    assert.equal(ordersOf(tc), 1); assert.equal(intentOf(tc), 'finalized/-')
+  })
+  await test('D3', 'food + parcel: order_kind parcel → ONE order + ONE parcel request (real create_order_with_parcel); same tracking blocked while open and after', async () => {
+    const tracking = 'RR' + String(Date.now()).slice(-9) + 'IL'
+    const s = await startDelivery({ parcel: { trackingRef: tracking, carrier: 'דואר ישראל' } }); const t = s.json.statusToken
+    assert.equal(s.status, 200, JSON.stringify(s.json)); assert.equal(val(`SELECT order_kind FROM public.payment_intents WHERE public_token = '${t}';`), 'parcel')
+    const food = await startDelivery()
+    assert.equal(amountOf(t), amountOf(food.json.statusToken), 'a parcel adds no charge')
+    const dupOpen = await startDelivery({ parcel: { trackingRef: tracking } }); assert.deepEqual([dupOpen.status, dupOpen.json.error], [409, 'parcel_duplicate'])
+    await hypReturn(rawFor(refOf(t), { amount: (amountOf(t) / 100).toFixed(2) }))
+    assert.equal(intentOf(t), 'finalized/-'); assert.equal(ordersOf(t), 1)
+    assert.equal(val(`SELECT count(*) || '/' || min(pr.status) FROM public.parcel_requests pr JOIN public.payment_intents pi ON pi.order_id = pr.order_id WHERE pi.public_token = '${t}';`), '1/awaiting_search')
+    const dupAfter = await startDelivery({ parcel: { trackingRef: tracking } }); assert.deepEqual([dupAfter.status, dupAfter.json.error], [409, 'parcel_duplicate'])
+    const noFlag = await startDelivery({ parcel: { trackingRef: 'LP99887766' }, env: { PARCEL_CHECKOUT_ENABLED: 'false' } }); assert.deepEqual([noFlag.status, noFlag.json.error], [400, 'parcel_checkout_disabled'])
+  })
+  await test('D4', 'cancelled prepaid delivery → refund_required flag (real resolve_payment_intent): NO refund / reversal recorded; no longer dispatchable', async () => {
+    const s = await startDelivery(); const t = s.json.statusToken
+    await hypReturn(rawFor(refOf(t), { amount: (amountOf(t) / 100).toFixed(2) })); assert.equal(ordersOf(t), 1)
+    const orderId = val(`SELECT order_id FROM public.payment_intents WHERE public_token = '${t}';`)
+    psql(`SET ROLE service_role; UPDATE public.orders SET status = 'cancelled' WHERE id = '${orderId}';`)
+    const fdeps = {
+      async findFinalizedIntent(oid) { return nul(val(`SET ROLE service_role; SELECT COALESCE((SELECT id::text FROM public.payment_intents WHERE order_id = '${oid}' AND status = 'finalized' LIMIT 1), '');`)) },
+      async flagRefundRequired(id, staff, note) { return val(`SET ROLE service_role; SELECT result FROM public.resolve_payment_intent('${id}'::uuid, 'flag_refund_required', ${lit(staff)}, ${lit(note)});`) },
+      log: () => {} }
+    const reversalsBefore = Number(val('SELECT count(*) FROM public.payment_reversals;'))
+    assert.equal(await RF.flagRefundForCancelledOrder(fdeps, orderId, 'adumim'), 'recorded')
+    assert.equal(await RF.flagRefundForCancelledOrder(fdeps, orderId, 'adumim'), 'already_flagged')
+    assert.equal(val(`SELECT status || '/' || staff_flag || '/' || staff_flag_by FROM public.payment_intents WHERE public_token = '${t}';`), 'finalized/refund_required/adumim')
+    assert.equal(Number(val('SELECT count(*) FROM public.payment_reversals;')), reversalsBefore, 'no refund recorded')
+    assert.equal(verifiedRows(t), 0, 'a refund-flagged payment is never dispatched')
+    const cash = val("SELECT id FROM public.orders WHERE payment_method <> 'online' LIMIT 1;")
+    assert.equal(await RF.flagRefundForCancelledOrder(fdeps, cash, 'adumim'), 'not_prepaid')
+  })
+  await test('D5', 'feature OFF: delivery start refused before any row; pickup flow with the flag ON writes the same intent as before', async () => {
+    const before = Number(val('SELECT count(*) FROM public.payment_intents;'))
+    const off = await startDelivery({ env: { HYP_DELIVERY_ENABLED: 'false' } }); assert.deepEqual([off.status, off.json.error], [400, 'online_payment_type_not_allowed'])
+    assert.equal(Number(val('SELECT count(*) FROM public.payment_intents;')), before)
+    const phone = nextPhone()
+    const p = await S.handleHypStart(new Request(`${ORIGIN}/api/payments/hyp/start`, { method: 'POST', body: JSON.stringify({ checkoutKey: randomUUID(), branchId: B1, type: 'pickup', customerName: 'Flow Customer', phone, items: [{ itemId: M1, quantity: 2 }] }),
+      headers: { origin: ORIGIN, 'content-type': 'application/json', 'sec-fetch-site': 'same-origin' } }), { ...ddeps, env: { ...DENV, HYP_PILOT_PHONES: phone } })
+    const pj = await p.json(); assert.equal(p.status, 200)
+    assert.equal(val(`SELECT order_kind || '/' || amount_agorot || '/' || (snapshot ? 'p_delivery')::text || '/' || (snapshot ? 'p_parcel')::text FROM public.payment_intents WHERE public_token = '${pj.statusToken}';`), 'plain/4000/false/false')
   })
 } finally {
   docker(['rm', '-f', NAME])

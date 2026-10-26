@@ -129,6 +129,8 @@ export function mapDispatchResult(r: DispatchResult): KitchenDispatchResponse {
         case 'order_not_found': return NOT_FOUND
         case 'order_not_confirmed': return reply(409, { error: 'not_eligible', reason: 'order_status' })
         case 'credit_dispatch_disabled': return reply(409, { error: 'not_eligible', reason: 'credit_not_supported' })
+        case 'payment_not_verified': return reply(409, { error: 'not_eligible', reason: 'payment_not_verified' })
+        case 'payment_state_unknown': return reply(503, { error: 'dispatch_unavailable' })
         case 'parcel_unresolved': case 'parcel_manual_dispatch_required': return reply(409, { error: 'not_eligible', reason: r.reason })
         case 'location_manual_review': return reply(409, { error: 'manual_review_required', reason: 'location_ambiguous', view: 'needs_manual_check' })
         case 'invalid_payload': {

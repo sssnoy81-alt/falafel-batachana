@@ -183,7 +183,7 @@ export const AUTO_DISPATCH_LABELS: Record<KitchenAutoDispatchState, string> = {
   skipped: 'לא הוזמן שליח אוטומטית',
 }
 const AUTO_REASON_TEXT: Record<string, string> = {
-  credit_dispatch_disabled: 'תשלום באשראי', location_manual_review: 'כפר אדומים / נופי פרת', invalid_payload: 'פרטי הכתובת או הסכום אינם תקינים',
+  credit_dispatch_disabled: 'תשלום באשראי', payment_not_verified: 'התשלום המקוון לא אומת', location_manual_review: 'כפר אדומים / נופי פרת', invalid_payload: 'פרטי הכתובת או הסכום אינם תקינים',
   parcel_unresolved: 'החבילה לא אותרה', parcel_manual_dispatch_required: 'יש חבילה בהזמנה', manual_courier_recorded: 'נרשם שליח שהוזמן ידנית',
   manual_review_open: 'בירור ידני פתוח', retries_exhausted: 'מעלה אקספרס לא זמינה כרגע', stale: 'עבר זמן רב מאישור ההזמנה',
   fee_mismatch: 'דמי המשלוח אינם תואמים להצעת הספק', quote_fee_missing: 'הספק לא החזיר דמי משלוח', quote_amount_mismatch: 'הסכומים אינם תואמים להצעת הספק',
@@ -244,6 +244,7 @@ export const DISPATCH_MESSAGES: Record<string, string> = {
 const NOT_ELIGIBLE_REASONS: Record<string, string> = {
   order_status: 'ניתן להזמין שליח רק להזמנה שאושרה או בהכנה',
   credit_not_supported: 'תשלום באשראי — יש להזמין שליח ידנית',
+  payment_not_verified: 'התשלום המקוון לא אומת — אין להזמין שליח לפני בירור התשלום',
   parcel_unresolved: 'יש לטפל בחבילה לפני הזמנת שליח',
   parcel_manual_dispatch_required: 'יש חבילה בהזמנה — יש להזמין שליח ידנית',
   cash_amount_too_high: 'סכום מזומן מעל ₪600 — יש לתאם טלפונית',

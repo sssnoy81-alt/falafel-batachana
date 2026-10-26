@@ -629,7 +629,7 @@ await test('no courier dispatch, no signing links, no orders.status writes from 
 
 await test('status route maps the DB gate and the cancel-sync rule; UI offers full cancellation only behind the flag, with a confirm', () => {
   const s = src('app/api/kitchen/orders/[id]/status/route.ts')
-  assert.match(s, /select\('id, status, branch_id, parcel_requests\(status\)'\)/)
+  assert.match(s, /select\('id, status, branch_id, (payment_method, )?parcel_requests\(status\)'\)/)
   assert.match(s, /error\.code === 'P0001' && error\.message === 'parcel_not_ready'/)
   assert.match(s, /error\.code === '22023' && \/\^parcel_\[a-z_\]\+\$\/\.test\(error\.message\)\) throw new ParcelStateRejectedError\(\)/)
   assert.ok(!/from\('parcel_requests'\)/.test(s), 'status route never writes parcels itself (DB trigger only)')

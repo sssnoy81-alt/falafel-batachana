@@ -428,11 +428,135 @@ await test('legacy checkout untouched: POST /api/orders unchanged in git, the pa
   execFileSync('git', ['merge-base', '--is-ancestor', HYP_RELEASED, 'HEAD'], { cwd: ROOT })
   const diff = execFileSync('git', ['diff', '--name-only', '--diff-filter=MDRT', PRE_HYP_BASE, HYP_RELEASED, '--', 'app/api/orders', 'lib/orderRequest.ts', 'lib/orderConfig.ts', 'lib/createOrder.ts', 'lib/maaleDispatch.ts', 'lib/maalePayload.ts', 'app/api/kitchen', 'app/order/DeliveryAddressPicker.tsx'], { cwd: ROOT, encoding: 'utf8' })
   assert.equal(diff.trim(), '')
-  assert.equal(execFileSync('git', ['diff', '--name-only', PRE_HYP_BASE, '--', 'app/api/orders', 'lib/orderRequest.ts', 'lib/createOrder.ts', 'app/order/DeliveryAddressPicker.tsx'], { cwd: ROOT, encoding: 'utf8' }).trim(), '')
+  // HYP-DELIVERY-02: POST /api/orders stayed untouched through the released HYP / Maale work (→ 924e076) …
+  const HYP_DELIVERY_BASE = '924e07622536cfeda13b1be7cf0e0adf4c3f7e5e'
+  execFileSync('git', ['merge-base', '--is-ancestor', HYP_DELIVERY_BASE, 'HEAD'], { cwd: ROOT })
+  assert.equal(execFileSync('git', ['diff', '--name-only', PRE_HYP_BASE, HYP_DELIVERY_BASE, '--', 'app/api/orders', 'lib/orderRequest.ts', 'lib/createOrder.ts', 'app/order/DeliveryAddressPicker.tsx'], { cwd: ROOT, encoding: 'utf8' }).trim(), '')
+  // … and since then changes ONLY by the flag-gated telephone-credit retirement (every other line byte-identical)
+  assert.equal(execFileSync('git', ['diff', '--name-only', HYP_DELIVERY_BASE, '--', 'lib/createOrder.ts', 'app/order/DeliveryAddressPicker.tsx'], { cwd: ROOT, encoding: 'utf8' }).trim(), '')
+  const d2 = execFileSync('git', ['diff', '-U0', HYP_DELIVERY_BASE, '--', 'app/api/orders', 'lib/orderRequest.ts'], { cwd: ROOT, encoding: 'utf8' }).replace(/\r\n/g, '\n').split('\n')
+  const removed2 = d2.filter(l => l.startsWith('-') && !l.startsWith('---')), added2 = d2.filter(l => l.startsWith('+') && !l.startsWith('+++'))
+  assert.deepEqual(removed2, ["-  const parsed = parseCreateOrderRequest(body, { parcelCheckoutEnabled: isParcelCheckoutEnabled(process.env) })"], removed2.join('\n'))
+  for (const l of added2) assert.ok(/deliveryCreditRetired|isHypDeliveryEnabled|HYP-DELIVERY-02|Default false: the delivery payment methods/.test(l), `ungated legacy change: ${l}`)
   assert.deepEqual([...OC.PAYMENT_METHODS], ['cash', 'credit', 'cibus', 'bit'])
   const p = OR.parseCreateOrderRequest({ branchId: B1, type: 'pickup', customerName: NAME, phone: PHONE, paymentMethod: 'online', items: [{ itemId: M1, quantity: 1 }] })
   assert.equal(p.ok, false); assert.equal(p.code, 'invalid_payment_method')
   for (const pm of ['cash', 'credit', 'cibus', 'bit']) assert.equal(OR.parseCreateOrderRequest({ branchId: B1, type: 'pickup', customerName: NAME, phone: PHONE, paymentMethod: pm, items: [{ itemId: M1, quantity: 1 }] }).ok, true, pm)
+})
+
+console.log('HYP-DELIVERY-02 — delivery (food only / food + parcel) through HYP')
+const DEL_ENV = { ...ENV, HYP_DELIVERY_ENABLED: 'true' }
+const CITY = OC.ACTIVE_DELIVERY_AREAS[0], FEE = OC.DELIVERY_FEES_BY_AREA[CITY]
+const delBody = (o = {}) => body({ type: 'delivery', delivery: { city: CITY, street: 'הרצל', houseNumber: '1', apartment: '4' }, ...o })
+// the verified address / server geocode the production deps (lib/orderAddress, lib/orderGeo) would supply
+const GOOGLE = { lat: 31.7711, lng: 35.2981 }
+function delDeps(db, o = {}) {
+  const calls = { resolve: [], geo: [] }
+  const base = deps(db, { env: o.env ?? DEL_ENV, answers: ['sign_echo'], ...o })
+  const d = { ...base.d,
+    ...(o.noResolve ? {} : { async resolveAddress(order) { calls.resolve.push(order); return o.resolveResult ?? { ok: true, order: { ...order, googleAddress: { status: 'verified', ...GOOGLE } } } } }),
+    async attachGeo(order, built) { calls.geo.push(order)
+      return { ...built, rpcArgs: { ...built.rpcArgs, p_delivery: { ...built.rpcArgs.p_delivery, delivery_lat: GOOGLE.lat, delivery_lng: GOOGLE.lng, geo_source: 'geocoder', geo_precision: 'street' } } } } }
+  return { ...base, d, calls }
+}
+
+await test('HYP_DELIVERY_ENABLED: exact "true" only; OFF = delivery refused exactly as before (no catalog, no intent)', async () => {
+  for (const v of [undefined, '', 'TRUE', '1', 'yes', 'true ']) {
+    const db = new FakeDb(); const r = await call(S.handleHypStart, startReq(delBody()), delDeps(db, { env: { ...ENV, HYP_DELIVERY_ENABLED: v } }).d)
+    assert.deepEqual([r.status, r.json.error], [400, 'online_payment_type_not_allowed'], String(v)); assert.equal(db.calls.length, 0)
+  }
+  const F = load(join(ROOT, 'lib', 'hyp', 'hypFlags.ts'))
+  assert.deepEqual([...F.hypAllowedOrderTypes(ENV)], ['pickup']); assert.deepEqual([...F.hypAllowedOrderTypes(DEL_ENV)], ['pickup', 'delivery'])
+})
+await test('delivery START: verified address + server geocode, HYP amount = authoritative total (food + delivery fee + surcharge), snapshot with p_delivery', async () => {
+  const db = new FakeDb(); const x = delDeps(db)
+  const b = delBody({ items: [{ itemId: M1, quantity: 2 }, { itemId: M2, quantity: 1 }] })
+  const r = await call(S.handleHypStart, startReq(b), x.d)
+  assert.equal(r.status, 200, JSON.stringify(r.json)); assert.ok(r.json.redirectUrl && r.json.statusToken)
+  assert.equal(x.calls.resolve.length, 1); assert.equal(x.calls.geo.length, 1)
+  const c = db.calls.find(y => y.op === 'createIntent').args
+  assert.equal(c.orderKind, 'plain'); assert.deepEqual(Object.keys(c.snapshot).sort(), ['p_delivery', 'p_items', 'p_order'])
+  assert.equal(c.snapshot.p_order.type, 'delivery'); assert.equal(c.snapshot.p_order.payment_method, 'online')
+  // independent recomputation through the authoritative parser + pricing (the same code POST /api/orders uses)
+  const parsed = OR.parseCreateOrderRequest({ ...b, paymentMethod: 'cash' }); assert.ok(parsed.ok)
+  const built = OR.buildOrderFromCatalog(parsed.value, CATALOG); assert.ok(built.ok)
+  const foodPlusFee = 2 * 20 + 26 + FEE + Number(c.snapshot.p_delivery.meal_surcharge)
+  assert.equal(c.snapshot.p_order.total_price, built.value.breakdown.total); assert.equal(built.value.breakdown.total, foodPlusFee)
+  assert.equal(c.amountAgorot, Math.round(foodPlusFee * 100)); assert.equal(Number(c.snapshot.p_delivery.delivery_fee), FEE)
+  assert.deepEqual([c.snapshot.p_delivery.delivery_lat, c.snapshot.p_delivery.delivery_lng, c.snapshot.p_delivery.geo_source], [GOOGLE.lat, GOOGLE.lng, 'geocoder'])
+  const sign = new URL(x.transportCalls[0]); assert.equal(sign.searchParams.get('Amount'), (foodPlusFee).toFixed(2))
+  assert.deepEqual(db.ops(), ['loadCatalog', 'createIntent', 'recordSignResult'])
+})
+await test('delivery START fails closed: unverified address → 400 before the catalog; missing delivery deps → 503; client amount / fee refused', async () => {
+  const a = new FakeDb(); const r1 = await call(S.handleHypStart, startReq(delBody()), delDeps(a, { resolveResult: { ok: false, code: 'address_not_verified', detail: 'place_not_found' } }).d)
+  assert.deepEqual([r1.status, r1.json], [400, { error: 'address_not_verified', detail: 'place_not_found' }]); assert.equal(a.calls.length, 0)
+  const b2 = new FakeDb(); const r2 = await call(S.handleHypStart, startReq(delBody()), delDeps(b2, { noResolve: true }).d)
+  assert.deepEqual([r2.status, r2.json.error], [503, 'payments_unavailable']); assert.equal(b2.calls.length, 0)
+  const thr = new FakeDb(); const xt = delDeps(thr); xt.d.resolveAddress = async () => { throw new Error('boom') }
+  const r4 = await call(S.handleHypStart, startReq(delBody()), xt.d)
+  assert.deepEqual([r4.status, r4.json.error], [503, 'payments_unavailable']); assert.equal(thr.calls.length, 0, 'address error → nothing written')
+  for (const k of ['amount', 'amountAgorot', 'p_delivery']) {
+    const db = new FakeDb(); const r = await call(S.handleHypStart, startReq(delBody({ [k]: 1 })), delDeps(db).d)
+    assert.deepEqual([r.status, r.json.error], [400, 'client_payment_fields_not_accepted'], k); assert.equal(db.calls.length, 0)
+  }
+  // a browser-supplied delivery fee is ignored: the server fee is charged
+  const fee = new FakeDb(); const r3 = await call(S.handleHypStart, startReq(delBody({ delivery: { city: CITY, street: 'הרצל', houseNumber: '1', deliveryFee: 0, delivery_fee: 0 } })), delDeps(fee).d)
+  if (r3.status === 200) { const c = fee.calls.find(y => y.op === 'createIntent').args; assert.equal(Number(c.snapshot.p_delivery.delivery_fee), FEE); assert.equal(c.amountAgorot, Math.round((40 + FEE + Number(c.snapshot.p_delivery.meal_surcharge)) * 100)) }
+  else assert.ok(!fee.ops().includes('createIntent'), 'refused, or priced with the server fee — never the browser fee')
+})
+await test('delivery START scope: other branch refused; pickup cannot carry a delivery / parcel; parcels need PARCEL_CHECKOUT_ENABLED', async () => {
+  const o = await call(S.handleHypStart, startReq(delBody({ branchId: 'f1e2d3c4-b5a6-4978-8a9b-0c1d2e3f4a5b' })), delDeps(new FakeDb()).d)
+  assert.ok(['online_payment_branch_not_allowed', 'invalid_branch', 'delivery_not_available'].includes(o.json.error), o.json.error)
+  const p = await call(S.handleHypStart, startReq(body({ delivery: { city: CITY, street: 'הרצל', houseNumber: '1' } })), delDeps(new FakeDb()).d)
+  assert.equal(p.status, 400)
+  const noFlag = new FakeDb(); const r = await call(S.handleHypStart, startReq(delBody({ parcel: { trackingRef: 'RR123456789IL' } })), delDeps(noFlag).d)
+  assert.deepEqual([r.status, r.json.error], [400, 'parcel_checkout_disabled']); assert.equal(noFlag.calls.length, 0)
+})
+await test('food + parcel START: order_kind parcel, p_parcel exactly as POST /api/orders builds it, same amount as food only; duplicate tracking → 409', async () => {
+  const env = { ...DEL_ENV, PARCEL_CHECKOUT_ENABLED: 'true' }
+  const db = new FakeDb(); const r = await call(S.handleHypStart, startReq(delBody({ parcel: { trackingRef: 'RR123456789IL', carrier: 'דואר ישראל' } })), delDeps(db, { env }).d)
+  assert.equal(r.status, 200, JSON.stringify(r.json))
+  const c = db.calls.find(y => y.op === 'createIntent').args
+  assert.equal(c.orderKind, 'parcel'); assert.deepEqual(c.snapshot.p_parcel, { tracking_ref: 'RR123456789IL', carrier: 'דואר ישראל' })
+  const food = new FakeDb(); await call(S.handleHypStart, startReq(delBody()), delDeps(food, { env }).d)
+  assert.equal(c.amountAgorot, food.calls.find(y => y.op === 'createIntent').args.amountAgorot, 'a parcel adds no charge')
+  for (const result of ['parcel_active', 'parcel_reserved']) {
+    const dup = new FakeDb({ createResult: { result, intentId: null, publicToken: null, hypOrderRef: null, status: null } })
+    const rr = await call(S.handleHypStart, startReq(delBody({ parcel: { trackingRef: 'RR123456789IL' } })), delDeps(dup, { env }).d)
+    assert.deepEqual([rr.status, rr.json.error], [409, 'parcel_duplicate'], result); assert.ok(!dup.ops().includes('recordSignResult'), 'no payment page')
+  }
+})
+await test('pickup START byte-identical with the delivery flag on (same snapshot, amount, ops, no address step)', async () => {
+  const run = async env => { const db = new FakeDb(); const x = delDeps(db, { env }); const r = await call(S.handleHypStart, startReq(body({ checkoutKey: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' })), x.d); return { r, db, x } }
+  const off = await run(ENV), on = await run(DEL_ENV)
+  assert.equal(on.r.status, 200); assert.deepEqual(on.db.calls, off.db.calls); assert.equal(on.x.calls.resolve.length, 0); assert.equal(on.x.calls.geo.length, 0)
+  assert.equal(on.db.calls.find(y => y.op === 'createIntent').args.orderKind, 'plain')
+})
+await test('delivery return → VERIFY CCode=0 → ONE finalize; rejected VERIFY never finalizes; duplicate callback → no second order', async () => {
+  const db = new FakeDb({ intentStatus: 'redirected' }); db.intent.amountAgorot = 7100
+  const ok = await call(S.handleHypReturn, returnReq(returnRaw({ Amount: '71.00' })), delDeps(db, { answers: [{ body: 'CCode=0' }] }).d)
+  assert.equal(ok.status, 303); assert.equal(db.orders, 1)
+  await call(S.handleHypReturn, returnReq(returnRaw({ Amount: '71.00' })), delDeps(db, { answers: [{ body: 'CCode=0' }] }).d)
+  assert.equal(db.orders, 1, 'duplicate callback')
+  const bad = new FakeDb({ intentStatus: 'redirected' }); bad.intent.amountAgorot = 7100
+  await call(S.handleHypReturn, returnReq(returnRaw({ Amount: '71.00' })), delDeps(bad, { answers: [{ body: 'CCode=200' }] }).d)
+  assert.equal(bad.orders, 0); assert.ok(!bad.ops().includes('finalize'))
+})
+await test('config: delivery advertised + telephone credit retired only with the flag; retirement independent of HYP availability', async () => {
+  assert.deepEqual(await S.handlePaymentsConfig(ENV).json(), { hypPayments: { branchIds: [B1], orderTypes: ['pickup'] } }, 'flag off: byte-identical')
+  assert.deepEqual(await S.handlePaymentsConfig(DEL_ENV).json(), { hypPayments: { branchIds: [B1], orderTypes: ['pickup', 'delivery'] }, deliveryCreditRetired: true })
+  assert.deepEqual(await S.handlePaymentsConfig({ ...DEL_ENV, HYP_PASSP: '' }).json(), { hypPayments: null, deliveryCreditRetired: true }, 'HYP down → cash only, never telephone credit')
+  assert.deepEqual(await S.handlePaymentsConfig({ ...DEL_ENV, HYP_PAYMENTS_ENABLED: 'false' }).json(), { hypPayments: null, deliveryCreditRetired: true })
+})
+await test('POST /api/orders parser: telephone credit for delivery refused ONLY when retired; cash / pickup methods unchanged; default = as before', async () => {
+  const req = (type, pm) => ({ branchId: B1, type, customerName: NAME, phone: PHONE, paymentMethod: pm, items: [{ itemId: M1, quantity: 1 }],
+    ...(type === 'delivery' ? { delivery: { city: CITY, street: 'הרצל', houseNumber: '1' } } : {}) })
+  assert.equal(OR.parseCreateOrderRequest(req('delivery', 'credit')).ok, true, 'default: telephone credit as before')
+  const ret = OR.parseCreateOrderRequest(req('delivery', 'credit'), { deliveryCreditRetired: true }); assert.deepEqual([ret.ok, ret.code], [false, 'payment_method_not_allowed'])
+  assert.equal(OR.parseCreateOrderRequest(req('delivery', 'cash'), { deliveryCreditRetired: true }).ok, true)
+  for (const pm of ['cash', 'credit', 'cibus', 'bit']) assert.equal(OR.parseCreateOrderRequest(req('pickup', pm), { deliveryCreditRetired: true }).ok, true, pm)
+  assert.match(src('app/api/orders/route.ts'), /deliveryCreditRetired: isHypDeliveryEnabled\(process\.env\)/)
+  assert.match(src('lib/hyp/hypDeps.ts'), /resolveAddress: order => resolveGoogleDeliveryAddress\(order\),\n?\r?\n?\s*attachGeo: \(order, built\) => attachDeliveryGeo\(order, built\),/)
 })
 
 console.log(`\n${passed}/${passed + failed} PASS${failed ? ` — ${failed} FAILED` : ''}`)

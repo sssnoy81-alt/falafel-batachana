@@ -8,6 +8,7 @@ import {
   ParcelRejectedError,
 } from '@/lib/createOrder'
 import { isParcelCheckoutEnabled } from '@/lib/parcelCheckout'
+import { isHypDeliveryEnabled } from '@/lib/hyp/hypFlags'
 import { isShopOpen } from '@/lib/hours'
 import { attachDeliveryGeo } from '@/lib/orderGeo'
 import { resolveGoogleDeliveryAddress } from '@/lib/orderAddress'
@@ -43,7 +44,8 @@ export async function POST(req: NextRequest) {
     return errorResponse(400, 'invalid_request')
   }
 
-  const parsed = parseCreateOrderRequest(body, { parcelCheckoutEnabled: isParcelCheckoutEnabled(process.env) })
+  // HYP-DELIVERY-02: with HYP_DELIVERY_ENABLED a new delivery order is cash (here) or HYP (POST /api/payments/hyp/start)
+  const parsed = parseCreateOrderRequest(body, { parcelCheckoutEnabled: isParcelCheckoutEnabled(process.env), deliveryCreditRetired: isHypDeliveryEnabled(process.env) })
   if (!parsed.ok) return errorResponse(400, parsed.code, parsed.detail)
 
   if (!isShopOpen()) return errorResponse(409, 'closed')

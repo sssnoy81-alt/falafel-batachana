@@ -156,6 +156,9 @@ const FORBIDDEN_PARCEL_KEYS = ['p_parcel', 'tracking_ref', 'trackingRef', 'track
 export interface ParseOrderOptions {
   /** Server-side PARCEL_CHECKOUT_ENABLED. Default false: any parcel in the request is rejected. */
   parcelCheckoutEnabled?: boolean
+  /** HYP-DELIVERY-02 (HYP_DELIVERY_ENABLED): telephone credit is retired for NEW delivery orders — cash or HYP only.
+   *  Default false: the delivery payment methods are exactly as before (cash / credit). */
+  deliveryCreditRetired?: boolean
 }
 
 export function parseCreateOrderRequest(body: unknown, opts: ParseOrderOptions = {}): Result<CreateOrderRequest> {
@@ -189,6 +192,7 @@ export function parseCreateOrderRequest(body: unknown, opts: ParseOrderOptions =
   if (!isPaymentMethod(paymentMethod)) return fail('invalid_payment_method')
   // Delivery is credit-only (temporary rule until HYP). Rejected before any catalog/DB access.
   if (!isPaymentMethodAllowed(type, paymentMethod)) return fail('payment_method_not_allowed')
+  if (type === 'delivery' && paymentMethod === 'credit' && opts.deliveryCreditRetired === true) return fail('payment_method_not_allowed')
 
   if (!Array.isArray(items) || items.length === 0) return fail('empty_cart')
   if (items.length > MAX_CART_LINES) return fail('invalid_request', 'too_many_lines')

@@ -10,11 +10,13 @@
 // unknown outcomes are left for reconciliation; no redirect target comes from the request; logs carry codes only.
 
 import { checkSameOriginJson } from '../kitchenAuth'
-import { buildOrderFromCatalog, isUuid, parseCreateOrderRequest, type CreateOrderRpcArgs } from '../orderRequest'
+import { buildOrderFromCatalog, isUuid, parseCreateOrderRequest, type BuiltOrder, type CreateOrderRequest, type CreateOrderRpcArgs } from '../orderRequest'
+import type { ResolvedOrderAddress } from '../orderAddress'
+import { isParcelCheckoutEnabled, type ParcelCheckoutInput } from '../parcelCheckout'
 import { resolveHypConfig } from './hypConfig'
 import { signPayment, toVerificationRecord, verificationRpcArgs, verifyHypReturn, type HypTransport } from './hypClient'
 import { HypDbError, type HypDb } from './hypDb'
-import { HYP_ALLOWED_BRANCH_IDS, HYP_ALLOWED_ORDER_TYPES, HYP_INTENT_TTL_SECONDS, HYP_PAYMENT_DESCRIPTION, isHypAudienceConfigured, isHypPaymentsEnabled, isHypPhoneAllowed, type EnvLike } from './hypFlags'
+import { HYP_ALLOWED_BRANCH_IDS, HYP_INTENT_TTL_SECONDS, HYP_PAYMENT_DESCRIPTION, hypAllowedOrderTypes, isHypAudienceConfigured, isHypDeliveryEnabled, isHypPaymentsEnabled, isHypPhoneAllowed, type EnvLike } from './hypFlags'
 import { clientKey, type RateLimiter } from './hypRateLimit'
 import { decodeCaptureEnvelope } from './hypCapture'
 
@@ -29,6 +31,11 @@ export interface HypDeps {
   isShopOpen: () => boolean
   limits: { start: RateLimiter; startPhone: RateLimiter; ret: RateLimiter; status: RateLimiter }
   log: (event: string, code?: string) => void   // codes only — never raw query strings, URLs, names or phones
+  /** HYP-DELIVERY-02: the same server-side delivery steps as POST /api/orders — Google place verification (browser
+   *  address details are never trusted) and server geocoding. Production: lib/orderAddress + lib/orderGeo. Missing →
+   *  a delivery start fails closed (503) before any database access. */
+  resolveAddress?: (order: CreateOrderRequest) => Promise<ResolvedOrderAddress>
+  attachGeo?: (order: CreateOrderRequest, built: BuiltOrder) => Promise<BuiltOrder>
 }
 
 export const HYP_MAX_START_BODY_BYTES = 16384
@@ -74,35 +81,52 @@ export async function handleHypStart(req: Request, deps: HypDeps): Promise<Respo
   const { checkoutKey, ...orderBody } = raw
   if (!isUuid(checkoutKey)) return fail(400, 'invalid_checkout_key')
 
-  // The authoritative order parser, exactly as POST /api/orders (parcels off). 'credit' is only the parser's pickup
-  // placeholder (pricing never reads the method); the stored snapshot says 'online'.
-  const parsed = parseCreateOrderRequest({ ...orderBody, paymentMethod: 'credit' }, { parcelCheckoutEnabled: false })
+  // The authoritative order parser, exactly as POST /api/orders. The payment method is only the parser's placeholder
+  // (pricing never reads it; the stored snapshot says 'online'): 'credit' for pickup as before, 'cash' for delivery
+  // (always a delivery method). Parcels only for a delivery, with HYP_DELIVERY_ENABLED AND PARCEL_CHECKOUT_ENABLED.
+  const delivery = isHypDeliveryEnabled(deps.env)
+  const placeholder = delivery && (orderBody as { type?: unknown }).type === 'delivery' ? 'cash' : 'credit'
+  const parsed = parseCreateOrderRequest({ ...orderBody, paymentMethod: placeholder }, { parcelCheckoutEnabled: delivery && isParcelCheckoutEnabled(deps.env) })
   if (!parsed.ok) return json(400, parsed.detail ? { error: parsed.code, detail: parsed.detail } : { error: parsed.code })
-  const order = parsed.value
-  if (!HYP_ALLOWED_ORDER_TYPES.includes(order.type)) return fail(400, 'online_payment_type_not_allowed')
+  let order = parsed.value
+  if (!hypAllowedOrderTypes(deps.env).includes(order.type)) return fail(400, 'online_payment_type_not_allowed')
   if (!HYP_ALLOWED_BRANCH_IDS.includes(order.branchId)) return fail(400, 'online_payment_branch_not_allowed')
-  if (order.parcel || order.delivery) return fail(400, 'online_payment_type_not_allowed')
+  if (order.type !== 'delivery' && (order.parcel || order.delivery)) return fail(400, 'online_payment_type_not_allowed')
   // Phone scope: HYP_PAYMENTS_AUDIENCE=all, else the HYP_PILOT_PHONES pilot (outside it the feature behaves as off).
   if (!isHypPhoneAllowed(deps.env, order.phone)) return fail(404, 'payments_disabled')
   if (!deps.limits.startPhone.hit(`phone:${order.phone}`)) return fail(429, 'rate_limited')
   if (!deps.isShopOpen()) return fail(409, 'closed')
+  if (order.type === 'delivery') {
+    // exactly POST /api/orders: the server verifies the Google place itself and uses Google's street / coordinates
+    if (!deps.resolveAddress || !deps.attachGeo) { deps.log('hyp_start_delivery_deps'); return fail(503, 'payments_unavailable') }
+    let resolved: ResolvedOrderAddress
+    try { resolved = await deps.resolveAddress(order) } catch { deps.log('hyp_start_address', 'unexpected'); return fail(503, 'payments_unavailable') }
+    if (!resolved.ok) return json(400, resolved.detail ? { error: resolved.code, detail: resolved.detail } : { error: resolved.code })
+    order = resolved.order
+  }
 
   try {
     const catalog = await deps.db.loadCatalog(order)
     if (catalog === 'invalid_branch') return fail(400, 'invalid_branch')
     const built = buildOrderFromCatalog(order, catalog)
     if (!built.ok) return json(400, built.detail ? { error: built.code, detail: built.detail } : { error: built.code })
+    // delivery only: server geocoding, as POST /api/orders (never changes a price)
+    const toCreate = order.type === 'delivery' && deps.attachGeo ? await deps.attachGeo(order, built.value) : built.value
 
-    const snapshot = toSnapshot(built.value.rpcArgs)
+    const snapshot = toSnapshot(toCreate.rpcArgs, order.parcel)
     const amountAgorot = Math.round(built.value.breakdown.total * 100)
     if (!Number.isSafeInteger(amountAgorot) || amountAgorot < 1 || Math.abs(built.value.breakdown.total * 100 - amountAgorot) > 1e-6
-        || snapshot.p_order.total_price !== built.value.breakdown.total) {
+        || snapshot.p_order.total_price !== built.value.breakdown.total
+        || (order.type === 'delivery') !== ('p_delivery' in snapshot) || (!!order.parcel) !== ('p_parcel' in snapshot)) {
       deps.log('hyp_start_amount_invariant'); return fail(500, 'server_error')
     }
 
-    const intent = await deps.db.createIntent({ checkoutKey, terminalKind: config.terminalKind, snapshot, amountAgorot, ttlSeconds: HYP_INTENT_TTL_SECONDS })
+    const intent = await deps.db.createIntent({ checkoutKey, terminalKind: config.terminalKind, orderKind: order.parcel ? 'parcel' : 'plain',
+                                                snapshot, amountAgorot, ttlSeconds: HYP_INTENT_TTL_SECONDS })
     if (intent.result === 'checkout_key_reused') return fail(409, 'checkout_key_reused')
     if (intent.result === 'open_payment_exists') return fail(409, 'payment_in_progress')
+    // the tracking number is already in an active order / open payment (same rule as POST /api/orders → 409)
+    if (intent.result === 'parcel_active' || intent.result === 'parcel_reserved') return fail(409, 'parcel_duplicate')
     if (intent.result !== 'created' && intent.result !== 'existing') {
       deps.log('hyp_start_intent', intent.result); return fail(intent.result === 'retry' ? 409 : 500, intent.result === 'retry' ? 'retry' : 'server_error')
     }
@@ -128,10 +152,16 @@ export async function handleHypStart(req: Request, deps: HypDeps): Promise<Respo
   }
 }
 
-/** Exactly the create_order arguments the server built; pickup carries no p_delivery key (HYP-05 snapshot CHECK). */
-export function toSnapshot(args: CreateOrderRpcArgs): { p_order: Omit<CreateOrderRpcArgs['p_order'], 'payment_method'> & { payment_method: 'online' }; p_items: CreateOrderRpcArgs['p_items']; p_delivery?: NonNullable<CreateOrderRpcArgs['p_delivery']> } {
+/** The p_parcel argument of create_order_with_parcel, exactly as lib/createOrder builds it for POST /api/orders. */
+export interface SnapshotParcel { tracking_ref: string; carrier: string | null; recipient_name?: string }
+
+/** Exactly the create_order arguments the server built; pickup carries no p_delivery key (HYP-05 snapshot CHECK);
+ *  a parcel order adds p_parcel (order_kind 'parcel' → finalize_paid_intent calls create_order_with_parcel). */
+export function toSnapshot(args: CreateOrderRpcArgs, parcel?: ParcelCheckoutInput): { p_order: Omit<CreateOrderRpcArgs['p_order'], 'payment_method'> & { payment_method: 'online' }; p_items: CreateOrderRpcArgs['p_items']; p_delivery?: NonNullable<CreateOrderRpcArgs['p_delivery']>; p_parcel?: SnapshotParcel } {
   const p_order = { ...args.p_order, payment_method: 'online' as const }
-  return args.p_delivery ? { p_order, p_items: args.p_items, p_delivery: args.p_delivery } : { p_order, p_items: args.p_items }
+  const base = args.p_delivery ? { p_order, p_items: args.p_items, p_delivery: args.p_delivery } : { p_order, p_items: args.p_items }
+  if (!parcel) return base
+  return { ...base, p_parcel: { tracking_ref: parcel.trackingRef, carrier: parcel.carrier, ...(parcel.recipientName ? { recipient_name: parcel.recipientName } : {}) } }
 }
 
 /* ─── GET /api/payments/hyp/return ─── */
@@ -203,7 +233,10 @@ export async function handleHypReturn(req: Request, deps: HypDeps): Promise<Resp
  *  flag not exactly 'true', credentials not valid, or neither HYP_PAYMENTS_AUDIENCE=all nor a valid HYP_PILOT_PHONES list → null. The reason is never disclosed. */
 export function handlePaymentsConfig(env: EnvLike): Response {
   const on = isHypPaymentsEnabled(env) && resolveHypConfig(env).ok && isHypAudienceConfigured(env)
-  return json(200, { hypPayments: on ? { branchIds: [...HYP_ALLOWED_BRANCH_IDS], orderTypes: [...HYP_ALLOWED_ORDER_TYPES] } : null })
+  // deliveryCreditRetired (HYP-DELIVERY-02): with HYP_DELIVERY_ENABLED new delivery orders are cash or HYP only —
+  // independent of whether HYP is available right now (then cash stays). POST /api/orders enforces the same rule.
+  return json(200, { hypPayments: on ? { branchIds: [...HYP_ALLOWED_BRANCH_IDS], orderTypes: [...hypAllowedOrderTypes(env)] } : null,
+                     ...(isHypDeliveryEnabled(env) ? { deliveryCreditRetired: true } : {}) })
 }
 
 /* ─── GET /api/payments/intents/[token] ─── */

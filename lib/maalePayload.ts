@@ -198,9 +198,12 @@ export function buildMaaleOrderPayload(s: MaaleOrderSnapshot, opts: MaalePayload
   if (typeof o.id !== 'string' || !UUID.test(o.id)) errors.push('invalid_order_id')
   if (o.type !== 'delivery') errors.push('not_delivery')
   if (!o.branch_id || !DELIVERY_BRANCH_IDS.includes(o.branch_id)) errors.push('wrong_branch')
-  // Delivery: cash or credit only (server-authoritative orders.payment_method); anything else fails closed.
-  const paymentMethod = o.payment_method === 'cash' || o.payment_method === 'credit' ? o.payment_method : null
-  if (!paymentMethod || !allowedPaymentMethods('delivery').includes(paymentMethod)) errors.push('payment_method_not_allowed')
+  // Delivery: server-authoritative orders.payment_method. cash → the courier collects; prepaid → the courier collects
+  // NOTHING: telephone credit, and (HYP-DELIVERY-02) 'online' = paid through HYP — sent to the provider as 'credit'.
+  // Whether an 'online' payment is really verified is decided by lib/maaleDispatch (isPaymentVerified), never here.
+  const pm = o.payment_method
+  const paymentMethod = pm === 'cash' ? 'cash' : pm === 'credit' || pm === 'online' ? 'credit' : null
+  if (!paymentMethod || (pm !== 'online' && !allowedPaymentMethods('delivery').includes(pm as 'cash' | 'credit'))) errors.push('payment_method_not_allowed')
 
   const name = clean(o.customer_name)
   if (name.length < 2 || name.length > MAX_CUSTOMER_NAME) errors.push('invalid_customer_name')

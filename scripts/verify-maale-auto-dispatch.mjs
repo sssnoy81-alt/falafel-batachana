@@ -395,7 +395,13 @@ await test('R7. defaults: every new switch is OFF — env flags exact "true" onl
 await test('R5. HYP untouched; parcel item line not implemented; no live network call', () => {
   // Canonical baseline = the released code (origin/main), not a local `main` that may lag behind it (S4-MAALE-02).
   const base = execFileSync('git', ['merge-base', 'HEAD', 'origin/main'], { cwd: ROOT, encoding: 'utf8' }).trim()
-  assert.equal(execFileSync('git', ['diff', '--name-only', base, '--', 'lib/hyp', 'app/api/payments', 'app/order', 'api/hyp-return.js', 'db/migrations/hyp05_payment_intents.sql'], { cwd: ROOT, encoding: 'utf8' }).trim(), '')
+  // HYP capture / VERIFY / the payment ledger are never touched; HYP-DELIVERY-02 may change ONLY its reviewed HYP files
+  assert.equal(execFileSync('git', ['diff', '--name-only', base, '--', 'api/hyp-return.js', 'lib/hyp/hypCapture.ts', 'lib/hyp/hypClient.ts', 'lib/hyp/hypProtocol.ts', 'lib/hyp/hypConfig.ts', 'db/migrations/hyp05_payment_intents.sql', 'app/api/payments'], { cwd: ROOT, encoding: 'utf8' }).trim(), '')
+  const HYP_DELIVERY_FILES = ['app/order/page.tsx', 'lib/hyp/hypCheckoutUi.ts', 'lib/hyp/hypDb.ts', 'lib/hyp/hypDeps.ts', 'lib/hyp/hypFlags.ts', 'lib/hyp/hypPaymentService.ts', 'lib/hyp/hypRefundFlag.ts']
+  for (const f of execFileSync('git', ['diff', '--name-only', base, '--', 'lib/hyp', 'app/order'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter(Boolean))
+    assert.ok(HYP_DELIVERY_FILES.includes(f), `unexpected HYP change: ${f}`)
+  for (const f of execFileSync('git', ['ls-files', '--others', '--exclude-standard', '--', 'lib/hyp', 'app/order'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter(Boolean))
+    assert.ok(HYP_DELIVERY_FILES.includes(f), `unexpected new HYP file: ${f}`)
   assert.ok(!/MAALE_PARCEL_ITEM_LINE_ENABLED|parcelLine/.test(src('lib/maalePayload.ts') + src('lib/maaleDispatch.ts')))
   assert.equal(liveFetch, 0)
 })

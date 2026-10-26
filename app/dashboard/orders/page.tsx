@@ -175,6 +175,10 @@ type Order = Omit<KitchenOrder, 'status'> & { status: OrderStatus }
 
 const isDeliveryOrder = (order: Order) => order.type === 'delivery'
 const paymentLabel = (v: string) => isPaymentMethod(v) ? PAYMENT_METHOD_LABELS[v] : v === 'online' ? ONLINE_PAID_LABEL : (v || '—')
+// HYP-DELIVERY-02: a delivery prepaid through HYP says so explicitly — the courier collects nothing. Everything else as before.
+const PREPAID_DELIVERY_LABEL = 'שולם מראש ב-HYP ✓ · השליח לא גובה'
+const orderPaymentLabel = (o: { paymentMethod: string; type: string }) =>
+  o.paymentMethod === 'online' && o.type === 'delivery' ? PREPAID_DELIVERY_LABEL : paymentLabel(o.paymentMethod)
 
 function DeliveryDetails({ order, large }: { order: Order; large?: boolean }) {
   const d = order.delivery
@@ -792,7 +796,7 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit, onParcelAction, pa
           <span style={{ color: '#FFD700', fontWeight: 700, fontSize: 15 }}>₪{order.totalPrice}</span>
           {isDeliveryOrder(order) && <span style={{ background: 'rgba(96,165,250,0.2)', color: '#60A5FA', borderRadius: 6, padding: '2px 8px', fontSize: 11, fontWeight: 800 }}>🛵 משלוח</span>}
           <span style={{ background: 'rgba(255,255,255,0.07)', borderRadius: 6, padding: '2px 8px', color: '#9CA3AF', fontSize: 11 }}>
-            {paymentLabel(order.paymentMethod)}
+            {orderPaymentLabel(order)}
           </span>
         </div>
         <div style={{ display: 'flex', gap: 6 }}>

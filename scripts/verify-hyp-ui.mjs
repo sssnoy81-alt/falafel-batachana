@@ -48,6 +48,13 @@ const src = f => lf(readFileSync(join(ROOT, f), 'utf8'))
 const PRE_HYP_BASE = '3bfa329c2294e77204aecfac528513b792eb0c1c'
 const head = f => lf(execFileSync('git', ['show', `${PRE_HYP_BASE}:${f}`], { cwd: ROOT, encoding: 'utf8', maxBuffer: 16 << 20 }))
 const gitDiff = f => lf(execFileSync('git', ['diff', '-U0', PRE_HYP_BASE, '--', f], { cwd: ROOT, encoding: 'utf8' }))
+// HYP-DELIVERY-02: the HYP-08 guards below are pinned to the released range PRE_HYP_BASE → HYP_DELIVERY_BASE (924e076,
+// Production before HYP delivery); the later, flag-gated HYP-DELIVERY-02 changes are checked separately against it.
+const HYP_DELIVERY_BASE = '924e07622536cfeda13b1be7cf0e0adf4c3f7e5e'
+const gitDiffReleased = f => lf(execFileSync('git', ['diff', '-U0', PRE_HYP_BASE, HYP_DELIVERY_BASE, '--', f], { cwd: ROOT, encoding: 'utf8' }))
+const gitDiffSinceRelease = f => lf(execFileSync('git', ['diff', '-U0', HYP_DELIVERY_BASE, '--', f], { cwd: ROOT, encoding: 'utf8' }))
+const atRelease = f => lf(execFileSync('git', ['show', `${HYP_DELIVERY_BASE}:${f}`], { cwd: ROOT, encoding: 'utf8', maxBuffer: 16 << 20 }))
+execFileSync('git', ['merge-base', '--is-ancestor', HYP_DELIVERY_BASE, 'HEAD'], { cwd: ROOT })
 // Existing files only: modified / deleted / renamed / type-changed — newly ADDED HYP files are not "changes to legacy".
 const changedLegacy = paths => execFileSync('git', ['diff', '--name-only', '--diff-filter=MDRT', PRE_HYP_BASE, '--', ...paths], { cwd: ROOT, encoding: 'utf8' }).trim()
 execFileSync('git', ['merge-base', '--is-ancestor', PRE_HYP_BASE, 'HEAD'], { cwd: ROOT })   // throws if the baseline is not an ancestor
@@ -87,11 +94,25 @@ await test('HYP-46 config: HYP_PAYMENTS_AUDIENCE=all shows the option without a 
                      { ...OPEN, HYP_PASSP: '' }, { ...OPEN, HYP_TERMINAL: '0882001234', HYP_TERMINAL_KIND: 'live', VERCEL_ENV: 'preview' }])
     assert.deepEqual(await SVC.handlePaymentsConfig(env).json(), { hypPayments: null }, JSON.stringify(env.HYP_PAYMENTS_AUDIENCE))
 })
-await test('client parsing fails closed; delivery can never be enabled by the response', () => {
+await test('client parsing fails closed; only pickup / delivery as the SERVER advertises them (HYP-DELIVERY-02); credit retirement exact true only', () => {
   for (const bad of [null, {}, { hypPayments: null }, { hypPayments: true }, { hypPayments: { branchIds: 'x', orderTypes: ['pickup'] } },
-                     { hypPayments: { branchIds: [B1], orderTypes: ['delivery'] } }, { hypPayments: { branchIds: ['nope'], orderTypes: ['pickup'] } }])
+                     { hypPayments: { branchIds: [B1], orderTypes: ['parcel', 'online'] } }, { hypPayments: { branchIds: ['nope'], orderTypes: ['pickup'] } }])
     assert.equal(CU.parsePaymentsConfig(bad), null, JSON.stringify(bad))
-  assert.deepEqual(CU.parsePaymentsConfig({ hypPayments: { branchIds: [B1], orderTypes: ['pickup', 'delivery'] } }), { branchIds: [B1], orderTypes: ['pickup'] })
+  assert.deepEqual(CU.parsePaymentsConfig({ hypPayments: { branchIds: [B1], orderTypes: ['pickup'] } }), { branchIds: [B1], orderTypes: ['pickup'] })
+  assert.deepEqual(CU.parsePaymentsConfig({ hypPayments: { branchIds: [B1], orderTypes: ['pickup', 'delivery', 'x'] } }), { branchIds: [B1], orderTypes: ['pickup', 'delivery'] })
+  for (const v of [undefined, false, 'true', 1, {}]) assert.equal(CU.parseDeliveryCreditRetired({ deliveryCreditRetired: v }), false, String(v))
+  assert.equal(CU.parseDeliveryCreditRetired({ deliveryCreditRetired: true }), true); assert.equal(CU.parseDeliveryCreditRetired(null), false)
+  // availability: delivery and delivery + parcel only when advertised; pickup never with a parcel
+  const pick = { branchIds: [B1], orderTypes: ['pickup'] }, both = { branchIds: [B1], orderTypes: ['pickup', 'delivery'] }
+  assert.equal(CU.isOnlinePaymentAvailable(pick, B1, 'delivery', false), false); assert.equal(CU.isOnlinePaymentAvailable(pick, B1, 'delivery', true), false)
+  assert.equal(CU.isOnlinePaymentAvailable(both, B1, 'delivery', false), true); assert.equal(CU.isOnlinePaymentAvailable(both, B1, 'delivery', true), true)
+  assert.equal(CU.isOnlinePaymentAvailable(both, B1, 'pickup', true), false); assert.equal(CU.isOnlinePaymentAvailable(both, B1, null, false), false)
+  // start body: pickup exactly the five fields as before; delivery adds the address and (only when attached) the parcel
+  const req = { branchId: B1, type: 'pickup', customerName: 'x', phone: '0501234567', paymentMethod: 'cash', items: [], delivery: { city: 'c' }, parcel: { trackingRef: 'RR1' } }
+  assert.deepEqual(Object.keys(CU.buildHypStartBody(req, 'k')), ['checkoutKey', 'branchId', 'type', 'customerName', 'phone', 'items'])
+  assert.deepEqual(Object.keys(CU.buildHypStartBody({ ...req, type: 'delivery' }, 'k')), ['checkoutKey', 'branchId', 'type', 'customerName', 'phone', 'items', 'delivery', 'parcel'])
+  assert.ok(!('parcel' in CU.buildHypStartBody({ ...req, type: 'delivery', parcel: undefined }, 'k')))
+  assert.ok(!('paymentMethod' in CU.buildHypStartBody({ ...req, type: 'delivery' }, 'k')), 'never a payment method')
 })
 await test('branch / order type / parcel gating: adumim pickup only', () => {
   const cfg = { branchIds: [B1], orderTypes: ['pickup'] }
@@ -199,13 +220,15 @@ const fn = (s, name) => { const i = s.indexOf(`  async function ${name}(`); cons
 const fnSync = (s, name) => { const i = s.indexOf(`  function ${name}(`); const j = s.indexOf('\n  }\n', i); return i >= 0 && j > i ? s.slice(i, j) : null }
 await test('legacy order path byte-identical to the pre-HYP baseline: placeOrder, buildOrderRequest, POST /api/orders, tracking poll', () => {
   assert.ok(fn(pageHead, 'placeOrder')); assert.equal(fn(page, 'placeOrder'), fn(pageHead, 'placeOrder'))
-  assert.equal(fnSync(page, 'buildOrderRequest'), fnSync(pageHead, 'buildOrderRequest'))
+  // HYP-DELIVERY-02: exactly one line differs — the payment method through methodFor(), which equals
+  // resolvePaymentMethod() unless telephone credit is retired for a delivery (checked below)
+  assert.equal(fnSync(page, 'buildOrderRequest').replace('      paymentMethod: methodFor(type),', '      paymentMethod: resolvePaymentMethod(type, paymentMethod),'), fnSync(pageHead, 'buildOrderRequest'))
   const poll = s => s.slice(s.indexOf("    if (screen !== 'tracking' || !orderId) return"), s.indexOf('    const id = setInterval(poll, 10000)'))
   assert.equal(poll(page), poll(pageHead))
   assert.equal((page.match(/fetch\('\/api\/orders'/g) ?? []).length, 1)
 })
 await test('every changed line of the checkout is gated on the online option (flag off ⇒ identical behaviour)', () => {
-  const diff = gitDiff('app/order/page.tsx')
+  const diff = gitDiffReleased('app/order/page.tsx')
   const removed = diff.split('\n').filter(l => l.startsWith('-') && !l.startsWith('---'))
   const added = diff.split('\n').filter(l => l.startsWith('+') && !l.startsWith('+++'))
   // the only removed lines are the 5 payment-section / submit lines that gained a `payOnline` condition
@@ -223,7 +246,9 @@ await test('every changed line of the checkout is gated on the online option (fl
 })
 await test('start path: server-priced, guarded against double click, navigates only to a validated target', () => {
   const s = fn(page, 'startOnlinePayment')
-  assert.match(s, /if \(!selectedBranch \|\| effectiveOrderType !== 'pickup' \|\| !canPlaceOrder \|\| !payOnline\) return/)
+  // HYP-DELIVERY-02: any order type the server permits (onlineAvailable is derived from its config)
+  assert.match(s, /if \(!selectedBranch \|\| !effectiveOrderType \|\| !canPlaceOrder \|\| !payOnline\) return/)
+  assert.match(s, /const request = buildOrderRequest\(selectedBranch\.id, effectiveOrderType\)/)
   assert.match(s, /setPlacingOrder\(true\)/)
   const success = s.slice(s.indexOf('try { localStorage.setItem(HYP_PENDING_PAYMENT_KEY'))
   assert.ok(success.includes('window.location.assign') && !success.includes('setPlacingOrder(false)'), 'the button stays locked while navigating')
@@ -303,8 +328,44 @@ await test('dashboard integration: payments tab, admin-only branch filter, onlin
   const d = src('app/dashboard/orders/page.tsx')
   assert.match(d, /\['payments', '💳 תשלומים'\]/); assert.match(d, /<PaymentsTab branch=\{user\.role === 'admin' \? filterBranch : null\} onUnauthorized=\{onUnauthorized\} \/>/)
   assert.match(d, /const kitchenPaymentText = \(v: string \| null \| undefined\) => \(v === 'online' \? ONLINE_PAID_LABEL : paymentMethodText\(v\)\)/)
-  const removed = gitDiff('app/dashboard/orders/page.tsx').split('\n').filter(l => l.startsWith('-') && !l.startsWith('---'))
+  const removed = gitDiffReleased('app/dashboard/orders/page.tsx').split('\n').filter(l => l.startsWith('-') && !l.startsWith('---'))
   assert.equal(removed.length, 5, removed.join('\n'))
+})
+await test('HYP-DELIVERY-02 kitchen label: only an ONLINE DELIVERY gets the prepaid / no-collection label; everything else as before', () => {
+  const d = src('app/dashboard/orders/page.tsx')
+  const removed = gitDiffSinceRelease('app/dashboard/orders/page.tsx').split('\n').filter(l => l.startsWith('-') && !l.startsWith('---'))
+  assert.deepEqual(removed, ['-            {paymentLabel(order.paymentMethod)}'], removed.join('\n'))
+  assert.match(d, /const PREPAID_DELIVERY_LABEL = 'שולם מראש ב-HYP ✓ · השליח לא גובה'/)
+  assert.match(d, /const orderPaymentLabel = \(o: \{ paymentMethod: string; type: string \}\) =>\n\s+o\.paymentMethod === 'online' && o\.type === 'delivery' \? PREPAID_DELIVERY_LABEL : paymentLabel\(o\.paymentMethod\)/)
+  assert.match(d, /\{orderPaymentLabel\(order\)\}/)
+})
+await test('HYP-DELIVERY-02 checkout: every change since the release is gated on the server flags (both off ⇒ identical behaviour)', () => {
+  const diff = gitDiffSinceRelease('app/order/page.tsx')
+  const removed = diff.split('\n').filter(l => l.startsWith('-') && !l.startsWith('---'))
+  const added = diff.split('\n').filter(l => l.startsWith('+') && !l.startsWith('+++'))
+  const allowedRemoved = [
+    "-  interpretStartResponse, isOnlinePaymentAvailable, parsePaymentsConfig, type HypCheckoutConfig, type HypStartOutcome,",
+    "-      .then(j => { if (!cancelled) setHypConfig(parsePaymentsConfig(j)) }) // anything else → off",
+    "-  const paymentOptions = allowedPaymentMethods(displayType)",
+    "-  const effectivePaymentMethod = resolvePaymentMethod(displayType, paymentMethod)",
+    "-  // Online payment: pilot branch + pickup only, never delivery / parcel (derived, so a mode switch never keeps it).",
+    "-      paymentMethod: resolvePaymentMethod(type, paymentMethod),",
+    "-    if (!selectedBranch || effectiveOrderType !== 'pickup' || !canPlaceOrder || !payOnline) return",
+    "-    const request = buildOrderRequest(selectedBranch.id, 'pickup')",
+    "-          {/* HYP-08: online card payment — rendered only when the server permits it for this branch + pickup */}",
+  ]
+  assert.deepEqual([...removed].sort(), [...allowedRemoved].sort(), removed.join('\n'))
+  // with deliveryCreditRetired false (default, server flag off) methodFor() is resolvePaymentMethod() and the options are unchanged
+  assert.match(page, /const \[deliveryCreditRetired, setDeliveryCreditRetired\] = useState\(false\)/)
+  assert.match(page, /return t === 'delivery' && deliveryCreditRetired && m === 'credit' \? 'cash' : m/)
+  assert.match(page, /const paymentOptions = displayType === 'delivery' && deliveryCreditRetired\n\s+\? allowedPaymentMethods\('delivery'\)\.filter\(m => m !== 'credit'\) : allowedPaymentMethods\(displayType\)/)
+  assert.match(page, /setDeliveryCreditRetired\(parseDeliveryCreditRetired\(j\)\)/)
+  for (const l of added) assert.ok(!/fetch\('\/api\/orders'|total_price|amountAgorot|deliveryFee/.test(l), `no price / order path change: ${l}`)
+  // the regular order path and the tracking poll are byte-identical to the release
+  const rel = atRelease('app/order/page.tsx')
+  assert.equal(fn(page, 'placeOrder'), fn(rel, 'placeOrder'))
+  const poll = x => x.slice(x.indexOf("    if (screen !== 'tracking' || !orderId) return"), x.indexOf('    const id = setInterval(poll, 10000)'))
+  assert.equal(poll(page), poll(rel))
 })
 
 console.log('Isolation')

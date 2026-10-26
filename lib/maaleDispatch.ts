@@ -124,7 +124,9 @@ export interface DispatchDeps {
   send: (payload: MaaleOrderPayload) => Promise<MaaleSendResult>
   /** Server-side dry_run quotation (lib/maaleClient.quoteMaaleOrder). Missing → dispatch fails closed. */
   quote?: (payload: MaaleOrderPayload) => Promise<MaaleQuoteResult>
-  /** Kept for interface compatibility; NOT consulted in 03F — credit is never auto-dispatched until HYP exists. */
+  /** HYP-DELIVERY-02: true ONLY for an order created by finalize_paid_intent after the server's own VERIFY (payment
+   *  intent finalized, paid_source 'verify', no staff flag). Consulted for orders.payment_method 'online' only; throws →
+   *  unknown → nothing is sent (retry later). Telephone credit stays blocked (credit_dispatch_disabled). */
   isPaymentVerified: (orderId: string) => Promise<boolean>
   /** Ignored since 03F (the PENDING proximity gate was replaced by the provider quote check). */
   areaGeoConfig?: Readonly<Record<string, DeliveryAreaGeoConfig>>
@@ -210,6 +212,11 @@ export function checkQuote(q: MaaleQuoteResult, payload: MaaleOrderPayload, stor
   const feeAgorot = Math.round(storedFeeIls * 100)
   if (q.deliveryFeeAgorot === undefined) return { ok: false, reason: 'quote_fee_missing' }
   if (q.deliveryFeeAgorot !== feeAgorot) return { ok: false, reason: 'fee_mismatch', detail: `${q.deliveryFeeAgorot}!=${feeAgorot}` }
+  if (payload.payment_method === 'credit') {
+    // HYP-DELIVERY-02: prepaid — the courier must collect NOTHING from the customer (fail closed on any other amount)
+    if (q.courierCollectsFromCustomerAgorot !== undefined && q.courierCollectsFromCustomerAgorot !== 0)
+      return { ok: false, reason: 'quote_amount_mismatch', detail: 'prepaid_collects_from_customer' }
+  }
   if (payload.payment_method === 'cash') {
     if (q.courierPaysMerchantAgorot !== undefined && q.courierPaysMerchantAgorot !== payload.food_total_agorot)
       return { ok: false, reason: 'quote_amount_mismatch', detail: 'courier_pays_merchant' }
@@ -251,6 +258,8 @@ export type DispatchBlockedReason =
   | 'maale_disabled' | 'maale_not_configured' | 'order_not_found' | 'order_not_confirmed'
   | 'invalid_payload' | 'credit_dispatch_disabled' | 'parcel_unresolved' | 'parcel_manual_dispatch_required'
   | 'location_manual_review' | 'auth_stop_active' | 'auth_state_unknown'
+  /** HYP-DELIVERY-02: an 'online' order whose HYP payment is not verified (never sent) / cannot be checked right now. */
+  | 'payment_not_verified' | 'payment_state_unknown'
   | 'quote_unavailable' | 'quote_failed' | 'quote_fee_missing' | 'fee_mismatch' | 'quote_amount_mismatch' | 'quote_warnings'
   | 'test_order_id_mismatch' | 'test_order_marker_missing'
   /** S4-04B: local quote rate limit reached (before any provider call; the order stays dispatchable later). */
@@ -333,7 +342,11 @@ export async function dispatchOrderToMaale(
   const ev = evaluate(loaded, deps.parcelFoundDispatch === true && !test)   // the controlled-test runner stays food-only
   if (!ev.payload.ok) return blocked('invalid_payload', ev.payload.errors)
   const payload = ev.payload.payload
-  if (!ev.paymentMethod || !AUTO_DISPATCH_PAYMENT_METHODS.includes(ev.paymentMethod)) return blocked('credit_dispatch_disabled')
+  if (ev.paymentMethod === 'online') {
+    // HYP-DELIVERY-02: prepaid through HYP — only with the server-verified, finalized payment (else nothing is sent)
+    const verified = await paymentVerification(deps.isPaymentVerified, orderId)
+    if (verified !== 'verified') return blocked(verified === 'unknown' ? 'payment_state_unknown' : 'payment_not_verified')
+  } else if (!ev.paymentMethod || !AUTO_DISPATCH_PAYMENT_METHODS.includes(ev.paymentMethod)) return blocked('credit_dispatch_disabled')
   if (ev.parcel !== 'ok') return blocked(ev.parcel)
   if (ev.location !== 'ok') return blocked(ev.location === 'coordinates_not_precise' ? 'invalid_payload' : 'location_manual_review', ev.location)
 
@@ -493,7 +506,7 @@ export type ReadinessBlocker =
   | 'parcel_unresolved' | 'parcel_manual_dispatch_required' | 'location_manual_review' | 'auth_stop_active' | 'auth_state_unknown'
   | 'dispatch_already_sent' | 'dispatch_final_failure' | 'sending_not_stale' | 'sending_state_invalid' | 'sending_outcome_unknown'
   | 'attempts_exhausted' | 'previous_outcome_ambiguous' | 'retry_state_invalid' | 'rate_limited'
-  | 'maale_disabled' | 'maale_not_configured'
+  | 'maale_disabled' | 'maale_not_configured' | 'payment_not_verified'
 
 export interface MaaleTestReadiness {
   orderId: string
@@ -574,7 +587,9 @@ export async function assessMaaleTestReadiness(
   if (!r.branchOk) blockers.push('wrong_branch')
   if (!r.hasTestMarker) blockers.push('test_order_marker_missing')
   if (!r.paymentMethodAllowed) blockers.push('payment_method_not_allowed')
-  else if (pm !== null && !AUTO_DISPATCH_PAYMENT_METHODS.includes(pm)) blockers.push('credit_dispatch_disabled')
+  else if (ev.paymentMethod === 'online') {
+    if ((await paymentVerification(deps.isPaymentVerified, orderId)) !== 'verified') blockers.push('payment_not_verified')
+  } else if (pm !== null && !AUTO_DISPATCH_PAYMENT_METHODS.includes(pm)) blockers.push('credit_dispatch_disabled')
   if (!r.addressComplete) blockers.push('address_incomplete')
   if (!r.coordinatesPrecise) blockers.push('coordinates_not_precise')
   if (!r.payloadValid) blockers.push('invalid_payload')
@@ -670,7 +685,23 @@ export function supabaseDispatchRepo(): DispatchRepo {
   }
 }
 
-/** Production wiring (manual kitchen request + auto-dispatch worker). HYP is not integrated: payment verification is false. */
+/** HYP-DELIVERY-02: 'verified' only on an explicit true; a missing dependency or an error is never a verification. */
+async function paymentVerification(check: DispatchDeps['isPaymentVerified'] | undefined, orderId: string): Promise<'verified' | 'not_verified' | 'unknown'> {
+  if (typeof check !== 'function') return 'not_verified'
+  try { return (await check(orderId)) === true ? 'verified' : 'not_verified' } catch { return 'unknown' }
+}
+
+/** Server-side HYP payment check of an 'online' order (HYP-DELIVERY-02): the order was created by finalize_paid_intent
+ *  from a payment the server itself verified (VERIFY CCode 0) — exactly one finalized intent, paid_source 'verify',
+ *  no staff flag (refund required / investigation). Read only; throws on a database error (→ unknown, nothing sent). */
+export async function isHypPaymentVerified(orderId: string): Promise<boolean> {
+  const { data, error } = await getServerSupabase().from('payment_intents').select('id')
+    .eq('order_id', orderId).eq('status', 'finalized').eq('paid_source', 'verify').is('staff_flag', null).limit(2)
+  if (error) throw new Error(`payment_check ${error.code ?? 'error'}`)
+  return Array.isArray(data) && data.length === 1
+}
+
+/** Production wiring (manual kitchen request + auto-dispatch worker). */
 export function defaultDispatchDeps(): DispatchDeps {
   const config = resolveMaaleConfig(process.env)
   return {
@@ -679,7 +710,7 @@ export function defaultDispatchDeps(): DispatchDeps {
     repo: supabaseDispatchRepo(),
     send: payload => sendMaaleOrder(payload, { config, fetchImpl: fetch }),
     quote: payload => quoteMaaleOrder(payload, { config, fetchImpl: fetch }),
-    isPaymentVerified: async () => false,
+    isPaymentVerified: orderId => isHypPaymentVerified(orderId),
     log: code => console.warn('maale:', code),
   }
 }

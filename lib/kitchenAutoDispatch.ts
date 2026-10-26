@@ -81,7 +81,8 @@ const REASON_RE = /^[a-z0-9_]{1,64}$/
 const reasonOf = (r: string | undefined | null): string => (r && REASON_RE.test(r) ? r : 'unspecified')
 
 /** Outcomes decided BEFORE any provider order exists — safe to try again later (nothing was sent, nothing claimed). */
-const RETRYABLE_BLOCKS = new Set(['quote_unavailable', 'quote_failed', 'rate_limited_local', 'rate_limit_unavailable', 'auth_state_unknown'])
+const RETRYABLE_BLOCKS = new Set(['quote_unavailable', 'quote_failed', 'rate_limited_local', 'rate_limit_unavailable', 'auth_state_unknown',
+  'payment_state_unknown'])   // HYP-DELIVERY-02: the payment check itself failed — nothing sent, try again later
 /** Provider answers that definitely refused the order (nothing to investigate): the courier must be ordered by phone. */
 const DEFINITE_PROVIDER_REJECTIONS = new Set(['zone_unknown', 'out_of_area', 'amount_too_high', 'dispatch_closed', 'validation_error', 'provider_rejected', 'blocked'])
 
