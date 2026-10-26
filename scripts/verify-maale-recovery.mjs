@@ -259,7 +259,7 @@ await test('25. no browser/public route imports the dispatch / test helpers (onl
     assert.ok(!/maaleClient|assessMaaleTestReadiness|ControlledTestOptions|testMode/.test(s), f)
     if (f !== ALLOWED) assert.ok(!/maaleDispatch/.test(s), f)
   }
-  for (const f of walk(LIB).filter(p => p.endsWith('.ts') && !/maale(Dispatch|Client|Payload)\.ts$/.test(p)))
+  for (const f of walk(LIB).filter(p => p.endsWith('.ts') && !/maale(Dispatch|Client|Payload)\.ts$/.test(p) && !p.endsWith('kitchenAutoDispatchServer.ts')))   // S4-MAALE-03 worker wiring: see verify-maale-auto-dispatch
     assert.ok(!/dispatchOrderToMaale|assessMaaleTestReadiness/.test(readFileSync(f, 'utf8')), f)
 })
 

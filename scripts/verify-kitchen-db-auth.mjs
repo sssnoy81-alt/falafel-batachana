@@ -300,7 +300,8 @@ await test('every route that uses the session awaits it (no un-awaited authoriza
   // 8 since S4-04D: + app/api/kitchen/orders/[id]/reconciliation/route.ts (manager-only reconciliation record, flag-gated)
   // 9 since HYP-08: + app/api/kitchen/payments/route.ts (read-only online-payment reconciliation, branch-scoped)
   // 10 since HYP-09: + app/api/kitchen/payments/[ref]/route.ts (staff payment recovery: admin + allowlist, flag-gated)
-  assert.equal(users.length, 10, users.map(f => relative(ROOT, f)).join(', '))
+  // 11 since S4-MAALE-03: + app/api/kitchen/dispatch/sweep/route.ts (auto-dispatch fallback sweep, flag-gated, branch scope)
+  assert.equal(users.length, 11, users.map(f => relative(ROOT, f)).join(', '))
   for (const f of users) {
     const s = readFileSync(f, 'utf8')
     assert.equal((s.match(/getKitchenSession\(/g) || []).length, (s.match(/await getKitchenSession\(/g) || []).length, relative(ROOT, f))

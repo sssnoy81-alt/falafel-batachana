@@ -16,6 +16,7 @@ import {
   effectiveDispatchNote, expectedFeeAgorot, interpretDispatchResponse, isDispatchButtonVisible, MANUAL_COURIER_ACK_LABEL,
   MANUAL_COURIER_CHECK, NETWORK_OUTCOME, needsReadyWarning, parseDispatchLocks, READY_WITHOUT_COURIER_WARNING,
   reconcileDispatchNotes, runExclusive, serializeDispatchLocks, type DispatchNote, type DispatchOutcome,
+  autoDispatchLine, AUTO_DISPATCH_SWEEP_MS, needsAutoDispatchSweep,
 } from '@/lib/kitchenDispatchUi'
 import {
   CANCELLATION_CONFIRM_LABEL, CANCELLATION_RECORD_WARNING, EVENTS_FORBIDDING_PROVIDER_ID, EVENTS_REQUIRING_PROVIDER_ID,
@@ -519,6 +520,20 @@ function DispatchPanel({ order, busy, note: localNote, onDispatch }: {
   )
 }
 
+// S4-MAALE-03: automatic courier request after the confirmation — one status line (and the provider's delivery number
+// for accounts without the dispatch panel, which shows it itself). Display only; the server decides everything.
+const AUTO_TONE = { info: '#60A5FA', ok: '#4ADE80', warn: '#FBBF24', alert: '#FF6B6B' } as const
+function AutoDispatchLine({ order, showProviderId }: { order: Order; showProviderId: boolean }) {
+  const line = autoDispatchLine(order.autoDispatch)
+  if (!line) return null
+  return (
+    <div onClick={e => e.stopPropagation()} style={{ color: AUTO_TONE[line.tone], fontSize: 12, fontWeight: 800, marginBottom: 6, cursor: 'default' }}>
+      🛵 {line.text}
+      {showProviderId && order.dispatch?.providerOrderId && <div style={{ color: '#D1D5DB', fontWeight: 400, marginTop: 2 }}>מס׳ משלוח במעלה אקספרס: <span style={{ direction: 'ltr', display: 'inline-block' }}>{order.dispatch.providerOrderId}</span></div>}
+    </div>
+  )
+}
+
 // Final confirmation before a courier request (S4-03O): order details + an explicit acknowledgment that no courier was
 // booked by phone. The final button stays disabled until it is ticked. UI-only — the server does not rely on it.
 function DispatchConfirmModal({ order, num, busy, onCancel, onConfirm }: {
@@ -703,6 +718,7 @@ function OrderCard({ order, onAdvance, onKitchenOpen, onEdit, onParcelAction, pa
         </div>
       </div>
       {isDeliveryOrder(order) && <DeliveryDetails order={order} />}
+      {order.autoDispatch && isDeliveryOrder(order) && <AutoDispatchLine order={order} showProviderId={!(dispatchEnabled && onDispatch)} />}
       {dispatchEnabled && onDispatch && isDeliveryOrder(order) && <DispatchPanel order={order} busy={dispatchBusy === true} note={dispatchNote} onDispatch={onDispatch} />}
       {order.reconciliation && isDeliveryOrder(order) && (
         <ReconciliationPanel order={order} canRecord={reconciliationEnabled === true} busy={reconciliationBusy === true} note={reconciliationNote}
@@ -973,6 +989,24 @@ function Dashboard({ user, branches, dispatchEnabled, reconciliationEnabled, onL
     const interval = setInterval(fetchOrders, 20000)
     return () => clearInterval(interval)
   }, [fetchOrders])
+
+  // S4-MAALE-03 fallback: while an order still waits for the automatic courier request, ask the server once a minute to
+  // process due tasks (the request normally runs right after the confirmation). 404 = feature off → stop asking.
+  const sweepOff = useRef(false)
+  const waitingForCourier = needsAutoDispatchSweep(orders)
+  useEffect(() => {
+    if (!waitingForCourier || sweepOff.current) return
+    const interval = setInterval(async () => {
+      try {
+        const res = await kitchenPost('/api/kitchen/dispatch/sweep', {})
+        if (res.status === 404) { sweepOff.current = true; clearInterval(interval); return }
+        if ((res.body as { finished?: unknown } | null)?.finished) fetchOrders()
+      } catch (e) {
+        if (e instanceof UnauthorizedError) onUnauthorized()
+      }
+    }, AUTO_DISPATCH_SWEEP_MS)
+    return () => clearInterval(interval)
+  }, [waitingForCourier, fetchOrders, onUnauthorized])
 
   // Stop the new-order alarm when the board unmounts (logout / session expiry).
   useEffect(() => () => {

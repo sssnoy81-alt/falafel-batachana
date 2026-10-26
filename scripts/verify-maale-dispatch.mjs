@@ -283,7 +283,7 @@ await test('29. no browser/client import of the Maale modules; only the flag-gat
     }
     assert.ok(!/maaleClient|maaleDispatch|maalePayload/.test(s), `${f} must not import Maale modules (no trigger yet)`)
   }
-  for (const f of walk(LIB).filter(p => p.endsWith('.ts') && !/maale(Dispatch|Client|Payload)\.ts$/.test(p)))
+  for (const f of walk(LIB).filter(p => p.endsWith('.ts') && !/maale(Dispatch|Client|Payload)\.ts$/.test(p) && !p.endsWith('kitchenAutoDispatchServer.ts')))   // S4-MAALE-03 worker wiring: see verify-maale-auto-dispatch
     assert.ok(!/dispatchOrderToMaale|sendMaaleOrder/.test(readFileSync(f, 'utf8')), f)
   assert.ok(readFileSync(join(LIB, 'maaleDispatch.ts'), 'utf8').includes('isPaymentVerified: async () => false'), 'production wiring: HYP gate hard-false')
   for (const f of ['maaleClient.ts', 'maaleDispatch.ts']) assert.ok(!/NEXT_PUBLIC/.test(readFileSync(join(LIB, f), 'utf8')))

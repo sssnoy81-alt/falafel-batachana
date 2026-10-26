@@ -293,7 +293,12 @@ await test('D1. app/ + lib/: dispatchOrderToMaale is called only by the protecte
   const callers = [...walk(join(ROOT, 'app')), ...walk(join(ROOT, 'lib'))].filter(p => /\.(tsx?|jsx?)$/.test(p))
     .filter(p => /dispatchOrderToMaale\(/.test(readFileSync(p, 'utf8').replace(/^\s*(\/\/|\*).*$/gm, '')))
     .map(p => p.slice(ROOT.length + 1).replace(/\\/g, '/'))
-  assert.deepEqual(callers.sort(), ['app/api/kitchen/orders/[id]/dispatch/route.ts', 'lib/maaleDispatch.ts'])
+  // S4-MAALE-03: + lib/kitchenAutoDispatchServer.ts — the automatic worker's wiring (ordinary mode, limiter injected with
+  // the reserved 'auto-dispatch' actor); reachable only through flag-gated routes (verify-maale-auto-dispatch.mjs).
+  assert.deepEqual(callers.sort(), ['app/api/kitchen/orders/[id]/dispatch/route.ts', 'lib/kitchenAutoDispatchServer.ts', 'lib/maaleDispatch.ts'])
+  const auto = readFileSync(join(ROOT, 'lib', 'kitchenAutoDispatchServer.ts'), 'utf8')
+  assert.ok(/consumeQuoteSlot: \(id, branchId\) => consumeQuoteSlotRpc\(supabase, id, branchId, AUTO_DISPATCH_ACTOR\)/.test(auto), 'auto worker: limiter injected')
+  assert.ok(!/testMode/.test(auto), 'auto worker: never test mode')
   const route = src('app/api/kitchen/orders/[id]/dispatch/route.ts')
   assert.ok(!/testMode/.test(route)); assert.ok(route.includes('consumeQuoteSlot: (id, branchId) => consumeQuoteSlotRpc('))
   const at = t => route.indexOf(t)

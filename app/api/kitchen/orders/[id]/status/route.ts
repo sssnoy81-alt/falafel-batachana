@@ -1,10 +1,12 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { after, NextRequest, NextResponse } from 'next/server'
 import { checkSameOriginJson } from '@/lib/kitchenAuth'
 import { getKitchenSession } from '@/lib/kitchenUsers'
 import { changeOrderStatus, isUuid, ParcelNotReadyError, ParcelStateRejectedError, parseStatusBody, type OrderStatusValue } from '@/lib/kitchenMutations'
 import { parcelStatusFromEmbed } from '@/lib/parcelRequest'
 import { sendReadyPush } from '@/lib/push'
 import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
+import { isAutoDispatchEnabled, runAutoDispatch } from '@/lib/kitchenAutoDispatch'
+import { productionAutoDispatchDeps } from '@/lib/kitchenAutoDispatchServer'
 
 // PATCH /api/kitchen/orders/[id]/status — { status }
 // Kitchen session + same-origin JSON. Branch scope from the session only. Locked transition table,
@@ -17,6 +19,10 @@ import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
 // rule rejecting that sync (22023 parcel_*) maps to 409 invalid_state and leaves the order unchanged.
 // Timestamps: current production code only writes `status` (confirmed_at/ready_at/delivered_at are not
 // maintained by the app or by an active trigger) — this route preserves that behavior exactly.
+// S4-MAALE-03: received → confirmed of a delivery order is queued for an automatic courier request BY THE DATABASE, in
+// the same transaction (s4_05 trigger, switch public.maale_auto_dispatch_config). With MAALE_AUTO_DISPATCH_ENABLED the
+// worker runs AFTER the response (the kitchen never waits for Maale); a lost run is picked up by the dashboard sweep
+// (POST /api/kitchen/dispatch/sweep). The response is unchanged.
 
 const NO_STORE = { 'Cache-Control': 'no-store' }
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: NO_STORE })
@@ -62,6 +68,11 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     }, auth.session, id, body)
 
     if (!result.ok) return json({ error: result.error }, result.status)
+    if (result.value.status === 'confirmed' && isAutoDispatchEnabled(process.env)) {
+      after(async () => {
+        try { await runAutoDispatch(productionAutoDispatchDeps(), id) } catch { console.warn('kitchen auto dispatch: run_failed') }
+      })
+    }
     return json(result.value)
   } catch (e) {
     if (e instanceof ServerConfigError) {

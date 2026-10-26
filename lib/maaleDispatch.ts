@@ -1,14 +1,15 @@
 // SERVER-ONLY Maale Express dispatch service (FALAFEL-SN-08D10 / 08D11, hardened in S4-INTEGRATIONS-03F).
-// NOT CALLED FROM ANYWHERE IN THE APP — no kitchen trigger, no order-creation hook, no cron / queue / webhook, no public
-// or browser entry point. Only the local controlled-test runner (scripts/) calls it.
+// Callers: the kitchen's manual courier request (POST /api/kitchen/orders/[id]/dispatch, S4-03K), the auto-dispatch
+// worker (lib/kitchenAutoDispatch, S4-MAALE-03 — behind MAALE_AUTO_DISPATCH_ENABLED) and the local controlled-test runner.
 //
 // A real dispatch happens only when ALL hold (checked BEFORE any dispatch-state write or real send):
 //   1. MAALE_EXPRESS_ENABLED === 'true' and MAALE_EXPRESS_API_KEY set
 //   2. delivery order of the Mishor Adumim branch, status confirmed / preparing (never received / ready / delivered /
 //      cancelled), valid 08D9/03E payload (active settlement, precise coordinates, cash food total ≤ ₪600, …)
 //   3. CASH only in this phase — payment_method 'credit' is never treated as paid (HYP is not integrated)
-//   4. parcel: none, or cancelled (food only). An unresolved parcel, or any parcel the provider contract cannot
-//      express yet, means manual dispatch
+//   4. parcel: none, or cancelled (food only). An unresolved parcel means manual dispatch. S4-MAALE-03: a parcel the
+//      kitchen has FOUND (it travels with the food as an ordinary delivery — no price / collection change) is allowed
+//      only when MAALE_PARCEL_DISPATCH_ENABLED === 'true'; every later parcel status stays manual
 //   5. location: settlements without a verified boundary to a different-fee neighbour (כפר אדומים ↔ נופי פרת) are
 //      manual-review only — no geography is invented
 //   6. no recent HTTP 401 for this integration (global stop)
@@ -135,6 +136,8 @@ export interface DispatchDeps {
    * (rate_limit_unavailable) before any quote; only the marker-checked testMode of the owner runner may omit it.
    */
   consumeQuoteSlot?: (orderId: string, branchId: string) => Promise<string>
+  /** S4-MAALE-03: a FOUND parcel may be dispatched with the food (MAALE_PARCEL_DISPATCH_ENABLED). Default false. */
+  parcelFoundDispatch?: boolean
   now?: () => string
   log?: (code: string) => void // short codes only — never PII, payloads or keys
 }
@@ -178,13 +181,19 @@ export function decideRetry(row: Pick<DispatchRow, 'error_code' | 'last_attempt_
 
 export type ParcelGate = 'ok' | 'parcel_unresolved' | 'parcel_manual_dispatch_required'
 
-/** No parcel / cancelled parcel → food only. Anything else is manual: the provider contract has no parcel fields. */
-export function parcelGate(parcelStatus: string | null | undefined): ParcelGate {
+/** No parcel / cancelled parcel → food only. A FOUND parcel → ordinary delivery only when allowFound (S4-MAALE-03,
+ *  MAALE_PARCEL_DISPATCH_ENABLED); handed_to_courier and later mean a courier already exists → manual. The payload is
+ *  unchanged by a parcel (no parcel fields, no price / collection effect). */
+export function parcelGate(parcelStatus: string | null | undefined, opts: { allowFound?: boolean } = {}): ParcelGate {
   if (parcelStatus === null || parcelStatus === 'cancelled') return 'ok'
   if (parcelStatus === undefined || parcelStatus === 'awaiting_search' || parcelStatus === 'not_found' || parcelStatus === 'invalid')
     return 'parcel_unresolved'
+  if (parcelStatus === 'found' && opts.allowFound === true) return 'ok'
   return 'parcel_manual_dispatch_required'
 }
+
+/** S4-MAALE-03: only the exact string 'true' lets a FOUND parcel travel with an automatic / manual API dispatch. */
+export const isParcelDispatchEnabled = (env: Record<string, string | undefined>): boolean => env.MAALE_PARCEL_DISPATCH_ENABLED === 'true'
 
 export type QuoteCheck =
   | { ok: true; zone?: string }
@@ -275,7 +284,7 @@ interface Evaluation {
   location: 'ok' | 'kfar_adumim_nofei_prat_ambiguous' | 'coordinates_not_precise'
 }
 
-function evaluate(loaded: LoadedOrder): Evaluation {
+function evaluate(loaded: LoadedOrder, allowFoundParcel = false): Evaluation {
   const d = loaded.snapshot.delivery
   const toNum = (v: number | string | null) => (typeof v === 'string' ? Number(v) : v)
   const city = (d?.city ?? '').trim()
@@ -286,7 +295,7 @@ function evaluate(loaded: LoadedOrder): Evaluation {
   return {
     payload: buildMaaleOrderPayload(loaded.snapshot),
     paymentMethod: loaded.snapshot.order.payment_method,
-    parcel: parcelGate(loaded.parcelStatus),
+    parcel: parcelGate(loaded.parcelStatus, { allowFound: allowFoundParcel }),
     location: MANUAL_REVIEW_SETTLEMENTS[city] ?? (precise ? 'ok' : 'coordinates_not_precise'),
   }
 }
@@ -321,7 +330,7 @@ export async function dispatchOrderToMaale(
   if (!loaded) return blocked('order_not_found')
   if (test && !hasTestMarker(loaded.snapshot.order.customer_name)) return blocked('test_order_marker_missing')
   if (!DISPATCHABLE_ORDER_STATUSES.includes(loaded.status)) return blocked('order_not_confirmed')
-  const ev = evaluate(loaded)
+  const ev = evaluate(loaded, deps.parcelFoundDispatch === true && !test)   // the controlled-test runner stays food-only
   if (!ev.payload.ok) return blocked('invalid_payload', ev.payload.errors)
   const payload = ev.payload.payload
   if (!ev.paymentMethod || !AUTO_DISPATCH_PAYMENT_METHODS.includes(ev.paymentMethod)) return blocked('credit_dispatch_disabled')
@@ -661,11 +670,12 @@ export function supabaseDispatchRepo(): DispatchRepo {
   }
 }
 
-/** Production wiring for a FUTURE trigger phase. HYP is not integrated, so payment verification is always false. */
+/** Production wiring (manual kitchen request + auto-dispatch worker). HYP is not integrated: payment verification is false. */
 export function defaultDispatchDeps(): DispatchDeps {
   const config = resolveMaaleConfig(process.env)
   return {
     config,
+    parcelFoundDispatch: isParcelDispatchEnabled(process.env),
     repo: supabaseDispatchRepo(),
     send: payload => sendMaaleOrder(payload, { config, fetchImpl: fetch }),
     quote: payload => quoteMaaleOrder(payload, { config, fetchImpl: fetch }),

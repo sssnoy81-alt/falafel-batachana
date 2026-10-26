@@ -302,11 +302,16 @@ await test('dashboard integration: payments tab, admin-only branch filter, onlin
 
 console.log('Isolation')
 await test('no live request: the global fetch was never called', () => assert.equal(fetchCalls.length, 0))
-await test('legacy modules untouched vs the pre-HYP baseline (orders API, parser, config, Maale, parcels, kitchen APIs)', () => {
-  assert.equal(changedLegacy(['app/api/orders', 'app/api/checkout', 'app/api/kitchen', 'lib/orderRequest.ts',
+await test('legacy modules untouched by the HYP releases (orders API, parser, config, Maale, parcels, kitchen APIs)', () => {
+  // Range PRE_HYP_BASE → HYP_RELEASED (last HYP release, 258a338): the HYP work itself. Later, separately reviewed features
+  // (S4-MAALE-03 automatic courier request) may change Maale / kitchen files without weakening this HYP scope proof.
+  const HYP_RELEASED = '258a33878ce068c0bed7f70aea9d333d062dda84'
+  execFileSync('git', ['merge-base', '--is-ancestor', HYP_RELEASED, 'HEAD'], { cwd: ROOT })
+  const inHyp = (filter, paths) => execFileSync('git', ['diff', '--name-only', `--diff-filter=${filter}`, PRE_HYP_BASE, HYP_RELEASED, '--', ...paths], { cwd: ROOT, encoding: 'utf8' }).trim()
+  assert.equal(inHyp('MDRT', ['app/api/orders', 'app/api/checkout', 'app/api/kitchen', 'lib/orderRequest.ts',
     'lib/orderConfig.ts', 'lib/createOrder.ts', 'lib/maaleDispatch.ts', 'lib/maalePayload.ts', 'lib/maaleClient.ts', 'lib/parcelCheckout.ts', 'lib/kitchenAuth.ts', 'lib/kitchenOrders.ts']), '')
   // the only new files under those paths are the two HYP staff routes (an added file elsewhere would be a scope change)
-  const added = execFileSync('git', ['diff', '--name-only', '--diff-filter=A', PRE_HYP_BASE, '--', 'app/api/orders', 'app/api/checkout', 'app/api/kitchen', 'lib/order*', 'lib/maale*', 'lib/kitchen*', 'lib/parcel*'], { cwd: ROOT, encoding: 'utf8' }).trim().split('\n').filter(Boolean)
+  const added = inHyp('A', ['app/api/orders', 'app/api/checkout', 'app/api/kitchen', 'lib/order*', 'lib/maale*', 'lib/kitchen*', 'lib/parcel*']).split('\n').filter(Boolean)
   assert.deepEqual(added, ['app/api/kitchen/payments/[ref]/route.ts', 'app/api/kitchen/payments/route.ts'])
 })
 

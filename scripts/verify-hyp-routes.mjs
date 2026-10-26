@@ -390,8 +390,13 @@ await test('legacy checkout untouched: POST /api/orders unchanged in git, the pa
   // (committed + uncommitted); existing files only (M/D/R/T) — the newly added HYP kitchen routes are not legacy changes.
   const PRE_HYP_BASE = '3bfa329c2294e77204aecfac528513b792eb0c1c'
   execFileSync('git', ['merge-base', '--is-ancestor', PRE_HYP_BASE, 'HEAD'], { cwd: ROOT })
-  const diff = execFileSync('git', ['diff', '--name-only', '--diff-filter=MDRT', PRE_HYP_BASE, '--', 'app/api/orders', 'lib/orderRequest.ts', 'lib/orderConfig.ts', 'lib/createOrder.ts', 'lib/maaleDispatch.ts', 'lib/maalePayload.ts', 'app/api/kitchen', 'app/order/DeliveryAddressPicker.tsx'], { cwd: ROOT, encoding: 'utf8' })
+  // S4-MAALE-03: pinned to the HYP release range (→ 258a338) — proves the HYP work left these files untouched, without
+  // blocking later reviewed Maale / kitchen features. POST /api/orders itself must stay unchanged up to the working tree.
+  const HYP_RELEASED = '258a33878ce068c0bed7f70aea9d333d062dda84'
+  execFileSync('git', ['merge-base', '--is-ancestor', HYP_RELEASED, 'HEAD'], { cwd: ROOT })
+  const diff = execFileSync('git', ['diff', '--name-only', '--diff-filter=MDRT', PRE_HYP_BASE, HYP_RELEASED, '--', 'app/api/orders', 'lib/orderRequest.ts', 'lib/orderConfig.ts', 'lib/createOrder.ts', 'lib/maaleDispatch.ts', 'lib/maalePayload.ts', 'app/api/kitchen', 'app/order/DeliveryAddressPicker.tsx'], { cwd: ROOT, encoding: 'utf8' })
   assert.equal(diff.trim(), '')
+  assert.equal(execFileSync('git', ['diff', '--name-only', PRE_HYP_BASE, '--', 'app/api/orders', 'lib/orderRequest.ts', 'lib/createOrder.ts', 'app/order/DeliveryAddressPicker.tsx'], { cwd: ROOT, encoding: 'utf8' }).trim(), '')
   assert.deepEqual([...OC.PAYMENT_METHODS], ['cash', 'credit', 'cibus', 'bit'])
   const p = OR.parseCreateOrderRequest({ branchId: B1, type: 'pickup', customerName: NAME, phone: PHONE, paymentMethod: 'online', items: [{ itemId: M1, quantity: 1 }] })
   assert.equal(p.ok, false); assert.equal(p.code, 'invalid_payment_method')

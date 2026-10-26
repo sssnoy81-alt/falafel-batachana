@@ -84,6 +84,13 @@ export interface KitchenParcel {
   recipientName: string | null // name printed on the parcel (Migration 05); null → identify by the order's customer name
 }
 
+/** S4-MAALE-03: automatic courier request task (public.maale_auto_dispatch_queue). */
+export type KitchenAutoDispatchState = 'queued' | 'processing' | 'dispatched' | 'manual' | 'investigate' | 'skipped'
+export interface KitchenAutoDispatch {
+  state: KitchenAutoDispatchState
+  reason: string | null          // short internal code (e.g. 'credit_dispatch_disabled'); never a provider body
+}
+
 /** One element of GET /api/kitchen/orders → { orders: KitchenOrder[] } */
 export interface KitchenOrder {
   id: string
@@ -104,4 +111,6 @@ export interface KitchenOrder {
   dispatch?: KitchenDispatch | null
   /** S4-04D: only for accounts allowed to see reconciliation (key absent otherwise); null = not a delivery order. */
   reconciliation?: KitchenReconciliation | null
+  /** S4-MAALE-03: only while MAALE_AUTO_DISPATCH_ENABLED (key absent otherwise); null = not queued / not a delivery. */
+  autoDispatch?: KitchenAutoDispatch | null
 }

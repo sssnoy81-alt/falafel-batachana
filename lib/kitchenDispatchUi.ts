@@ -3,7 +3,7 @@
 // The constants mirror server values (asserted equal in scripts/verify-kitchen-dispatch-ui.mjs) because the server
 // modules cannot be bundled into the browser.
 
-import type { KitchenDispatch, KitchenDispatchView, KitchenOrder } from './kitchenTypes'
+import type { KitchenAutoDispatch, KitchenAutoDispatchState, KitchenDispatch, KitchenDispatchView, KitchenOrder } from './kitchenTypes'
 
 /* ─── Mirrored server constants ─── */
 
@@ -58,6 +58,8 @@ type DispatchOrder = Pick<KitchenOrder, 'type' | 'status' | 'paymentMethod' | 't
   dispatch?: KitchenDispatch | null
   /** S4-04D: a recorded manual courier hides the in-app request (avoids a second courier). */
   reconciliation?: { summary: { manualCourier: boolean; reviewOpen?: boolean } } | null
+  /** S4-MAALE-03: while the automatic request owns the order, the manual button is hidden. */
+  autoDispatch?: KitchenAutoDispatch | null
 }
 
 /** Settlement = prefix of the stored address ("city, street N"). */
@@ -164,9 +166,45 @@ export function reconcileDispatchNotes(
   return next ?? notes
 }
 
-/** Whether the panel offers the button: server shows nothing attempted, indicative gates pass, no local lock. */
+/** Whether the panel offers the button: server shows nothing attempted, indicative gates pass, no local lock, and no
+ *  automatic request owns the order (S4-MAALE-03: the button is for exceptions — manual / skipped tasks — only). */
 export const isDispatchButtonVisible = (order: DispatchOrder, note: DispatchNote | undefined): boolean =>
   (order.dispatch?.view ?? 'not_dispatched') === 'not_dispatched' && dispatchHint(order).canRequest && note?.locked !== true
+  && !isAutoDispatchOwning(order.autoDispatch)
+
+/* ─── S4-MAALE-03 automatic courier request ─── */
+
+export const AUTO_DISPATCH_LABELS: Record<KitchenAutoDispatchState, string> = {
+  queued: 'שליח יוזמן אוטומטית…',
+  processing: 'בקשת שליח אוטומטית בתהליך…',
+  dispatched: 'השליח הוזמן אוטומטית ✓',
+  manual: 'לא הוזמן אוטומטית — יש להזמין שליח ידנית',
+  investigate: 'נדרשת בדיקה מול מעלה אקספרס — אין להזמין שליח נוסף לפני בירור',
+  skipped: 'לא הוזמן שליח אוטומטית',
+}
+const AUTO_REASON_TEXT: Record<string, string> = {
+  credit_dispatch_disabled: 'תשלום באשראי', location_manual_review: 'כפר אדומים / נופי פרת', invalid_payload: 'פרטי הכתובת או הסכום אינם תקינים',
+  parcel_unresolved: 'החבילה לא אותרה', parcel_manual_dispatch_required: 'יש חבילה בהזמנה', manual_courier_recorded: 'נרשם שליח שהוזמן ידנית',
+  manual_review_open: 'בירור ידני פתוח', retries_exhausted: 'מעלה אקספרס לא זמינה כרגע', stale: 'עבר זמן רב מאישור ההזמנה',
+  fee_mismatch: 'דמי המשלוח אינם תואמים להצעת הספק', quote_fee_missing: 'הספק לא החזיר דמי משלוח', quote_amount_mismatch: 'הסכומים אינם תואמים להצעת הספק',
+  quote_warnings: 'הספק החזיר אזהרה', provider_auth_stopped: 'בעיית הרשאה מול הספק', auth_stop_active: 'בעיית הרשאה מול הספק',
+  maale_disabled: 'החיבור למעלה אקספרס כבוי', maale_not_configured: 'החיבור למעלה אקספרס אינו מוגדר', not_delivery: 'אין פרטי משלוח',
+  order_status: 'ההזמנה אינה במצב מאושר', out_of_area: 'מחוץ לאזור השירות של הספק', dispatch_closed: 'הספק אינו מקבל הזמנות כרגע',
+}
+/** queued / processing / dispatched / investigate: the automatic request owns the order — never a second courier. */
+export const isAutoDispatchOwning = (a: KitchenAutoDispatch | null | undefined): boolean =>
+  !!a && (a.state === 'queued' || a.state === 'processing' || a.state === 'dispatched' || a.state === 'investigate')
+/** One display line for the order card, or null when there is no automatic task. */
+export function autoDispatchLine(a: KitchenAutoDispatch | null | undefined): { text: string; tone: 'info' | 'ok' | 'warn' | 'alert' } | null {
+  if (!a) return null
+  const why = a.reason && AUTO_REASON_TEXT[a.reason] ? ` (${AUTO_REASON_TEXT[a.reason]})` : ''
+  const tone = a.state === 'dispatched' ? 'ok' : a.state === 'investigate' ? 'alert' : a.state === 'manual' || a.state === 'skipped' ? 'warn' : 'info'
+  return { text: AUTO_DISPATCH_LABELS[a.state] + (a.state === 'manual' || a.state === 'skipped' || a.state === 'investigate' ? why : ''), tone }
+}
+/** The dashboard asks the server to process due tasks only while one of its orders still waits for the worker. */
+export const needsAutoDispatchSweep = (orders: readonly { autoDispatch?: KitchenAutoDispatch | null }[]): boolean =>
+  orders.some(o => o.autoDispatch?.state === 'queued' || o.autoDispatch?.state === 'processing')
+export const AUTO_DISPATCH_SWEEP_MS = 60_000
 
 /* ─── Server response → Hebrew ─── */
 

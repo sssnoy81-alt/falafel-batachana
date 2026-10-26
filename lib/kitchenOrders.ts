@@ -59,14 +59,29 @@ export const KITCHEN_DISPATCH_EMBED = 'delivery_dispatches(status, error_code, p
 // (reconciliation flag on = migration s4_04d installed); without it the select is exactly as before.
 export const KITCHEN_RECONCILIATION_EMBED =
   'maale_dispatch_reconciliations(id, event_type, actor_username, provider_order_id, provider_status, reason_code, created_at)'
-export const kitchenOrderSelect = (dispatchEnabled: boolean, reconciliationEnabled = false): string =>
-  [KITCHEN_ORDER_SELECT, ...(dispatchEnabled ? [KITCHEN_DISPATCH_EMBED] : []), ...(reconciliationEnabled ? [KITCHEN_RECONCILIATION_EMBED] : [])].join(', ')
+// S4-MAALE-03 — automatic courier request task (order_id PK + FK → orders: one-to-one). Only while
+// MAALE_AUTO_DISPATCH_ENABLED (= migration s4_05 installed); without it the select is exactly as before.
+export const KITCHEN_AUTO_DISPATCH_EMBED = 'maale_auto_dispatch_queue(state, reason_code)'
+export const kitchenOrderSelect = (dispatchEnabled: boolean, reconciliationEnabled = false, autoDispatchEnabled = false): string =>
+  [KITCHEN_ORDER_SELECT, ...(dispatchEnabled ? [KITCHEN_DISPATCH_EMBED] : []), ...(reconciliationEnabled ? [KITCHEN_RECONCILIATION_EMBED] : []),
+   ...(autoDispatchEnabled ? [KITCHEN_AUTO_DISPATCH_EMBED] : [])].join(', ')
 
 /* ─── Response contract (types live in lib/kitchenTypes.ts, shared with the kitchen UI) ─── */
 
 export type { KitchenDelivery, KitchenDispatch, KitchenOrder, KitchenOrderItem, KitchenParcel } from './kitchenTypes'
+import type { KitchenAutoDispatch, KitchenAutoDispatchState } from './kitchenTypes'
 
 /* ─── Normalization (explicit field-by-field; raw rows are never passed through) ─── */
+
+const AUTO_STATES: readonly KitchenAutoDispatchState[] = ['queued', 'processing', 'dispatched', 'manual', 'investigate', 'skipped']
+/** S4-MAALE-03 embed → { state, reason } or null (no task). An unknown state fails closed to 'investigate'. */
+export function normalizeAutoDispatch(v: unknown): KitchenAutoDispatch | null {
+  const r = (Array.isArray(v) ? v[0] : v) as { state?: unknown; reason_code?: unknown } | null | undefined
+  if (!r || typeof r !== 'object') return null
+  const state = AUTO_STATES.includes(r.state as KitchenAutoDispatchState) ? (r.state as KitchenAutoDispatchState) : 'investigate'
+  const reason = typeof r.reason_code === 'string' && /^[a-z0-9_]{1,64}$/.test(r.reason_code) ? r.reason_code : null
+  return { state, reason }
+}
 
 type Row = Record<string, unknown>
 const isRow = (v: unknown): v is Row => typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -84,6 +99,8 @@ export interface NormalizeOptions {
   dispatch?: boolean
   /** Include `reconciliation` (S4-04D). Off → the key is absent. */
   reconciliation?: boolean
+  /** Include `autoDispatch` (S4-MAALE-03). Off → the key is absent. */
+  autoDispatch?: boolean
   nowMs?: number
 }
 
@@ -168,6 +185,7 @@ export function normalizeKitchenOrder(raw: unknown, opts: NormalizeOptions = {})
       : null,
     ...(opts.dispatch ? { dispatch: type === 'delivery' ? normalizeDispatch(raw.delivery_dispatches, opts.nowMs ?? Date.now()) : null } : {}),
     ...(opts.reconciliation ? { reconciliation: type === 'delivery' ? normalizeReconciliation(raw.maale_dispatch_reconciliations) : null } : {}),
+    ...(opts.autoDispatch ? { autoDispatch: type === 'delivery' ? normalizeAutoDispatch(raw.maale_auto_dispatch_queue) : null } : {}),
   }
 }
 

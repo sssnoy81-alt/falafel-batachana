@@ -3,6 +3,7 @@ import { getKitchenSession } from '@/lib/kitchenUsers'
 import { kitchenOrderSelect, normalizeKitchenOrders, resolveBranchScope } from '@/lib/kitchenOrders'
 import { isKitchenDispatchAllowedFor } from '@/lib/kitchenDispatch'
 import { isReconciliationVisibleFor } from '@/lib/kitchenReconciliation'
+import { isAutoDispatchEnabled } from '@/lib/kitchenAutoDispatch'
 import { getServerSupabase, ServerConfigError } from '@/lib/supabaseServer'
 import { israelDayBounds } from '@/lib/hours'
 
@@ -12,6 +13,8 @@ import { israelDayBounds } from '@/lib/hours'
 // S4-03M / 04C: courier request state (delivery_dispatches) is added only for an account authorized for dispatch.
 // S4-04D: reconciliation history (+ the dispatch state it refers to) only while the reconciliation flag is on, for
 // manager or dispatch-authorized accounts. Both off → the select and response are exactly as before.
+// S4-MAALE-03: with MAALE_AUTO_DISPATCH_ENABLED every kitchen account sees the automatic courier task state and the
+// courier request state (incl. the provider's delivery number) — read only; requesting stays allowlisted.
 
 const NO_STORE = { 'Cache-Control': 'no-store' }
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: NO_STORE })
@@ -27,10 +30,11 @@ export async function GET(req: NextRequest) {
     const supabase = getServerSupabase()
     const { start, end } = israelDayBounds()
     const reconciliationVisible = isReconciliationVisibleFor(process.env, auth.session.username)
-    const dispatchEnabled = isKitchenDispatchAllowedFor(process.env, auth.session.username) || reconciliationVisible
+    const autoDispatch = isAutoDispatchEnabled(process.env)
+    const dispatchEnabled = isKitchenDispatchAllowedFor(process.env, auth.session.username) || reconciliationVisible || autoDispatch
     const { data, error } = await supabase
       .from('orders')
-      .select(kitchenOrderSelect(dispatchEnabled, reconciliationVisible))
+      .select(kitchenOrderSelect(dispatchEnabled, reconciliationVisible, autoDispatch))
       .in('branch_id', scope.branchIds)
       .gte('created_at', start.toISOString())
       .lt('created_at', end.toISOString())
@@ -40,7 +44,7 @@ export async function GET(req: NextRequest) {
       console.error('kitchen orders: query failed', error.code) // no payloads / PII in logs
       return json({ error: 'server_error' }, 500)
     }
-    return json({ orders: normalizeKitchenOrders(data, { dispatch: dispatchEnabled, reconciliation: reconciliationVisible }) })
+    return json({ orders: normalizeKitchenOrders(data, { dispatch: dispatchEnabled, reconciliation: reconciliationVisible, autoDispatch }) })
   } catch (e) {
     if (e instanceof ServerConfigError) {
       console.error('kitchen orders: server config error')
