@@ -16,6 +16,7 @@ import { signPayment, toVerificationRecord, verificationRpcArgs, verifyHypReturn
 import { HypDbError, type HypDb } from './hypDb'
 import { HYP_ALLOWED_BRANCH_IDS, HYP_ALLOWED_ORDER_TYPES, HYP_INTENT_TTL_SECONDS, HYP_PAYMENT_DESCRIPTION, hypPilotPhones, isHypPaymentsEnabled, isHypPilotPhoneAllowed, type EnvLike } from './hypFlags'
 import { clientKey, type RateLimiter } from './hypRateLimit'
+import { decodeCaptureEnvelope } from './hypCapture'
 
 if (typeof window !== 'undefined') {
   throw new Error('lib/hyp/hypPaymentService is server-only')
@@ -139,6 +140,12 @@ export async function handleHypReturn(req: Request, deps: HypDeps): Promise<Resp
   if (!deps.limits.ret.hit(`ip:${clientKey(req)}`)) return fail(429, 'rate_limited')
   let raw: string
   try { raw = new URL(req.url).search.replace(/^\?/, '') } catch { return redirect(GENERIC_PAGE) }
+  // HYP-32: the success URL is the capture function (api/hyp-return.js), which forwards the ORIGINAL query bytes as a
+  // canonical base64url envelope; Next.js has already re-serialized anything else. A malformed envelope is refused
+  // before any DB access; the decoded query then goes through exactly the same steps as before.
+  const envelope = decodeCaptureEnvelope(raw)
+  if (envelope.kind === 'invalid') { deps.log('hyp_return_envelope', envelope.reason); return redirect(GENERIC_PAGE) }
+  if (envelope.kind === 'envelope') raw = envelope.raw
   if (!raw) return redirect(GENERIC_PAGE)
 
   let token: string | null = null
