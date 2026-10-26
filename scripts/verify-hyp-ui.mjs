@@ -80,6 +80,13 @@ await test('GET /api/payments/config: null unless the flag is exactly true AND t
   assert.ok(!on.includes(API_KEY) && !on.includes(PASSP) && !on.includes('0010000001') && !on.includes('0501234567'))
   assert.match(src('app/api/payments/config/route.ts'), /return handlePaymentsConfig\(process\.env\)/)
 })
+await test('HYP-46 config: HYP_PAYMENTS_AUDIENCE=all shows the option without a pilot list — same branch / pickup scope; flag + terminal still required', async () => {
+  const OPEN = { ...ENV, HYP_PILOT_PHONES: undefined, HYP_PAYMENTS_AUDIENCE: 'all' }
+  assert.deepEqual(await SVC.handlePaymentsConfig(OPEN).json(), { hypPayments: { branchIds: [B1], orderTypes: ['pickup'] } })
+  for (const env of [{ ...OPEN, HYP_PAYMENTS_AUDIENCE: 'ALL' }, { ...OPEN, HYP_PAYMENTS_AUDIENCE: 'true' }, { ...OPEN, HYP_PAYMENTS_ENABLED: 'false' },
+                     { ...OPEN, HYP_PASSP: '' }, { ...OPEN, HYP_TERMINAL: '0882001234', HYP_TERMINAL_KIND: 'live', VERCEL_ENV: 'preview' }])
+    assert.deepEqual(await SVC.handlePaymentsConfig(env).json(), { hypPayments: null }, JSON.stringify(env.HYP_PAYMENTS_AUDIENCE))
+})
 await test('client parsing fails closed; delivery can never be enabled by the response', () => {
   for (const bad of [null, {}, { hypPayments: null }, { hypPayments: true }, { hypPayments: { branchIds: 'x', orderTypes: ['pickup'] } },
                      { hypPayments: { branchIds: [B1], orderTypes: ['delivery'] } }, { hypPayments: { branchIds: ['nope'], orderTypes: ['pickup'] } }])
