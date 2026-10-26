@@ -248,18 +248,57 @@ test('UI-aligned limits: name ≤ 60, item notes ≤ 200 (match input maxLength)
   assert.ok(build(baseReq({ items: [{ itemId: ITEM.falafel, quantity: 1, notes: 'x'.repeat(200) }] })).ok)
 })
 
-console.log('Opening hours in Asia/Jerusalem (lib/hours.ts)')
-test('Thu 2026-09-24 08:30 IDT → open', () => assert.equal(getBusinessStatus(new Date('2026-09-24T05:30:00Z')).isOpen, true))
-test('Thu 19:45 IDT → closed, next open Sunday', () => {
-  const s = getBusinessStatus(new Date('2026-09-24T16:45:00Z')); assert.equal(s.isOpen, false); assert.match(s.nextOpen, /^ראשון/)
+console.log('Opening hours in Asia/Jerusalem (lib/hours.ts, S4-OPERATING-HOURS-01: Sun–Thu 10:30–19:00 + 27.10.2026 closed)')
+// Israel local wall time → UTC instant, found independently of lib/hours (tries +02:00 / +03:00 and checks with Intl)
+const il = (ymd, hm) => {
+  for (const off of ['+02:00', '+03:00']) {
+    const d = new Date(`${ymd}T${hm}:00${off}`)
+    const f = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(d)
+    if (f === `${ymd}, ${hm}`) return d
+  }
+  throw new Error(`no instant for ${ymd} ${hm}`)
+}
+const st = (ymd, hm) => getBusinessStatus(il(ymd, hm))
+const { isShopOpen, SPECIAL_CLOSURES } = load('hours')
+test('Mon 2026-10-26 10:29 → closed (opens today 10:30); 10:30 → open; 18:59 → open', () => {
+  assert.deepEqual(st('2026-10-26', '10:29'), { isOpen: false, nextOpen: 'היום בשעה 10:30', closureNote: '' })
+  assert.equal(st('2026-10-26', '10:30').isOpen, true); assert.equal(st('2026-10-26', '18:59').isOpen, true)
 })
-test('Sun 07:59 IDT → closed, opens today 08:00', () => {
-  const s = getBusinessStatus(new Date('2026-09-27T04:59:00Z')); assert.equal(s.isOpen, false); assert.equal(s.nextOpen, 'היום בשעה 08:00')
+test('Mon 2026-10-26 19:00 → closed; next opening skips election day → Wednesday 28.10 10:30', () => {
+  assert.deepEqual(st('2026-10-26', '19:00'), { isOpen: false, nextOpen: 'רביעי 28.10 בשעה 10:30', closureNote: '' })
 })
-test('Fri 12:00 IDT → closed', () => assert.equal(getBusinessStatus(new Date('2026-09-25T09:00:00Z')).isOpen, false))
-test('winter time: Mon 2026-12-07 19:29 IST → open; 19:30 → closed', () => {
-  assert.equal(getBusinessStatus(new Date('2026-12-07T17:29:00Z')).isOpen, true)
-  assert.equal(getBusinessStatus(new Date('2026-12-07T17:30:00Z')).isOpen, false)
+test('Tue 2026-10-27 (election day) closed ALL day with the reason; reopening "tomorrow (Wednesday 28.10) 10:30"', () => {
+  for (const t of ['00:00', '10:29', '10:30', '12:00', '18:59', '19:00', '23:59'])
+    assert.deepEqual(st('2026-10-27', t), { isOpen: false, nextOpen: 'מחר (רביעי 28.10) בשעה 10:30', closureNote: 'יום הבחירות' }, t)
+  assert.equal(isShopOpen(il('2026-10-27', '12:00')), false); assert.deepEqual(Object.keys(SPECIAL_CLOSURES), ['2026-10-27'])
+})
+test('Wed 2026-10-28 reopens automatically: 10:29 → closed (today 10:30, no closure note); 10:30 → open', () => {
+  assert.deepEqual(st('2026-10-28', '10:29'), { isOpen: false, nextOpen: 'היום בשעה 10:30', closureNote: '' })
+  assert.equal(st('2026-10-28', '10:30').isOpen, true); assert.equal(isShopOpen(il('2026-10-28', '10:30')), true)
+})
+test('Friday and Saturday closed all day; Thursday 19:00 → Sunday 10:30', () => {
+  for (const t of ['00:00', '10:30', '12:00', '18:59']) { assert.equal(st('2026-10-30', t).isOpen, false); assert.equal(st('2026-10-31', t).isOpen, false) }
+  assert.equal(st('2026-10-30', '12:00').nextOpen, 'ראשון 1.11 בשעה 10:30'); assert.equal(st('2026-10-31', '12:00').nextOpen, 'מחר (ראשון 1.11) בשעה 10:30')
+  assert.equal(st('2026-10-29', '19:00').nextOpen, 'ראשון 1.11 בשעה 10:30'); assert.equal(st('2026-10-29', '18:59').isOpen, true)
+})
+test('a regular future Tuesday (2026-11-03) is a normal day: 10:29 closed, 10:30–18:59 open, 19:00 closed', () => {
+  assert.equal(st('2026-11-03', '10:29').isOpen, false); assert.equal(st('2026-11-03', '10:30').isOpen, true)
+  assert.equal(st('2026-11-03', '18:59').isOpen, true); assert.equal(st('2026-11-03', '19:00').nextOpen, 'מחר (רביעי 4.11) בשעה 10:30')
+  assert.equal(st('2027-10-26', '12:00').isOpen, true, 'the closure is one date only, not every 27.10 / every Tuesday')
+})
+test('DST: summer (IDT, UTC+3) and winter (IST, UTC+2) boundaries in Israel local time', () => {
+  assert.equal(getBusinessStatus(new Date('2027-06-01T07:29:00Z')).isOpen, false); assert.equal(getBusinessStatus(new Date('2027-06-01T07:30:00Z')).isOpen, true)
+  assert.equal(getBusinessStatus(new Date('2026-12-07T08:30:00Z')).isOpen, true); assert.equal(getBusinessStatus(new Date('2026-12-07T17:00:00Z')).isOpen, false)
+})
+test('server enforcement: POST /api/orders and HYP start use isShopOpen; HYP return / VERIFY / finalize never consult the hours', () => {
+  const src = f => readFileSync(join(LIB, '..', f), 'utf8')
+  assert.match(src('app/api/orders/route.ts'), /if \(!isShopOpen\(\)\) return errorResponse\(409, 'closed'\)/)
+  assert.match(src('lib/hyp/hypDeps.ts'), /isShopOpen: \(\) => isShopOpen\(\)/)
+  const svc = src('lib/hyp/hypPaymentService.ts')
+  assert.equal((svc.match(/isShopOpen\(\)/g) ?? []).length, 1); assert.ok(svc.indexOf('isShopOpen()') < svc.indexOf('export async function handleHypReturn'))
+  const page = src('app/order/page.tsx')
+  assert.ok(!/08:00|19:30/.test(page), 'no stale hours text'); assert.match(page, /ראשון–חמישי \| \{OPEN_TIME_LABEL\}–\{CLOSE_TIME_LABEL\}/)
+  assert.match(page, /closureNote \? `סגור היום — \$\{closureNote\}` : 'אנחנו סגורים כרגע'/)
 })
 
 console.log('Address formatter (lib/deliveryAddress.ts)')

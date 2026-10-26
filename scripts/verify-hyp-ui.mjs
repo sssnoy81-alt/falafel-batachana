@@ -370,7 +370,14 @@ await test('HYP-DELIVERY-02 checkout: every change since the release is gated on
     "-            style={{ width: '100%', padding: 14, border: `1px solid ${customerName.trim().length >= 2 ? C.green : C.border}`, borderRadius: 12, fontSize: 17, fontFamily: 'Heebo, sans-serif', outline: 'none', boxSizing: 'border-box', background: C.bg, color: C.white }} />",
     "-          {customerName.length > 0 && customerName.trim().length < 2 && <div style={{ color: C.red, fontSize: 12, marginTop: 6 }}>נא להזין שם מלא</div>}",
   ]
-  assert.deepEqual([...removed].sort(), [...allowedRemoved, ...prefill03Removed].sort(), removed.join('\n'))
+  // S4-OPERATING-HOURS-01: new hours + one-off closure note in the closed popup (lib/hours, verify-pricing)
+  const hours01Removed = [
+    "-import { getBusinessStatus } from '@/lib/hours'",
+    "-  const { isOpen, nextOpen } = getBusinessStatus()",
+    "-            <h2 style={{ color: C.white, fontSize: 20, fontWeight: 900, marginBottom: 8 }}>אנחנו סגורים כרגע</h2>",
+    "-              <strong style={{ color: C.white }}>ראשון–חמישי | 08:00–19:30</strong><br />",
+  ]
+  assert.deepEqual([...removed].sort(), [...allowedRemoved, ...prefill03Removed, ...hours01Removed].sort(), removed.join('\n'))
   assert.match(page, /const customerName = namesValid \? joinCustomerName\(firstName, lastName\) : ''/)
   assert.match(page, /cart\.length > 0 && namesValid/)
   // with deliveryCreditRetired false (default, server flag off) methodFor() is resolvePaymentMethod() and the options are unchanged

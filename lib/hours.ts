@@ -1,10 +1,21 @@
 // Shop opening hours, evaluated in Asia/Jerusalem (never the customer's device clock).
-// Schedule (unchanged): Sunday–Thursday 08:00–19:30. Friday and Saturday closed.
-// Delivery uses exactly the same hours.
+// Schedule (S4-OPERATING-HOURS-01): Sunday–Thursday 10:30–19:00 (19:00 itself is closed). Friday and Saturday closed.
+// Plus one-off full-day closures (SPECIAL_CLOSURES, Israel calendar dates). Pickup, delivery and parcels all use exactly
+// these hours; they gate only NEW orders / payment starts — a payment already started completes normally.
 
 const TIME_ZONE = 'Asia/Jerusalem'
-const OPEN_MINUTES = 8 * 60
-const CLOSE_MINUTES = 19 * 60 + 30
+export const OPEN_MINUTES = 10 * 60 + 30
+export const CLOSE_MINUTES = 19 * 60
+export const OPEN_TIME_LABEL = '10:30'
+export const CLOSE_TIME_LABEL = '19:00'
+const OPEN_WEEKDAYS: readonly number[] = [0, 1, 2, 3, 4]          // Sun–Thu
+
+/** One-off full-day closures, by Israel calendar date (YYYY-MM-DD) → reason shown to customers. */
+export const SPECIAL_CLOSURES: Readonly<Record<string, string>> = {
+  '2026-10-27': 'יום הבחירות',
+}
+
+const HEBREW_WEEKDAYS = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת']
 
 const WEEKDAYS: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }
 
@@ -31,27 +42,34 @@ function israelDateLabel(clock: IsraelClock, addDays: number): string {
   return d.toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric', timeZone: 'UTC' })
 }
 
-export function getBusinessStatus(now: Date = new Date()): { isOpen: boolean; nextOpen: string } {
+/** The Israel calendar day `addDays` from today: ISO key, weekday. */
+function israelDay(clock: IsraelClock, addDays: number): { key: string; weekday: number } {
+  const d = new Date(Date.UTC(clock.year, clock.month - 1, clock.day + addDays))
+  return { key: d.toISOString().slice(0, 10), weekday: d.getUTCDay() }
+}
+
+const isOpenDay = (day: { key: string; weekday: number }): boolean => OPEN_WEEKDAYS.includes(day.weekday) && !(day.key in SPECIAL_CLOSURES)
+
+/**
+ * isOpen: ordering is open right now. nextOpen: when it reopens (Hebrew, with weekday + date + time; '' while open).
+ * closureNote: the reason when TODAY is a special closure (e.g. 'יום הבחירות'), else ''.
+ */
+export function getBusinessStatus(now: Date = new Date()): { isOpen: boolean; nextOpen: string; closureNote: string } {
   const c = israelClock(now)
-  const isFri = c.weekday === 5
-  const isSat = c.weekday === 6
+  const today = israelDay(c, 0)
+  const closureNote = SPECIAL_CLOSURES[today.key] ?? ''
 
-  if (!isFri && !isSat && c.minutes >= OPEN_MINUTES && c.minutes < CLOSE_MINUTES)
-    return { isOpen: true, nextOpen: '' }
+  if (isOpenDay(today) && c.minutes >= OPEN_MINUTES && c.minutes < CLOSE_MINUTES)
+    return { isOpen: true, nextOpen: '', closureNote }
 
-  let nextOpen: string
-  if (isSat) {
-    nextOpen = `ראשון ${israelDateLabel(c, 1)} בשעה 08:00`
-  } else if (isFri) {
-    nextOpen = `ראשון ${israelDateLabel(c, 2)} בשעה 08:00`
-  } else if (c.minutes < OPEN_MINUTES) {
-    nextOpen = 'היום בשעה 08:00'
-  } else if (c.weekday === 4) {
-    nextOpen = `ראשון ${israelDateLabel(c, 3)} בשעה 08:00`
-  } else {
-    nextOpen = 'מחר בשעה 08:00'
+  if (isOpenDay(today) && c.minutes < OPEN_MINUTES) return { isOpen: false, nextOpen: `היום בשעה ${OPEN_TIME_LABEL}`, closureNote }
+  for (let d = 1; d <= 31; d++) {
+    const day = israelDay(c, d)
+    if (!isOpenDay(day)) continue
+    const label = `${HEBREW_WEEKDAYS[day.weekday]} ${israelDateLabel(c, d)}`
+    return { isOpen: false, nextOpen: d === 1 ? `מחר (${label}) בשעה ${OPEN_TIME_LABEL}` : `${label} בשעה ${OPEN_TIME_LABEL}`, closureNote }
   }
-  return { isOpen: false, nextOpen }
+  return { isOpen: false, nextOpen: '', closureNote }
 }
 
 export const isShopOpen = (now: Date = new Date()): boolean => getBusinessStatus(now).isOpen

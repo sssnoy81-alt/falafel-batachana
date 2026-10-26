@@ -12,7 +12,7 @@ import {
   computeDisplayTotals, displayLineTotal, displayMenuPrice, displayUnitSurcharge, roundMoney,
   type PricingBreakdown, type PricingLineInput,
 } from '@/lib/pricing'
-import { getBusinessStatus } from '@/lib/hours'
+import { CLOSE_TIME_LABEL, OPEN_TIME_LABEL, getBusinessStatus } from '@/lib/hours'
 import { MAX_NAME_PART, isValidNamePart, joinCustomerName, normalizeNamePart, splitSavedFullName } from '@/lib/customerName'
 import { formatDeliveryAddress } from '@/lib/deliveryAddress'
 import DeliveryAddressPicker from './DeliveryAddressPicker'
@@ -273,7 +273,7 @@ export default function Home() {
   const [sheetSetAddon, setSheetSetAddon] = useState<string>('')
   const [showClosedPopup, setShowClosedPopup] = useState(false)
 
-  const { isOpen, nextOpen } = getBusinessStatus()
+  const { isOpen, nextOpen, closureNote } = getBusinessStatus()
 
   useEffect(() => {
     if (!isOpen) {
@@ -1446,10 +1446,10 @@ export default function Home() {
         <div style={{ position: 'fixed', inset: 0, zIndex: 600, background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
           <div style={{ background: C.bgCard, border: `1px solid rgba(255,215,0,0.3)`, borderRadius: 24, padding: '36px 28px', maxWidth: 360, width: '100%', textAlign: 'center', direction: 'rtl' }}>
             <div style={{ fontSize: 52, marginBottom: 12 }}>🕙</div>
-            <h2 style={{ color: C.white, fontSize: 20, fontWeight: 900, marginBottom: 8 }}>אנחנו סגורים כרגע</h2>
+            <h2 style={{ color: C.white, fontSize: 20, fontWeight: 900, marginBottom: 8 }}>{closureNote ? `סגור היום — ${closureNote}` : 'אנחנו סגורים כרגע'}</h2>
             <p style={{ color: C.gray, fontSize: 14, marginBottom: 20, lineHeight: 1.7 }}>
               שעות פעילות:<br />
-              <strong style={{ color: C.white }}>ראשון–חמישי | 08:00–19:30</strong><br />
+              <strong style={{ color: C.white }}>ראשון–חמישי | {OPEN_TIME_LABEL}–{CLOSE_TIME_LABEL}</strong><br />
               
               שישי ושבת — סגור
             </p>
