@@ -7,6 +7,8 @@
 //  - SIGN: GET pay.hyp.co.il/p/?action=APISign&What=SIGN&Sign=True&Masof&KEY&PassP[&Amount&Coin&Tash&Order&Info&PageLang…];
 //    the answer is a query string "in the same order" with action changed to pay and a signature parameter added;
 //    the customer is sent to pay.hyp.co.il/p/? + that answer, unmodified.
+//    Optional customer parameters (S4-HYP-PREFILL-01): UserId, ClientName, ClientLName, street, city, email, cell —
+//    whether the payment page displays / pre-fills them is NOT documented (it depends on the page template).
 //  - Return: the success page receives Id, CCode, Amount, ACode, Order, Fild1–3, Sign.
 //  - VERIFY: GET …?action=APISign&What=VERIFY&Masof&KEY&PassP + every success-page parameter "in the exact same order";
 //    CCode=0 = validation succeeded (signature matches Hyp's record); failure = an error code (902 = authentication error).
@@ -19,6 +21,7 @@
 // formatting in the return, the full VERIFY response format, and any status query or webhook (none exist in Hyp Pay).
 
 import type { HypConfig } from './hypConfig'
+import { HYP_PREFILL_KEYS, isValidPrefill, type HypCustomerPrefill } from './hypPrefill'
 import {
   HYP_ACODE_RE, HYP_CCODE_RE, HYP_ORDER_REF_RE, HYP_PAY_URL, HYP_RETURN_RAW_MAX, HYP_RETURN_RAW_RE, HYP_TRANS_ID_RE,
   HYP_VERIFY_RESPONSE_MAX, agorotToAmount, amountToAgorot, keyCount, parseQueryPairs, redactHypText, singleValue,
@@ -70,6 +73,7 @@ export interface HypSignRequest {
   orderRef: string       // payment_intents.hyp_order_ref
   amountAgorot: number   // payment_intents.amount_agorot
   description: string    // "Info" shown on the payment page; no customer data
+  customer?: HypCustomerPrefill   // S4-HYP-PREFILL-01: documented customer fields (lib/hyp/hypPrefill), HYP_PREFILL_ENABLED only
 }
 
 export type HypSignErrorCode =
@@ -89,10 +93,14 @@ const DESCRIPTION_RE = /^[^\u0000-\u001f\u007f]{1,60}$/
 export function buildSignUrl(config: HypConfig, req: HypSignRequest): string {
   if (!HYP_ORDER_REF_RE.test(req.orderRef)) throw new RangeError('invalid_order_ref')
   if (!DESCRIPTION_RE.test(req.description)) throw new RangeError('invalid_description')
+  if (req.customer && !isValidPrefill(req.customer)) throw new RangeError('invalid_customer')
+  // Customer fields (UTF-8, URL-encoded like every value) go right after Info, in a fixed order; without them the
+  // request is exactly the pre-PREFILL request.
+  const customer: [string, string][] = HYP_PREFILL_KEYS.flatMap(k => (req.customer?.[k] ? [[k, req.customer[k]] as [string, string]] : []))
   const pairs: [string, string][] = [
     ['action', 'APISign'], ['What', 'SIGN'], ['KEY', config.apiKey], ['PassP', config.passP], ['Masof', config.terminal],
     ['Amount', agorotToAmount(req.amountAgorot)], ['Coin', '1'], ['Tash', '1'], ['Order', req.orderRef],
-    ['Info', req.description], ['PageLang', 'HEB'], ['Sign', 'True'],
+    ['Info', req.description], ...customer, ['PageLang', 'HEB'], ['Sign', 'True'],
   ]
   return `${HYP_PAY_URL}?${pairs.map(([k, v]) => `${k}=${enc(v)}`).join('&')}`
 }

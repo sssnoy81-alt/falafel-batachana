@@ -14,9 +14,14 @@ import { buildOrderFromCatalog, isUuid, parseCreateOrderRequest, type BuiltOrder
 import type { ResolvedOrderAddress } from '../orderAddress'
 import { isParcelCheckoutEnabled, type ParcelCheckoutInput } from '../parcelCheckout'
 import { resolveHypConfig } from './hypConfig'
-import { signPayment, toVerificationRecord, verificationRpcArgs, verifyHypReturn, type HypTransport } from './hypClient'
+import { signPayment, toVerificationRecord, verificationRpcArgs, verifyHypReturn, type HypSignErrorCode, type HypTransport } from './hypClient'
 import { HypDbError, type HypDb } from './hypDb'
-import { HYP_ALLOWED_BRANCH_IDS, HYP_INTENT_TTL_SECONDS, HYP_PAYMENT_DESCRIPTION, hypAllowedOrderTypes, isHypAudienceConfigured, isHypDeliveryEnabled, isHypPaymentsEnabled, isHypPhoneAllowed, type EnvLike } from './hypFlags'
+import { HYP_ALLOWED_BRANCH_IDS, HYP_INTENT_TTL_SECONDS, HYP_PAYMENT_DESCRIPTION, hypAllowedOrderTypes, isHypAudienceConfigured, isHypDeliveryEnabled, isHypPaymentsEnabled, isHypPhoneAllowed, isHypPrefillEnabled, type EnvLike } from './hypFlags'
+import { customerPrefillFromSnapshot } from './hypPrefill'
+
+// SIGN failures a pre-filled value could cause (never retried: network / HTTP errors, already retried in signPayment,
+// and credential_echo, a security stop).
+const PREFILL_FALLBACK_ERRORS: readonly HypSignErrorCode[] = ['invalid_input', 'sign_rejected', 'invalid_sign_response']
 import { clientKey, type RateLimiter } from './hypRateLimit'
 import { decodeCaptureEnvelope } from './hypCapture'
 
@@ -134,7 +139,15 @@ export async function handleHypStart(req: Request, deps: HypDeps): Promise<Respo
     // The same checkout (same key, same cart) already reached HYP: never a second payment page.
     if (intent.status !== 'created') return json(409, { error: 'payment_in_progress', statusToken: intent.publicToken })
 
-    const signed = await signPayment(config, { orderRef: intent.hypOrderRef, amountAgorot, description: HYP_PAYMENT_DESCRIPTION }, { transport: deps.transport })
+    const signReq = { orderRef: intent.hypOrderRef, amountAgorot, description: HYP_PAYMENT_DESCRIPTION }
+    // S4-HYP-PREFILL-01: the customer's own validated details from the stored snapshot (flag ON only). Pre-fill is a
+    // convenience and never blocks a payment: a SIGN refused / unreadable with it is signed once more without it.
+    const prefill = isHypPrefillEnabled(deps.env) ? customerPrefillFromSnapshot(snapshot) : {}
+    let signed = await signPayment(config, Object.keys(prefill).length ? { ...signReq, customer: prefill } : signReq, { transport: deps.transport })
+    if (!signed.ok && Object.keys(prefill).length && PREFILL_FALLBACK_ERRORS.includes(signed.error)) {
+      deps.log('hyp_start_prefill_fallback', signed.error)
+      signed = await signPayment(config, signReq, { transport: deps.transport })
+    }
     if (!signed.ok) {
       deps.log('hyp_start_sign', signed.error)
       await deps.db.recordSignResult(intent.intentId, false)          // never handed out → not_sent (no charge possible)

@@ -559,5 +559,103 @@ await test('POST /api/orders parser: telephone credit for delivery refused ONLY 
   assert.match(src('lib/hyp/hypDeps.ts'), /resolveAddress: order => resolveGoogleDeliveryAddress\(order\),\n?\r?\n?\s*attachGeo: \(order, built\) => attachDeliveryGeo\(order, built\),/)
 })
 
+console.log('S4-HYP-PREFILL-01 — customer details pre-fill on the HYP payment page')
+const P = load(join(ROOT, 'lib', 'hyp', 'hypPrefill.ts'))
+const HC = load(join(ROOT, 'lib', 'hyp', 'hypClient.ts'))
+const CFG = load(join(ROOT, 'lib', 'hyp', 'hypConfig.ts')).resolveHypConfig(ENV).config
+const PRE_ENV = { ...DEL_ENV, HYP_PREFILL_ENABLED: 'true' }
+const signParams = url => new URL(url).searchParams
+const BASE_KEYS = ['action', 'What', 'KEY', 'PassP', 'Masof', 'Amount', 'Coin', 'Tash', 'Order', 'Info', 'PageLang', 'Sign']
+const keysOf = url => [...signParams(url).keys()]
+const HEB = 'ישראל ישראלי', HEB_BODY = o => body({ customerName: HEB, ...o })
+
+await test('PREFILL: HYP_PREFILL_ENABLED exact "true" only; OFF = the SIGN request byte-identical to before (pickup + delivery)', async () => {
+  for (const v of [undefined, '', 'TRUE', '1', 'true ']) {
+    const x = deps(new FakeDb(), { env: { ...ENV, HYP_PREFILL_ENABLED: v }, answers: ['sign_echo'] })
+    assert.equal((await call(S.handleHypStart, startReq(HEB_BODY()), x.d)).status, 200)
+    assert.deepEqual(keysOf(x.transportCalls[0]), BASE_KEYS, String(v))
+    const y = delDeps(new FakeDb(), { env: { ...DEL_ENV, HYP_PREFILL_ENABLED: v } })
+    assert.equal((await call(S.handleHypStart, startReq(delBody()), y.d)).status, 200); assert.deepEqual(keysOf(y.transportCalls[0]), BASE_KEYS)
+  }
+  // without customer the builder output is exactly the pre-change request (fixed string, fake credentials)
+  assert.equal(HC.buildSignUrl(CFG, { orderRef: REF, amountAgorot: 4000, description: 'Falafel BaTachana' }),
+    `https://pay.hyp.co.il/p/?action=APISign&What=SIGN&KEY=${API_KEY}&PassP=${PASSP}&Masof=0010000001&Amount=40.00&Coin=1&Tash=1&Order=${REF}&Info=Falafel%20BaTachana&PageLang=HEB&Sign=True`)
+})
+await test('PREFILL pickup: Hebrew first + last name and mobile; no address, no email, no UserId; amount / currency / payments / Order unchanged', async () => {
+  const db = new FakeDb(); const x = deps(db, { env: { ...ENV, HYP_PREFILL_ENABLED: 'true' }, answers: ['sign_echo'] })
+  const r = await call(S.handleHypStart, startReq(HEB_BODY()), x.d); assert.equal(r.status, 200, JSON.stringify(r.json))
+  const q = signParams(x.transportCalls[0])
+  assert.deepEqual([q.get('ClientName'), q.get('ClientLName'), q.get('cell')], ['ישראל', 'ישראלי', PHONE_N])
+  for (const k of ['street', 'city', 'email', 'UserId', 'phone']) assert.equal(q.has(k), false, k)
+  assert.deepEqual([q.get('Amount'), q.get('Coin'), q.get('Tash'), q.get('Order'), q.get('Masof')], ['40.00', '1', '1', REF, '0010000001'])
+  assert.deepEqual(keysOf(x.transportCalls[0]), [...BASE_KEYS.slice(0, 10), 'ClientName', 'ClientLName', 'cell', 'PageLang', 'Sign'])
+  // UTF-8, percent-encoded (never raw Hebrew bytes in the request)
+  assert.ok(x.transportCalls[0].includes('ClientName=%D7%99%D7%A9%D7%A8%D7%90%D7%9C&')); assert.ok(/^[\x21-\x7e]+$/.test(x.transportCalls[0]))
+  assert.equal(x.transportCalls.length, 1); assert.deepEqual(db.ops(), ['loadCatalog', 'createIntent', 'recordSignResult'])
+  // the payment-page URL is HYP's answer, unmodified (customer fields included as HYP echoed them)
+  assert.ok(r.json.redirectUrl.startsWith('https://pay.hyp.co.il/p/?action=pay&Masof=0010000001&Amount=40.00&Coin=1&Tash=1&Order='))
+  assert.ok(r.json.redirectUrl.includes('&ClientName=%D7%99%D7%A9%D7%A8%D7%90%D7%9C&ClientLName=%D7%99%D7%A9%D7%A8%D7%90%D7%9C%D7%99&cell=0501234567&'))
+})
+await test('PREFILL name rules: one word → ClientName only (no invented surname); 3 words → first / rest; spaces collapsed; unsafe text dropped', () => {
+  const pre = (name, phone = PHONE_N, d) => P.customerPrefillFromSnapshot({ p_order: { customer_name: name, phone }, ...(d ? { p_delivery: d } : {}) })
+  assert.deepEqual(pre('דנה'), { ClientName: 'דנה', cell: PHONE_N })
+  assert.deepEqual(pre('  מוחמד   אבו  חוסין '), { ClientName: 'מוחמד', ClientLName: 'אבו חוסין', cell: PHONE_N })
+  assert.deepEqual(pre('Dana Fixture'), { ClientName: 'Dana', ClientLName: 'Fixture', cell: PHONE_N })
+  assert.deepEqual(pre("ז'קלין בן-דוד"), { ClientName: "ז'קלין", ClientLName: 'בן-דוד', cell: PHONE_N })
+  for (const bad of ['a&b=c', 'x\u0000y', 'שם<script>', 'a?b', '#1', '']) assert.equal(pre(bad).ClientName, undefined, bad)
+  assert.equal(pre('דנה', '+972501234567').cell, undefined); assert.equal(pre('דנה', '0212345678').cell, undefined)
+  assert.equal(P.isValidPrefill({ email: 'a@b.c' }), false); assert.equal(P.isValidPrefill({ ClientName: 'a&b' }), false)
+})
+await test('PREFILL delivery food only: street + house number and city of the verified address; amount = authoritative total', async () => {
+  const db = new FakeDb(); const x = delDeps(db, { env: PRE_ENV })
+  const r = await call(S.handleHypStart, startReq(delBody({ customerName: HEB })), x.d); assert.equal(r.status, 200, JSON.stringify(r.json))
+  const q = signParams(x.transportCalls[0]); const c = db.calls.find(y => y.op === 'createIntent').args
+  assert.deepEqual([q.get('street'), q.get('city'), q.get('ClientName'), q.get('cell')], ['הרצל 1', CITY, 'ישראל', PHONE_N])
+  assert.equal(q.get('Amount'), (c.amountAgorot / 100).toFixed(2)); assert.equal(q.get('Order'), REF)
+  for (const k of ['email', 'UserId']) assert.equal(q.has(k), false)
+  assert.equal(q.has('apartment'), false, 'apartment / floor / notes are never sent')
+})
+await test('PREFILL food + parcel delivery: same customer fields, parcel snapshot and single intent unchanged', async () => {
+  const db = new FakeDb(); const x = delDeps(db, { env: { ...PRE_ENV, PARCEL_CHECKOUT_ENABLED: 'true' } })
+  const r = await call(S.handleHypStart, startReq(delBody({ customerName: HEB, parcel: { trackingRef: 'RR123456789IL', carrier: 'דואר ישראל' } })), x.d)
+  assert.equal(r.status, 200, JSON.stringify(r.json))
+  const c = db.calls.find(y => y.op === 'createIntent').args; assert.equal(c.orderKind, 'parcel'); assert.ok(c.snapshot.p_parcel)
+  const q = signParams(x.transportCalls[0]); assert.deepEqual([q.get('street'), q.get('city'), q.get('ClientLName')], ['הרצל 1', CITY, 'ישראלי'])
+  assert.equal(JSON.stringify([...q.values()]).includes('RR123456789IL'), false, 'tracking number never sent to HYP')
+  assert.equal(db.calls.filter(y => y.op === 'createIntent').length, 1)
+})
+await test('PREFILL never blocks a payment: SIGN refused / unreadable WITH it → signed once more WITHOUT it → 200; logs carry codes only', async () => {
+  for (const first of [{ body: 'CCode=999' }, { body: 'garbage <html>' }]) {
+    logs.length = 0
+    const db = new FakeDb(); const x = deps(db, { env: { ...ENV, HYP_PREFILL_ENABLED: 'true' }, answers: [first, 'sign_echo'] })
+    const r = await call(S.handleHypStart, startReq(HEB_BODY()), x.d); assert.equal(r.status, 200, JSON.stringify(r.json))
+    assert.equal(x.transportCalls.length, 2); assert.ok(signParams(x.transportCalls[0]).has('ClientName')); assert.deepEqual(keysOf(x.transportCalls[1]), BASE_KEYS)
+    assert.ok(logs.some(l => l.startsWith('hyp_start_prefill_fallback ')))
+    assert.equal(logs.join('\n').includes('ישראל') || logs.join('\n').includes(PHONE_N) || logs.join('\n').includes(API_KEY), false)
+    assert.deepEqual(db.ops(), ['loadCatalog', 'createIntent', 'recordSignResult'], 'one intent, one sign result')
+  }
+  // a credential echo is a security stop: no second SIGN; flag OFF: no fallback either (one SIGN, 502 exactly as before)
+  const e = deps(new FakeDb(), { env: { ...ENV, HYP_PREFILL_ENABLED: 'true' }, answers: [{ body: `action=pay&KEY=${API_KEY}&signature=x` }] })
+  assert.equal((await call(S.handleHypStart, startReq(HEB_BODY()), e.d)).status, 502); assert.equal(e.transportCalls.length, 1)
+  const off = deps(new FakeDb(), { answers: [{ body: 'CCode=999' }] })
+  assert.equal((await call(S.handleHypStart, startReq(HEB_BODY()), off.d)).status, 502); assert.equal(off.transportCalls.length, 1)
+  // both attempts refused → not_sent exactly as before
+  const both = new FakeDb(); const b = deps(both, { env: { ...ENV, HYP_PREFILL_ENABLED: 'true' }, answers: [{ body: 'CCode=999' }] })
+  assert.equal((await call(S.handleHypStart, startReq(HEB_BODY()), b.d)).status, 502)
+  assert.deepEqual(both.calls.find(y => y.op === 'recordSignResult').args.ok, false)
+})
+await test('PREFILL leaves idempotency and the return / VERIFY path untouched', async () => {
+  // same checkout already redirected → status page, no SIGN at all
+  const x = deps(new FakeDb({ createResult: { result: 'existing', intentId: 'int-1', publicToken: 'tok-1', hypOrderRef: REF, status: 'redirected' } }), { env: { ...ENV, HYP_PREFILL_ENABLED: 'true' } })
+  const r = await call(S.handleHypStart, startReq(HEB_BODY()), x.d); assert.deepEqual([r.status, r.json], [409, { error: 'payment_in_progress', statusToken: 'tok-1' }]); assert.equal(x.transportCalls.length, 0)
+  const open = deps(new FakeDb({ createResult: { result: 'open_payment_exists' } }), { env: { ...ENV, HYP_PREFILL_ENABLED: 'true' } })
+  assert.deepEqual((await call(S.handleHypStart, startReq(HEB_BODY()), open.d)).json, { error: 'payment_in_progress' }); assert.equal(open.transportCalls.length, 0)
+  // a return that echoes percent-encoded Hebrew customer fields still passes the raw-charset check and VERIFY verbatim
+  const echoed = returnRaw({ ClientName: '%D7%99%D7%A9%D7%A8%D7%90%D7%9C', cell: PHONE_N })
+  const pr = HC.parseHypReturn(echoed); assert.equal(pr.ok, true, JSON.stringify(pr))
+  assert.equal(HC.parseHypReturn(returnRaw({ ClientName: 'ישראל' })).ok, false, 'raw (unencoded) bytes still refused — fail closed')
+  for (const f of ['lib/hyp/hypCapture.ts', 'api/hyp-return.js', 'lib/hyp/hypProtocol.ts']) assert.equal(execFileSync('git', ['diff', '--stat', 'origin/main', '--', f], { cwd: ROOT, encoding: 'utf8' }), '', f)
+})
+
 console.log(`\n${passed}/${passed + failed} PASS${failed ? ` — ${failed} FAILED` : ''}`)
 process.exit(failed ? 1 : 0)

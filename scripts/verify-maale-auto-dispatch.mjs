@@ -396,8 +396,13 @@ await test('R5. HYP untouched; parcel item line not implemented; no live network
   // Canonical baseline = the released code (origin/main), not a local `main` that may lag behind it (S4-MAALE-02).
   const base = execFileSync('git', ['merge-base', 'HEAD', 'origin/main'], { cwd: ROOT, encoding: 'utf8' }).trim()
   // HYP capture / VERIFY / the payment ledger are never touched; HYP-DELIVERY-02 may change ONLY its reviewed HYP files
-  assert.equal(execFileSync('git', ['diff', '--name-only', base, '--', 'api/hyp-return.js', 'lib/hyp/hypCapture.ts', 'lib/hyp/hypClient.ts', 'lib/hyp/hypProtocol.ts', 'lib/hyp/hypConfig.ts', 'db/migrations/hyp05_payment_intents.sql', 'app/api/payments'], { cwd: ROOT, encoding: 'utf8' }).trim(), '')
-  const HYP_DELIVERY_FILES = ['app/order/page.tsx', 'lib/hyp/hypCheckoutUi.ts', 'lib/hyp/hypDb.ts', 'lib/hyp/hypDeps.ts', 'lib/hyp/hypFlags.ts', 'lib/hyp/hypPaymentService.ts', 'lib/hyp/hypRefundFlag.ts']
+  assert.equal(execFileSync('git', ['diff', '--name-only', base, '--', 'api/hyp-return.js', 'lib/hyp/hypCapture.ts', 'lib/hyp/hypProtocol.ts', 'lib/hyp/hypConfig.ts', 'db/migrations/hyp05_payment_intents.sql', 'app/api/payments'], { cwd: ROOT, encoding: 'utf8' }).trim(), '')
+  // S4-HYP-PREFILL-01 may change ONLY the SIGN builder of hypClient: the browser return + VERIFY half stays byte-identical
+  const returnHalf = t => t.replace(/\r\n/g, '\n').slice(t.replace(/\r\n/g, '\n').indexOf('/* ─── Browser return (untrusted) ─── */'))
+  const baseClient = execFileSync('git', ['show', `${base}:lib/hyp/hypClient.ts`], { cwd: ROOT, encoding: 'utf8' })
+  assert.ok(returnHalf(baseClient).length > 1000); assert.equal(returnHalf(src('lib/hyp/hypClient.ts')), returnHalf(baseClient), 'return / VERIFY code changed')
+  const HYP_DELIVERY_FILES = ['app/order/page.tsx', 'lib/hyp/hypCheckoutUi.ts', 'lib/hyp/hypDb.ts', 'lib/hyp/hypDeps.ts', 'lib/hyp/hypFlags.ts', 'lib/hyp/hypPaymentService.ts', 'lib/hyp/hypRefundFlag.ts',
+                              'lib/hyp/hypClient.ts', 'lib/hyp/hypPrefill.ts']   // S4-HYP-PREFILL-01 (SIGN customer fields only)
   for (const f of execFileSync('git', ['diff', '--name-only', base, '--', 'lib/hyp', 'app/order'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter(Boolean))
     assert.ok(HYP_DELIVERY_FILES.includes(f), `unexpected HYP change: ${f}`)
   for (const f of execFileSync('git', ['ls-files', '--others', '--exclude-standard', '--', 'lib/hyp', 'app/order'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter(Boolean))

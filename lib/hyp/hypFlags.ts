@@ -58,5 +58,12 @@ export const isHypPhoneAllowed = (env: EnvLike, normalizedPhone: string): boolea
 /** Whether any customer can pass the phone gate (GET /api/payments/config shows the option only then). */
 export const isHypAudienceConfigured = (env: EnvLike): boolean => isHypOpenToAllPhones(env) || hypPilotPhones(env) !== null
 
-export const HYP_INTENT_TTL_SECONDS = 900          // payment_intents.expires_at = created_at + 15 min
+/**
+ * HYP_PREFILL_ENABLED (S4-HYP-PREFILL-01) — exactly 'true' adds the customer's own validated order details (name,
+ * mobile, delivery street / city) to the SIGN request so the hosted payment page can show them pre-filled. Anything
+ * else = the SIGN request byte-identical to before. Card details are always entered on the HYP page only.
+ */
+export const isHypPrefillEnabled = (env: EnvLike): boolean => env.HYP_PREFILL_ENABLED === 'true'
+
+export const HYP_INTENT_TTL_SECONDS = 900         // payment_intents.expires_at = created_at + 15 min
 export const HYP_PAYMENT_DESCRIPTION = 'Falafel BaTachana'

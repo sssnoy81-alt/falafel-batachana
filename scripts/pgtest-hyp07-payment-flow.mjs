@@ -510,6 +510,18 @@ try {
     const pj = await p.json(); assert.equal(p.status, 200)
     assert.equal(val(`SELECT order_kind || '/' || amount_agorot || '/' || (snapshot ? 'p_delivery')::text || '/' || (snapshot ? 'p_parcel')::text FROM public.payment_intents WHERE public_token = '${pj.statusToken}';`), 'plain/4000/false/false')
   })
+  await test('P1', 'HYP_PREFILL_ENABLED: food + parcel delivery → SIGN carries name / mobile / street / city (UTF-8) → VERIFY → ONE order; amount and Order unchanged', async () => {
+    const phone = nextPhone(); lastSignUrl = null
+    const s = await startDelivery({ phone, parcel: { trackingRef: 'RR555666777IL' }, env: { HYP_PREFILL_ENABLED: 'true' } })
+    assert.equal(s.status, 200, JSON.stringify(s.json)); const t = s.json.statusToken
+    const q = new URL(lastSignUrl).searchParams
+    assert.deepEqual([q.get('ClientName'), q.get('ClientLName'), q.get('cell'), q.get('street'), q.get('city')], ['Flow', 'Customer', phone, 'הרצל 1', CITY])
+    assert.deepEqual([q.get('Amount'), q.get('Order'), q.get('Coin'), q.get('Tash')], [(amountOf(t) / 100).toFixed(2), refOf(t), '1', '1'])
+    await hypReturn(rawFor(refOf(t), { amount: (amountOf(t) / 100).toFixed(2) }))
+    assert.equal(intentOf(t), 'finalized/-'); assert.equal(ordersOf(t), 1); assert.equal(verifiedRows(t), 1)
+    assert.equal(Number(val(`SELECT count(*) FROM public.payment_intents WHERE phone_key = '${phone}';`)), 1)
+    assert.equal(Number(val(`SELECT count(*) FROM public.parcel_requests pr JOIN public.payment_intents pi ON pi.order_id = pr.order_id WHERE pi.public_token = '${t}';`)), 1)
+  })
 } finally {
   docker(['rm', '-f', NAME])
 }
