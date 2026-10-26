@@ -31,7 +31,7 @@ const HYP = join(ROOT, 'lib', 'hyp')
 const Cfg = load(join(HYP, 'hypConfig.ts'))
 const P = load(join(HYP, 'hypProtocol.ts'))
 const C = load(join(HYP, 'hypClient.ts'))
-const src = f => readFileSync(join(ROOT, f), 'utf8')
+const src = f => readFileSync(join(ROOT, f), 'utf8').replace(/\r\n/g, '\n')   // working copies may be CRLF (core.autocrlf)
 
 let passed = 0, failed = 0
 const test = async (name, fn) => {
@@ -183,10 +183,21 @@ await test('return parsing: missing / duplicate / reserved / invalid fields refu
   assert.equal(reason('A'.repeat(4001)), 'too_long')
   assert.equal(reason(''), 'empty')
 })
-await test('VERIFY request: auth parameters, then the return query string byte-for-byte in its original order', async () => {
+await test('VERIFY request: documented order action, What, Masof, KEY, PassP, then the return query string byte-for-byte', async () => {
   const raw = 'Sign=' + 'f'.repeat(32) + '&Order=' + REF + '&CCode=0&Amount=40.00&Id=50012345&Fild1=%D7%A9'
   const { calls } = await verify(raw, [{ body: 'CCode=0' }])
-  assert.equal(calls[0].url, `https://pay.hyp.co.il/p/?action=APISign&What=VERIFY&KEY=${encodeURIComponent(API_KEY)}&PassP=${encodeURIComponent(PASSP)}&Masof=${config.terminal}&${raw}`)
+  assert.equal(calls[0].url, `https://pay.hyp.co.il/p/?action=APISign&What=VERIFY&Masof=${config.terminal}&KEY=${encodeURIComponent(API_KEY)}&PassP=${encodeURIComponent(PASSP)}&${raw}`)
+})
+await test('HYP-20 regression: exact key order of the real callback; the text after PassP is the callback, unchanged', () => {
+  // The real HYP-18B callback key order (Id, CCode, Amount, ACode, Order, Fild1-3, Sign), synthetic values.
+  const raw = `Id=503699117&CCode=0&Amount=9.00&ACode=0577123&Order=${REF}&Fild1=&Fild2=&Fild3=&Sign=${'a'.repeat(64)}`
+  const url = C.buildVerifyUrl(config, raw)
+  const q = url.slice(url.indexOf('?') + 1)
+  assert.deepEqual(q.split('&').map(p => p.split('=')[0]),
+    ['action', 'What', 'Masof', 'KEY', 'PassP', 'Id', 'CCode', 'Amount', 'ACode', 'Order', 'Fild1', 'Fild2', 'Fild3', 'Sign'])
+  assert.equal(q.slice(q.indexOf('&PassP=') + 1).replace(/^PassP=[^&]*&/, ''), raw)   // nothing (no Masof) between PassP and the callback
+  assert.equal(new URL(url).href, url)                                                   // fetch's URL parser keeps every byte
+  assert.equal((q.match(/(^|&)Masof=/g) ?? []).length, 1)
 })
 await test('verified payment: VERIFY CCode=0 + return CCode=0 + same Order and Amount → confirmed → record authentic (expect paid)', async () => {
   const { r } = await verify(returnRaw(), [{ body: 'CCode=0' }])

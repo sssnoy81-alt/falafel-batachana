@@ -185,6 +185,38 @@ await test('pilot allowlist HYP_PILOT_PHONES: only listed phones may start; miss
   }
 })
 
+await test('HYP-46 HYP_PAYMENTS_AUDIENCE=all: any valid customer phone may start (no pilot list needed); branch / pickup / flag unchanged', async () => {
+  const OPEN = { ...ENV, HYP_PILOT_PHONES: undefined, HYP_PAYMENTS_AUDIENCE: 'all' }
+  for (const phone of ['0521112233', '054-7654321', '0586000000', '0501234567', '0539876543']) {
+    const db = new FakeDb(); const r = await call(S.handleHypStart, startReq(body({ phone })), deps(db, { env: OPEN, answers: ['sign_echo'] }).d)
+    assert.equal(r.status, 200, phone); assert.ok(r.json.redirectUrl && r.json.statusToken, phone); assert.ok(db.ops().includes('createIntent'))
+    assert.ok(!db.ops().includes('finalize'), 'start never creates an order')
+  }
+  const bad = await call(S.handleHypStart, startReq(body({ phone: '12345' })), deps(new FakeDb(), { env: OPEN }).d)
+  assert.equal(bad.json.error, 'invalid_phone')
+  // exact string only: anything else keeps the pilot (here: no list → nobody)
+  for (const v of ['ALL', 'All', ' all', 'all ', 'true', '1', '*', 'all,', 'everyone', '']) {
+    const db = new FakeDb(); const r = await call(S.handleHypStart, startReq(body({ phone: '0521112233' })), deps(db, { env: { ...OPEN, HYP_PAYMENTS_AUDIENCE: v } }).d)
+    assert.equal(r.status, 404, `audience ${JSON.stringify(v)}`); assert.equal(r.json.error, 'payments_disabled'); assert.ok(!db.ops().includes('createIntent'))
+  }
+  // the master flag still wins
+  for (const flag of [undefined, 'false', 'TRUE']) {
+    const db = new FakeDb(); const r = await call(S.handleHypStart, startReq(body()), deps(db, { env: { ...OPEN, HYP_PAYMENTS_ENABLED: flag } }).d)
+    assert.equal(r.status, 404); assert.equal(db.calls.length, 0)
+  }
+  // branch / pickup / parcel restrictions are independent of the audience
+  const other = await call(S.handleHypStart, startReq(body({ branchId: 'f1e2d3c4-b5a6-4978-8a9b-0c1d2e3f4a5b' })), deps(new FakeDb(), { env: OPEN }).d)
+  assert.equal(other.json.error, 'online_payment_branch_not_allowed')
+  const delivery = await call(S.handleHypStart, startReq(body({ type: 'delivery', delivery: { city: OC.ACTIVE_DELIVERY_AREAS[0], street: 'הרצל', houseNumber: '1' } })), deps(new FakeDb(), { env: OPEN }).d)
+  assert.equal(delivery.json.error, 'online_payment_type_not_allowed')
+  // the client still cannot set the amount
+  const tamper = await call(S.handleHypStart, startReq(body({ amountAgorot: 1 })), deps(new FakeDb(), { env: OPEN }).d)
+  assert.equal(tamper.json.error, 'client_payment_fields_not_accepted')
+  // with the pilot list still present, 'all' opens beyond it
+  const both = await call(S.handleHypStart, startReq(body({ phone: '0521112233' })), deps(new FakeDb(), { env: { ...ENV, HYP_PAYMENTS_AUDIENCE: 'all' }, answers: ['sign_echo'] }).d)
+  assert.equal(both.status, 200)
+})
+
 console.log('Checkout validation (start)')
 await test('the client cannot supply amount, payment method, terminal, status, intent fields or redirect targets', async () => {
   for (const k of ['paymentMethod', 'payment_method', 'amount', 'amountAgorot', 'terminal', 'terminalKind', 'Masof', 'status', 'publicToken', 'hypOrderRef', 'snapshot', 'p_order', 'redirectUrl', 'returnUrl']) {

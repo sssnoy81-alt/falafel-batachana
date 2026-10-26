@@ -14,8 +14,9 @@ import { buildOrderFromCatalog, isUuid, parseCreateOrderRequest, type CreateOrde
 import { resolveHypConfig } from './hypConfig'
 import { signPayment, toVerificationRecord, verificationRpcArgs, verifyHypReturn, type HypTransport } from './hypClient'
 import { HypDbError, type HypDb } from './hypDb'
-import { HYP_ALLOWED_BRANCH_IDS, HYP_ALLOWED_ORDER_TYPES, HYP_INTENT_TTL_SECONDS, HYP_PAYMENT_DESCRIPTION, hypPilotPhones, isHypPaymentsEnabled, isHypPilotPhoneAllowed, type EnvLike } from './hypFlags'
+import { HYP_ALLOWED_BRANCH_IDS, HYP_ALLOWED_ORDER_TYPES, HYP_INTENT_TTL_SECONDS, HYP_PAYMENT_DESCRIPTION, isHypAudienceConfigured, isHypPaymentsEnabled, isHypPhoneAllowed, type EnvLike } from './hypFlags'
 import { clientKey, type RateLimiter } from './hypRateLimit'
+import { decodeCaptureEnvelope } from './hypCapture'
 
 if (typeof window !== 'undefined') {
   throw new Error('lib/hyp/hypPaymentService is server-only')
@@ -81,8 +82,8 @@ export async function handleHypStart(req: Request, deps: HypDeps): Promise<Respo
   if (!HYP_ALLOWED_ORDER_TYPES.includes(order.type)) return fail(400, 'online_payment_type_not_allowed')
   if (!HYP_ALLOWED_BRANCH_IDS.includes(order.branchId)) return fail(400, 'online_payment_branch_not_allowed')
   if (order.parcel || order.delivery) return fail(400, 'online_payment_type_not_allowed')
-  // Controlled pilot: outside HYP_PILOT_PHONES the feature behaves exactly as if it were off.
-  if (!isHypPilotPhoneAllowed(deps.env, order.phone)) return fail(404, 'payments_disabled')
+  // Phone scope: HYP_PAYMENTS_AUDIENCE=all, else the HYP_PILOT_PHONES pilot (outside it the feature behaves as off).
+  if (!isHypPhoneAllowed(deps.env, order.phone)) return fail(404, 'payments_disabled')
   if (!deps.limits.startPhone.hit(`phone:${order.phone}`)) return fail(429, 'rate_limited')
   if (!deps.isShopOpen()) return fail(409, 'closed')
 
@@ -139,6 +140,12 @@ export async function handleHypReturn(req: Request, deps: HypDeps): Promise<Resp
   if (!deps.limits.ret.hit(`ip:${clientKey(req)}`)) return fail(429, 'rate_limited')
   let raw: string
   try { raw = new URL(req.url).search.replace(/^\?/, '') } catch { return redirect(GENERIC_PAGE) }
+  // HYP-32: the success URL is the capture function (api/hyp-return.js), which forwards the ORIGINAL query bytes as a
+  // canonical base64url envelope; Next.js has already re-serialized anything else. A malformed envelope is refused
+  // before any DB access; the decoded query then goes through exactly the same steps as before.
+  const envelope = decodeCaptureEnvelope(raw)
+  if (envelope.kind === 'invalid') { deps.log('hyp_return_envelope', envelope.reason); return redirect(GENERIC_PAGE) }
+  if (envelope.kind === 'envelope') raw = envelope.raw
   if (!raw) return redirect(GENERIC_PAGE)
 
   let token: string | null = null
@@ -193,9 +200,9 @@ export async function handleHypReturn(req: Request, deps: HypDeps): Promise<Resp
 /* ─── GET /api/payments/config (HYP-08) ─── */
 
 /** Whether the checkout may SHOW the online option. Presentation only: start re-checks everything. Fail closed —
- *  flag not exactly 'true', credentials not valid or no valid HYP_PILOT_PHONES list → null. The reason is never disclosed. */
+ *  flag not exactly 'true', credentials not valid, or neither HYP_PAYMENTS_AUDIENCE=all nor a valid HYP_PILOT_PHONES list → null. The reason is never disclosed. */
 export function handlePaymentsConfig(env: EnvLike): Response {
-  const on = isHypPaymentsEnabled(env) && resolveHypConfig(env).ok && hypPilotPhones(env) !== null
+  const on = isHypPaymentsEnabled(env) && resolveHypConfig(env).ok && isHypAudienceConfigured(env)
   return json(200, { hypPayments: on ? { branchIds: [...HYP_ALLOWED_BRANCH_IDS], orderTypes: [...HYP_ALLOWED_ORDER_TYPES] } : null })
 }
 
